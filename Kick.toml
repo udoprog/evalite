@@ -1,0 +1,1 @@
+wordmark = { alt = "evalite", src = "https://raw.githubusercontent.com/{{package.repo}}/main/assets/wordmark.svg", height = "64" }
