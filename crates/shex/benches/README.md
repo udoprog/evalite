@@ -1,0 +1,77 @@
+# shex benchmarks
+
+[`shex.rs`](shex.rs) measures each stage a computed value goes through, on
+expressions shaped like a character sheet's (attributes, skills,
+`specialties`, optional `bonus_N`s, tracks, lookup tables), with
+[criterion](https://docs.rs/criterion).
+
+```sh
+CARGO_BUILD_JOBS=4 cargo bench -p shex --bench shex
+# one group or case: the argument is a regex over the names
+cargo bench -p shex --bench shex -- 'stage/long/'
+cargo bench -p shex --bench shex -- '^sheet/'
+# a quick check that every case still compiles and runs
+cargo bench -p shex --bench shex -- --test
+```
+
+Results go to `target/criterion/`, with a report in
+`target/criterion/report/index.html`.
+
+## Comparing against a baseline
+
+Save the numbers on the base, then compare a change against them:
+
+```sh
+git switch main
+cargo bench -p shex --bench shex -- --save-baseline main
+git switch my-change
+cargo bench -p shex --bench shex -- --baseline main
+```
+
+The machine is often busy building other things, so run the two back to
+back, and run again any result that moves by less than ~15%: a single
+comparison is not enough. `--warm-up-time 1 --measurement-time 3` makes a
+full run take about five minutes.
+
+## What is measured
+
+`stage/<case>/<stage>`, for each single expression:
+
+- `compile`: source to a verified `Program` (parse, check, codegen and the
+  verifier, which `compile` runs too).
+- `from_bytes`: a stored program decoded and verified.
+- `load`: `Machine::load`, which copies the constants in.
+- `load_bind`: `load` and `bind` of every global it reads, cloning each
+  value; `bind` is the difference from `load`.
+- `load_bind_run`: that and `run_with`, which includes reading the result
+  back into a `Value`; `run` is the difference from `load_bind`.
+- `end_to_end`: compile, load, bind and run.
+
+The cases, smallest first: `pool` (a dice pool sum), `pool_specialty`
+(attribute + skill + specialty + bonus), `unwrap_or_16` and `is_none_16`
+(sixteen optional globals), `lookup_literal`, `lookup_global` and
+`lookup_host` (tables), `track` (record and track field reads),
+`clamp_chain`, `option_list` (lists of `Option<Int>`), `long` (a 370 term
+sum, near the default fuel) and `deep` (31 nested parentheses, near the
+default `max_depth`).
+
+`read/<expr>` evaluates a value read whole against the same value reduced
+to an `Int` by one more instruction, so the difference is roughly what
+reading the result costs.
+
+`sheet/*` is a whole character sheet, 108 computed values over one
+environment: `compile` and `from_bytes` of all of them, and `evaluate` of
+all of them from compiled programs, with the bindings prepared
+(`evaluate`) or looked up by name and cloned from the sheet's values
+(`evaluate_lookup`).
+
+## Profiling
+
+There is no `perf` on the usual machine; callgrind works:
+
+```sh
+CARGO_PROFILE_BENCH_DEBUG=true cargo bench -p shex --bench shex --no-run
+valgrind --tool=callgrind --callgrind-out-file=/tmp/shex.cg \
+    target/release/deps/shex-<hash> --bench '^sheet/evaluate$' --profile-time 2
+callgrind_annotate --inclusive=yes /tmp/shex.cg | head -60
+```
