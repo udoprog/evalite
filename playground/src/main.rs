@@ -1,6 +1,7 @@
 //! The evalite playground: the project's page, with an editor that runs
 //! evalite in the browser.
 
+mod claims;
 mod code_editor;
 mod complete;
 mod editor;
@@ -28,11 +29,11 @@ use gloo_timers::callback::Timeout;
 use yew::prelude::*;
 
 use sockel::{
-    Align, Button, ButtonSize, ButtonVariant, Card, CardGrid, Cluster, Disclosure, ErrorBox, Field,
-    Gap, GridSize, InputSize, Inset, OverlayHost, PropertyList, PropertyRow, SectionHead, Select,
-    SelectOption, Stack, Stepper, TextInput, Toolbar, ToolbarSpacer,
+    Align, Button, ButtonSize, ButtonVariant, Card, Cluster, Disclosure, ErrorBox, Field, Gap,
+    InputSize, OverlayHost, PropertyList, PropertyRow, SectionHead, Stack, Stepper, TextInput,
 };
 
+use crate::claims::{CLAIMS, Gives};
 use crate::editor::Editor;
 use crate::eval::{Binding, Bounds, Done, Mark, evaluate};
 use crate::examples::{EXAMPLES, Example};
@@ -40,22 +41,6 @@ use crate::share::Shared;
 
 /// How long the outcome waits after an edit before it is recomputed.
 const DEBOUNCE_MS: u32 = 150;
-
-/// The types the type picker offers; anything else is written out.
-const TYPES: &[&str] = &[
-    "Int",
-    "Bool",
-    "String",
-    "Option<Int>",
-    "Option<Bool>",
-    "Option<String>",
-    "List<Int>",
-    "List<Bool>",
-    "List<String>",
-];
-
-/// The type picker's choice for a type written out.
-const OTHER: &str = "";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Theme {
@@ -86,8 +71,6 @@ struct Row {
     name: String,
     ty: String,
     value: String,
-    /// The type is written out rather than picked.
-    custom: bool,
 }
 
 impl Row {
@@ -97,7 +80,6 @@ impl Row {
             name: name.into(),
             ty: ty.into(),
             value: value.into(),
-            custom: !TYPES.contains(&ty),
         }
     }
 }
@@ -125,16 +107,6 @@ fn row_binding(row: &Row) -> Result<Binding, RowError> {
         ty,
         value,
     })
-}
-
-/// A value of type `ty` to start from: the first of a few simple ones that
-/// is one.
-fn starting_value(ty: &str) -> Option<&'static str> {
-    let ty = vars::parse_type(ty).ok()?;
-
-    ["0", "false", "\"\"", "none", "[]"]
-        .into_iter()
-        .find(|text| vars::parse_value(&ty, text).is_ok())
 }
 
 /// The page's state: what the outcome is computed from.
@@ -264,36 +236,79 @@ fn copy(text: &str) {
     }
 }
 
+impl Theme {
+    /// The theme after this one, as the footer's button cycles them.
+    fn next(self) -> Self {
+        match self {
+            Theme::System => Theme::Light,
+            Theme::Light => Theme::Dark,
+            Theme::Dark => Theme::System,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Theme::System => "System",
+            Theme::Light => "Light",
+            Theme::Dark => "Dark",
+        }
+    }
+}
+
+/// The playground's section, which loading an example scrolls to.
+const PLAYGROUND_ID: &str = "playground";
+
+fn scroll_to(id: &str) {
+    if let Some(element) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        element.scroll_into_view();
+    }
+}
+
 #[function_component]
 fn App() -> Html {
     let theme = use_state(|| Theme::System);
     let on_theme = {
         let theme = theme.clone();
-        Callback::from(move |next| {
+        Callback::from(move |_: MouseEvent| {
+            let next = theme.next();
             apply_theme(next);
             theme.set(next);
         })
     };
 
-    let themes = vec![
-        SelectOption::new(Theme::System, "System"),
-        SelectOption::new(Theme::Light, "Light"),
-        SelectOption::new(Theme::Dark, "Dark"),
-    ];
+    let input = use_state(|| from_location().unwrap_or_else(Input::initial));
+    let vars_open = use_state(|| !input.rows.is_empty());
+
+    let on_load = {
+        let (input, vars_open) = (input.clone(), vars_open.clone());
+        Callback::from(move |(claim, case): (usize, usize)| {
+            if let Some(case) = CLAIMS.get(claim).and_then(|c| c.cases.get(case)) {
+                vars_open.set(!case.example.vars.is_empty());
+                input.set(Input::example(&case.example));
+                scroll_to(PLAYGROUND_ID);
+            }
+        })
+    };
 
     html! {
         <OverlayHost>
             <sockel::Styles css={STYLESHEET} />
             <Stack gap={Gap::Wide} class={sockel::class::WORKSPACE_PAGE}>
                 <Hero />
-                <Playground />
+                <Playground input={input.clone()} vars_open={vars_open.clone()} />
+                <Claims {on_load} />
                 <footer>
                     <Cluster gap={Gap::Loose}>
-                        <span>{ "evalite is MIT or Apache-2.0" }</span>
+                        <span class={class::MUTED}>{ "evalite is MIT or Apache-2.0" }</span>
                         <a href={GITHUB}>{ "GitHub" }</a>
                         <a href={DOCS}>{ "Documentation" }</a>
                         <a href={CRATES}>{ "crates.io" }</a>
-                        <Select<Theme> label="Theme" options={themes} value={Some(*theme)} on_change={on_theme} />
+                        <Button variant={ButtonVariant::Quiet} size={ButtonSize::Small} onclick={on_theme}>
+                            { format!("Theme: {}", theme.name()) }
+                        </Button>
                     </Cluster>
                 </footer>
             </Stack>
@@ -312,72 +327,108 @@ fn Hero() -> Html {
         })
     };
 
-    let points: [(&str, &str); 6] = [
-        (
-            "Strictly typed.",
-            "Every expression has one type, known when it compiles. Nothing converts behind your back.",
-        ),
-        (
-            "Safe on untrusted input.",
-            "No recursion, bounded nesting, fixed memory and a step limit. It never panics.",
-        ),
-        (
-            "Compile once, store it.",
-            "A program is bytes you keep next to your data, and runs without the environment.",
-        ),
-        (
-            "Verified on load.",
-            "Stored bytes are not trusted: a loaded program is type-checked again before it runs.",
-        ),
-        (
-            "Errors that point.",
-            "Every error says what it expected and what it found, with labels on the exact spans.",
-        ),
-        (
-            "Built for forms.",
-            "Completions offer what fits each hole, by type, so users build expressions by picking.",
-        ),
-    ];
-
     html! {
         <header>
             <Stack gap={Gap::Loose}>
                 <h1 class={class::DISPLAY}>{ "evalite" }</h1>
                 <p class={class::LEAD}>
-                    { "Small, strictly typed expressions that are safe to run on input you don't trust. \
-                       Let your users write " }
+                    { "Let your users write formulas like " }
                     <code class={class::CODE}>{ "min(wits, dexterity) + athletics" }</code>
-                    { " and run it a million times without worrying." }
+                    { ". evalite type-checks them before they run, and nothing they type can crash or hang your program." }
                 </p>
                 <Cluster gap={Gap::Tight}>
-                    <div>
-                        <TextInput class={class::CODE} label="Install" value={INSTALL} readonly=true
-                            on_input={Callback::noop()} />
-                    </div>
-                    <Button onclick={on_copy}>{ if *copied { "Copied" } else { "Copy" } }</Button>
+                    <code class={classes!(class::CODE, class::INSTALL)}>{ INSTALL }</code>
+                    <Button variant={ButtonVariant::Quiet} onclick={on_copy}>{ if *copied { "Copied" } else { "Copy" } }</Button>
                     <Button variant={ButtonVariant::Primary} href={DOCS}>{ "Read the docs" }</Button>
                     <Button variant={ButtonVariant::Ghost} href={GITHUB}>{ "GitHub" }</Button>
-                    <Button variant={ButtonVariant::Ghost} href={CRATES}>{ "crates.io" }</Button>
                 </Cluster>
-                <CardGrid size={GridSize::Wide} tag="ul">
-                    { for points.iter().map(|(head, body)| html! {
-                        <Card tag="li" inset={Inset::Compact} gap={Gap::Snug}>
-                            <strong>{ *head }</strong>
-                            <span>{ *body }</span>
-                        </Card>
-                    }) }
-                </CardGrid>
             </Stack>
         </header>
     }
 }
 
+#[derive(Properties, PartialEq)]
+struct ClaimsProps {
+    /// Load a claim's case, by the claim's index and the case's.
+    on_load: Callback<(usize, usize)>,
+}
+
+/// What evalite does, each with examples that load into the playground.
 #[function_component]
-fn Playground() -> Html {
-    let input = use_state(|| from_location().unwrap_or_else(Input::initial));
+fn Claims(props: &ClaimsProps) -> Html {
+    let claims = CLAIMS.iter().enumerate().map(|(c, claim)| {
+        let cases = claim.cases.iter().enumerate().map(|(k, case)| {
+            let onclick = props.on_load.reform(move |_: MouseEvent| (c, k));
+
+            let gives = match &case.gives {
+                Gives::Value(value) => html! { <span class={class::GIVES_VALUE}>{ format!("→ {value}") }</span> },
+                Gives::Error(message) => html! { <span class={class::GIVES_ERROR}>{ format!("error: {message}") }</span> },
+                Gives::Offers { some, not, more } => html! {
+                    <>
+                        <span class={class::GIVES_VALUE}>
+                            { format!("offers {}{}", some.join(", "), if *more { ", …" } else { "" }) }
+                        </span>
+                        if !not.is_empty() {
+                            <span class={class::MUTED}>{ format!("never {}", not.join(", ")) }</span>
+                        }
+                    </>
+                },
+            };
+
+            html! {
+                <li>
+                    <button type="button" class={class::EXAMPLE} {onclick} title="Load into the playground">
+                        <code class={class::CODE}>{ case.shown.unwrap_or(case.example.source) }</code>
+                        { gives }
+                    </button>
+                </li>
+            }
+        });
+
+        html! {
+            <li class={class::CLAIM}>
+                <div class={class::CLAIM_TEXT}>
+                    <h3>{ claim.head }</h3>
+                    <p>{ claim.body }</p>
+                </div>
+                <Stack gap={Gap::Tight} class={class::CLAIM_EXAMPLES}>
+                    if !claim.cases.is_empty() {
+                        <ul class={sockel::class::PLAIN_LIST}>{ for cases }</ul>
+                    }
+                    if let Some(rust) = claim.rust {
+                        <pre class={classes!(class::CODE, class::RUST)}>{ rust }</pre>
+                    }
+                    if let Some(hint) = claim.hint {
+                        <p class={class::MUTED}>{ hint }</p>
+                    }
+                </Stack>
+            </li>
+        }
+    });
+
+    html! {
+        <section aria-label="What you get">
+            <Stack gap={Gap::Loose}>
+                <SectionHead title={html! { "What you get" }} />
+                <p class={class::MUTED}>{ "Click an example to load it into the playground above." }</p>
+                <ul class={classes!(sockel::class::PLAIN_LIST, class::CLAIMS)}>{ for claims }</ul>
+            </Stack>
+        </section>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct PlaygroundProps {
+    input: UseStateHandle<Input>,
+    vars_open: UseStateHandle<bool>,
+}
+
+#[function_component]
+fn Playground(props: &PlaygroundProps) -> Html {
+    let input = props.input.clone();
+    let vars_open = props.vars_open.clone();
     let outcome = use_state(|| Rc::new(compute(&input)));
     let linked = use_state(|| false);
-    let vars_open = use_state(|| !input.rows.is_empty());
     let limits_open = use_state(|| false);
 
     {
@@ -404,20 +455,17 @@ fn Playground() -> Html {
 
     let on_source = edit(Rc::new(|input, text| input.source = text));
 
-    let examples = EXAMPLES
-        .iter()
-        .enumerate()
-        .map(|(index, e)| SelectOption::new(index, e.title))
-        .collect::<Vec<_>>();
-    let on_example = {
+    let examples = EXAMPLES.iter().map(|example| {
         let (input, vars_open) = (input.clone(), vars_open.clone());
-        Callback::from(move |index: usize| {
-            if let Some(example) = EXAMPLES.get(index) {
-                vars_open.set(!example.vars.is_empty());
-                input.set(Input::example(example));
-            }
-        })
-    };
+        let onclick = Callback::from(move |_: MouseEvent| {
+            vars_open.set(!example.vars.is_empty());
+            input.set(Input::example(example));
+        });
+
+        html! {
+            <Button variant={ButtonVariant::Quiet} size={ButtonSize::Small} {onclick}>{ example.title }</Button>
+        }
+    });
 
     let on_share = {
         let (input, linked) = (input.clone(), linked.clone());
@@ -512,48 +560,41 @@ fn Playground() -> Html {
     };
 
     html! {
-        <section aria-label="Playground">
-            <Stack gap={Gap::Loose}>
-                <SectionHead title={html! { "Try it" }} />
-                <Stack gap={Gap::Tight}>
-                    <Cluster gap={Gap::Loose} align={Align::Top}>
-                        <Stack gap={Gap::Tight} class={classes!(sockel::class::GROW, sockel::class::BASIS_LG)}>
-                            <Toolbar label="Example and link">
-                                <Select<usize> label="Example" placeholder="Examples" options={examples} on_change={on_example} />
-                                <ToolbarSpacer />
-                                <Button variant={ButtonVariant::Quiet} onclick={on_share}>
-                                    { if *linked { "Link copied" } else { "Copy link" } }
-                                </Button>
-                            </Toolbar>
-                            <Editor source={input.source.clone()} on_change={on_source} {primary} {bindings} />
-                        </Stack>
-                        <Card class={classes!(class::OUTCOME, sockel::class::GROW, sockel::class::BASIS_MD)} gap={Gap::Tight}>
-                            <OutcomeView outcome={(*outcome).clone()} />
-                        </Card>
+        <section aria-label="Playground" id={PLAYGROUND_ID}>
+            <Stack gap={Gap::Tight}>
+                <SectionHead title={html! { "Try it" }} suffix={html! {
+                    <Button variant={ButtonVariant::Quiet} size={ButtonSize::Small} onclick={on_share}>
+                        { if *linked { "Link copied" } else { "Copy link" } }
+                    </Button>
+                }} />
+                <Cluster gap={Gap::Hair}>
+                    <span class={class::MUTED}>{ "Examples:" }</span>
+                    { for examples }
+                </Cluster>
+                <Editor source={input.source.clone()} on_change={on_source} {primary} {bindings} />
+                <Card class={class::OUTCOME} gap={Gap::Tight}>
+                    <OutcomeView outcome={(*outcome).clone()} />
+                </Card>
+                <Disclosure title={html! { "Variables" }} summary={html! { vars_summary }}
+                    id="playground-variables" open={*vars_open} on_toggle={toggle(&vars_open)}
+                    actions={html! {
+                        <Button variant={ButtonVariant::Quiet} size={ButtonSize::Small} onclick={on_add}>
+                            { "Add a variable" }
+                        </Button>
+                    }}>
+                    <Stack tag="ul" gap={Gap::Hair} class={sockel::class::PLAIN_LIST}>{ for rows }</Stack>
+                </Disclosure>
+                <Disclosure title={html! { "Limits" }} summary={html! { limits_summary }}
+                    id="playground-limits" open={*limits_open} on_toggle={toggle(&limits_open)}>
+                    <Cluster gap={Gap::Medium} align={Align::Top}>
+                        { limit("Fuel (steps)", "limit-fuel", i64::try_from(bounds.fuel).unwrap_or(i64::MAX), 1_000_000, 10, used.map(|d| d.steps),
+                            |b, n| b.fuel = u64::try_from(n).unwrap_or(1)) }
+                        { limit("Memory (words)", "limit-memory", i64::from(bounds.memory), 1 << 20, 64, used.map(|d| d.memory),
+                            |b, n| b.memory = u32::try_from(n).unwrap_or(1)) }
+                        { limit("Depth", "limit-depth", i64::try_from(bounds.depth).unwrap_or(i64::MAX), 256, 1, None,
+                            |b, n| b.depth = usize::try_from(n).unwrap_or(1)) }
                     </Cluster>
-                    <Cluster gap={Gap::Loose} align={Align::Top}>
-                        <Disclosure class={classes!(sockel::class::GROW, sockel::class::BASIS_LG)} title={html! { "Variables" }} summary={html! { vars_summary }}
-                            id="playground-variables" open={*vars_open} on_toggle={toggle(&vars_open)}
-                            actions={html! {
-                                <Button variant={ButtonVariant::Quiet} size={ButtonSize::Small} onclick={on_add}>
-                                    { "Add a variable" }
-                                </Button>
-                            }}>
-                            <Stack tag="ul" gap={Gap::Hair} class={sockel::class::PLAIN_LIST}>{ for rows }</Stack>
-                        </Disclosure>
-                        <Disclosure class={classes!(sockel::class::GROW, sockel::class::BASIS_MD)} title={html! { "Limits" }} summary={html! { limits_summary }}
-                            id="playground-limits" open={*limits_open} on_toggle={toggle(&limits_open)}>
-                            <Cluster gap={Gap::Medium} align={Align::Top}>
-                                { limit("Fuel (steps)", "limit-fuel", i64::try_from(bounds.fuel).unwrap_or(i64::MAX), 1_000_000, 10, used.map(|d| d.steps),
-                                    |b, n| b.fuel = u64::try_from(n).unwrap_or(1)) }
-                                { limit("Memory (words)", "limit-memory", i64::from(bounds.memory), 1 << 20, 64, used.map(|d| d.memory),
-                                    |b, n| b.memory = u32::try_from(n).unwrap_or(1)) }
-                                { limit("Depth", "limit-depth", i64::try_from(bounds.depth).unwrap_or(i64::MAX), 256, 1, None,
-                                    |b, n| b.depth = usize::try_from(n).unwrap_or(1)) }
-                            </Cluster>
-                        </Disclosure>
-                    </Cluster>
-                </Stack>
+                </Disclosure>
             </Stack>
         </section>
     }
@@ -570,7 +611,7 @@ struct VarRowProps {
     input: UseStateHandle<Input>,
 }
 
-/// One variable: its name, its type (picked, or written out), its value,
+/// One variable: its name, its type written out, its value,
 /// and its error in a line kept for it.
 #[function_component]
 fn VarRow(props: &VarRowProps) -> Html {
@@ -597,28 +638,6 @@ fn VarRow(props: &VarRowProps) -> Html {
         })
     };
 
-    let on_pick = {
-        let update = update.clone();
-        Callback::from(move |ty: &'static str| {
-            update(Rc::new(move |row: &mut Row| {
-                row.custom = ty == OTHER;
-
-                if ty == OTHER {
-                    return;
-                }
-
-                row.ty = ty.into();
-
-                let fits = vars::parse_type(ty)
-                    .is_ok_and(|parsed| vars::parse_value(&parsed, &row.value).is_ok());
-
-                if !fits && let Some(value) = starting_value(ty) {
-                    row.value = value.into();
-                }
-            }))
-        })
-    };
-
     let on_remove = {
         let input = props.input.clone();
         Callback::from(move |_: MouseEvent| {
@@ -640,21 +659,6 @@ fn VarRow(props: &VarRowProps) -> Html {
         None => String::new(),
     };
 
-    let types = TYPES
-        .iter()
-        .map(|&ty| SelectOption::new(ty, ty))
-        .chain(std::iter::once(SelectOption::new(OTHER, "Other…")))
-        .collect::<Vec<_>>();
-    let picked = if row.custom {
-        OTHER
-    } else {
-        TYPES
-            .iter()
-            .copied()
-            .find(|&t| t == row.ty)
-            .unwrap_or(OTHER)
-    };
-
     html! {
         <li>
             <Stack gap={Gap::Hair}>
@@ -662,13 +666,9 @@ fn VarRow(props: &VarRowProps) -> Html {
                     <TextInput class={classes!(class::CODE, sockel::class::GROW, sockel::class::BASIS_SM)}
                         label="Name" size={InputSize::Small} value={row.name.clone()} invalid={name_bad}
                         on_input={set(|r, t| r.name = t)} />
-                    <Select<&'static str> label="Type" size={InputSize::Small} options={types} value={Some(picked)}
-                        invalid={ty_bad && !row.custom} on_change={on_pick} />
-                    if row.custom {
-                        <TextInput class={classes!(class::CODE, sockel::class::GROW, sockel::class::BASIS_MD)}
-                            label="Type" size={InputSize::Small} placeholder="{boxes: Int}" value={row.ty.clone()} invalid={ty_bad}
-                            on_input={set(|r, t| r.ty = t)} />
-                    }
+                    <TextInput class={classes!(class::CODE, sockel::class::GROW, sockel::class::BASIS_SM)}
+                        label="Type" size={InputSize::Small} placeholder="Int" value={row.ty.clone()} invalid={ty_bad}
+                        on_input={set(|r, t| r.ty = t)} />
                     <TextInput class={classes!(class::CODE, sockel::class::GROW, sockel::class::BASIS_SM)}
                         label="Value" size={InputSize::Small} value={row.value.clone()} invalid={value_bad}
                         on_input={set(|r, t| r.value = t)} />
@@ -740,8 +740,7 @@ mod tests {
             }
 
             let outcome = compute(&input);
-            let fails = matches!(example.title, "Option error" | "Out of fuel");
-            assert_eq!(outcome.is_err(), fails, "{}: {:?}", example.title, outcome);
+            assert!(outcome.is_ok(), "{}: {:?}", example.title, outcome);
         }
     }
 
@@ -752,13 +751,6 @@ mod tests {
             let fragment = share::encode(&input.to_shared());
             let back = share::decode(&fragment).map(Input::shared);
             assert!(back == Some(input), "{}", example.title);
-        }
-    }
-
-    #[test]
-    fn every_picked_type_has_a_starting_value() {
-        for ty in TYPES {
-            assert!(starting_value(ty).is_some(), "{ty}");
         }
     }
 }

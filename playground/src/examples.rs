@@ -56,16 +56,4 @@ pub const EXAMPLES: &[Example] = &[
         vars: &[("strength", "Int", "4"), ("penalty", "Int", "1")],
         fuel: None,
     },
-    Example {
-        title: "Option error",
-        source: "strength + bonus",
-        vars: &[("strength", "Int", "3"), ("bonus", "Option<Int>", "none")],
-        fuel: None,
-    },
-    Example {
-        title: "Out of fuel",
-        source: "x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x",
-        vars: &[("x", "Int", "1")],
-        fuel: Some(20),
-    },
 ];

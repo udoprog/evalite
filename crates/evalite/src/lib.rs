@@ -12,24 +12,37 @@
 //!
 //! **[Try it in your browser in the playground](https://udoprog.github.io/evalite/)**.
 //!
-//! - **Strictly typed.** `Int`, `Bool`, `String`, lists, records and
-//!   `Option`, checked when compiled, with no implicit conversions: `1 +
-//!   true` and an unhandled `Option` are compile errors, not runtime
-//!   surprises.
-//! - **Safe on untrusted input.** The parser never recurses and nesting is
-//!   bounded, so 100 000 parentheses give an error, not a stack overflow.
-//!   A run has a fixed memory and a step limit, and nothing panics:
-//!   overflow, division by zero and out-of-range indexes are errors.
-//! - **Compile once, run later.** A [`Program`] is plain bytes you can
-//!   store, and it runs without the environment it was checked against.
-//! - **Verified on load.** Stored bytes are not trusted: a loaded program is
-//!   type-checked again and refused unless it uses exactly the memory it
-//!   declares.
-//! - **Errors worth showing.** Each error says what was expected and what was
-//!   found, with [labels] pointing at every place in the input it is about,
-//!   ready to draw under the text.
-//! - **Built for forms.** A [`Structure`] is an expression with holes, and
-//!   [completions] list exactly what fits in each one, by type.
+//! - **Strictly typed.** Every expression has one type, checked before it
+//!   runs, and nothing converts on its own. With `rank: Int` and
+//!   `bonus: Option<Int>`, `rank + true` does not compile, and neither does
+//!   `rank + bonus`, whose error says to unwrap the optional value first with
+//!   `.unwrap_or(...)`. `rank + bonus.unwrap_or(0)` compiles to an `Int`.
+//! - **Safe on untrusted input.** Whatever a user types, the worst outcome is
+//!   an error. 40 nested parentheses hit the nesting limit instead of
+//!   overflowing the stack, `rank * 9223372036854775807` reports that it
+//!   overflows an `Int`, `dice[5]` on a list of 3 reports that the index is out
+//!   of range, and an expression that needs more steps than it is allowed stops
+//!   with "the expression took too long". See [Limits and
+//!   safety](#limits-and-safety).
+//! - **Compile once, run many times.** Check an expression when the user saves
+//!   it and store the compiled [`Program`] as bytes next to your data. Running
+//!   it later only binds new values, without parsing or checking again. See
+//!   [Storing programs](#storing-programs).
+//! - **Stored bytes are checked.** Bytes read back from a database or a file
+//!   may be corrupt or tampered with, so [`Program::from_bytes`] checks them
+//!   again and refuses anything that is not a valid, well-typed program.
+//!   Cutting the last byte off gives "the bytes do not decode".
+//! - **Errors that point.** Each error says what it expected and what it found,
+//!   and its [labels] mark where, so you can underline it in your own UI.
+//!   `min(1, (2 + 3)` gives "expected `)` to close the `(` at byte 3, found the
+//!   end of the expression", pointing at the end and noting where the `(` was
+//!   opened. See [Errors](#errors).
+//! - **Autocomplete that only offers what fits.** Leave a hole in a
+//!   [`Structure`] and [completions] list only what would type-check there. In
+//!   `rank + _` you are offered `rank`, `bonus.unwrap_or(_)` and `min(_, _)`,
+//!   but never `name`, a `String`, or a bare `bonus`, an `Option<Int>`. That is
+//!   enough to build an editor where users pick from lists and every pick is
+//!   valid. See [Autocomplete](#autocomplete).
 //!
 //! <br>
 //!
@@ -284,15 +297,16 @@
 //!
 //! <br>
 //!
-//! ## Forms
+//! ## Autocomplete
 //!
-//! A [`Structure`] is an expression as data, the shape a form edits: a tree
-//! of [`Node`]s that may have holes, written `_`. [`Structure::complete`]
-//! lists what fits in a hole, by the type its place takes, and
-//! [`Structure::apply`] fills it, leaving holes for any arguments. A
-//! structure converts to and from text, stores with [`Structure::to_bytes`],
-//! and compiles with the same errors as its text, each also naming the
-//! [`NodeId`] it is about.
+//! A [`Structure`] is an expression as a tree of [`Node`]s instead of text,
+//! and it may have holes, written `_`, where something is still missing. This
+//! is what a point-and-click editor builds. [`Structure::complete`] lists
+//! what can go in a hole: only what gives the type that place needs, so every
+//! pick compiles. [`Structure::apply`] puts a pick in, leaving new holes for
+//! any arguments it takes. A structure converts to and from text, stores
+//! with [`Structure::to_bytes`], and compiles with the same errors as its
+//! text, each also naming the [`NodeId`] it is about.
 //!
 //! ```
 //! use evalite::{Environment, Structure, Type};

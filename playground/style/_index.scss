@@ -259,14 +259,122 @@ a {
     color: var(--danger);
 }
 
-// The outcome's room is kept for a value or a short error, so the limits
-// below it rarely move.
+// The outcome, under the editor: room kept for a value or a short error,
+// so what is below it rarely moves.
 .playground-outcome {
-    min-height: 10rem;
+    min-height: 6rem;
 }
 
 // A value as the outcome shows it: large, wrapping anywhere.
 .playground-value {
     font-size: var(--text-xl);
+    overflow-wrap: anywhere;
+}
+
+// Quieter text: hints, labels and footnotes.
+.playground-muted {
+    margin: 0;
+    color: var(--muted);
+}
+
+// The install command, read as a command rather than a field.
+.playground-install {
+    padding: var(--space-2) var(--space-3);
+    border: var(--space-px) solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+}
+
+// What the page claims, one per row: the words, then the examples, side by
+// side where there is room, separated by a rule rather than boxed.
+.playground-claims {
+    display: grid;
+}
+
+.playground-claim {
+    display: grid;
+    grid-template-columns: minmax(14rem, 1fr) minmax(0, 2fr);
+    gap: var(--space-3) var(--space-8);
+    padding-block: var(--space-6);
+    border-top: var(--space-px) solid var(--border);
+
+    @include p.below("tablet") {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.playground-claim-text {
+    h3 {
+        margin: 0 0 var(--space-1);
+        font-size: var(--text-lg);
+    }
+
+    p {
+        margin: 0;
+        color: var(--muted);
+    }
+}
+
+.playground-claim-examples {
+    min-width: 0;
+
+    ul {
+        display: grid;
+        gap: var(--space-2);
+    }
+}
+
+// An example: its expression and what it gives, a button that loads it.
+.playground-example {
+    display: grid;
+    gap: var(--space-1);
+    width: 100%;
+    padding: var(--space-2) var(--space-3);
+    border: var(--space-px) solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+
+    code {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+    }
+
+    span {
+        font-family: var(--code-font);
+        font-size: var(--text-sm);
+        overflow-wrap: anywhere;
+    }
+
+    &:hover {
+        border-color: var(--accent);
+    }
+
+    &:focus-visible {
+        outline: var(--focus-ring-width) solid var(--focus-ring-color);
+        outline-offset: var(--focus-ring-offset);
+    }
+}
+
+.playground-gives-value {
+    color: var(--accent);
+}
+
+.playground-gives-error {
+    color: var(--danger);
+}
+
+// Rust that shows what an expression cannot.
+.playground-rust {
+    margin: 0;
+    padding: var(--space-3);
+    border: var(--space-px) solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    font-size: var(--text-sm);
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
