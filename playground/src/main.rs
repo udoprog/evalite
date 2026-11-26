@@ -2,7 +2,6 @@
 //! evalite in the browser.
 
 mod claims;
-mod code_editor;
 mod complete;
 mod editor;
 mod eval;
@@ -501,7 +500,7 @@ fn Playground(props: &PlaygroundProps) -> Html {
         Err(marks) => marks
             .iter()
             .find(|m| m.primary)
-            .and_then(|m| m.span.clone()),
+            .and_then(|m| Some((m.span.clone()?, AttrValue::from(m.message.clone())))),
         Ok(_) => None,
     };
 

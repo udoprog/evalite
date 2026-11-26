@@ -6,10 +6,11 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use evalite::highlight::{Class, highlight};
+use sockel::{
+    CodeEditor, CodeSpan, CodeToken, Completion, CompletionQuery, Completions, Diagnostic, Severity,
+};
 use yew::prelude::*;
 
-use crate::class;
-use crate::code_editor::{Ask, CodeEditor, Completion, Completions, Span};
 use crate::complete;
 use crate::eval::{self, Binding};
 
@@ -17,8 +18,8 @@ use crate::eval::{self, Binding};
 pub struct EditorProps {
     pub source: AttrValue,
     pub on_change: Callback<String>,
-    /// The characters the error points at.
-    pub primary: Option<Range<usize>>,
+    /// The characters the error points at, and its message.
+    pub primary: Option<(Range<usize>, AttrValue)>,
     /// The variables the completions offer.
     pub bindings: Rc<Vec<Binding>>,
 }
@@ -27,41 +28,42 @@ pub struct EditorProps {
 pub fn Editor(props: &EditorProps) -> Html {
     let spans = use_memo(props.source.clone(), |source| spans_of(source));
 
-    let error = props
+    let diagnostics: Rc<[Diagnostic]> = props
         .primary
-        .as_ref()
-        .map(|span| byte_of(&props.source, span.start)..byte_of(&props.source, span.end));
+        .iter()
+        .map(|(span, message)| {
+            let range = byte_of(&props.source, span.start)..byte_of(&props.source, span.end);
+            Diagnostic::new(range, Severity::Error, message.clone())
+        })
+        .collect();
 
     let complete = {
         let bindings = props.bindings.clone();
-        Callback::from(move |ask: Ask| completions(&ask, &bindings).map(Rc::new))
+        Callback::from(move |ask: CompletionQuery| completions(&ask, &bindings).map(Rc::new))
     };
 
     html! {
-        <CodeEditor label="Expression" source={props.source.clone()}
-            on_change={props.on_change.clone()} spans={(*spans).clone()} {error}
+        <CodeEditor label="Expression" value={props.source.clone()}
+            on_input={props.on_change.clone()} spans={(*spans).clone()} {diagnostics}
             complete={Some(complete)} />
     }
 }
 
-fn spans_of(source: &str) -> Rc<[Span]> {
+fn spans_of(source: &str) -> Rc<[CodeSpan]> {
     highlight(source)
         .filter_map(|token| {
-            let class = match token.class {
-                Class::Keyword => class::TOKEN_KEYWORD,
-                Class::Ident => class::TOKEN_IDENT,
-                Class::Member => class::TOKEN_MEMBER,
-                Class::Number => class::TOKEN_NUMBER,
-                Class::String => class::TOKEN_STRING,
-                Class::Punctuation | Class::Operator => class::TOKEN_PUNCTUATION,
-                Class::Error => class::TOKEN_ERROR,
+            let token_class = match token.class {
+                Class::Keyword => CodeToken::Keyword,
+                Class::Ident => CodeToken::Name,
+                Class::Member => CodeToken::Member,
+                Class::Number => CodeToken::Number,
+                Class::String => CodeToken::String,
+                Class::Punctuation | Class::Operator => CodeToken::Punctuation,
+                Class::Error => CodeToken::Error,
                 _ => return None,
             };
 
-            Some(Span {
-                range: token.span,
-                class,
-            })
+            Some(CodeSpan::new(token.span, token_class))
         })
         .collect()
 }
@@ -79,7 +81,7 @@ fn wants_offers(text: &str, cursor: usize) -> bool {
         .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '.')
 }
 
-fn completions(ask: &Ask, bindings: &[Binding]) -> Option<Completions> {
+fn completions(ask: &CompletionQuery, bindings: &[Binding]) -> Option<Completions> {
     if !ask.forced && !wants_offers(&ask.text, ask.cursor) {
         return None;
     }
@@ -101,8 +103,8 @@ fn completions(ask: &Ask, bindings: &[Binding]) -> Option<Completions> {
             };
 
             Completion {
-                label: offer.label.clone(),
-                detail,
+                label: offer.label.clone().into(),
+                detail: Some(detail.into()),
                 text,
                 select,
             }
@@ -122,14 +124,10 @@ mod tests {
     #[test]
     fn spans_skip_whitespace() {
         let spans = spans_of("a + 1");
-        let classes = spans.iter().map(|s| s.class).collect::<Vec<_>>();
+        let classes = spans.iter().map(|s| s.token).collect::<Vec<_>>();
         assert_eq!(
             classes,
-            [
-                class::TOKEN_IDENT,
-                class::TOKEN_PUNCTUATION,
-                class::TOKEN_NUMBER
-            ]
+            [CodeToken::Name, CodeToken::Punctuation, CodeToken::Number]
         );
     }
 

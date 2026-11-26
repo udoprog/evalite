@@ -11,11 +11,11 @@ workspace = true
 [dependencies]
 evalite = { version = "0.1.1", path = "../crates/evalite" }
 gloo-timers = { version = "0.4.1", features = ["futures"] }
-sockel = "0.3.6"
+sockel = { version = "0.3.7", features = ["code-editor"] }
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
 web-sys = { version = "0.3.107", features = ["Window", "Document", "Element", "HtmlElement", "HtmlTextAreaElement", "HtmlDocument", "InputEvent", "DomRect", "Location", "History", "Navigator", "Clipboard"] }
 yew = { version = "0.23", features = ["csr"] }
 
 [build-dependencies]
-sockel-build = "0.3.6"
+sockel-build = "0.3.7"

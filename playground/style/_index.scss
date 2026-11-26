@@ -1,7 +1,7 @@
 // The playground's own styles, built by sockel-build after sockel's: the
 // colours sockel reads (light and dark), the page's margins and links, and
 // what sockel has no component for: the hero's headline and pitch, code
-// type, the code editor and its syntax colours, and the outcome's kept
+// type, the syntax colours, and the outcome's kept
 // room. Layout, cards, lists, fields, errors and the completions list are
 // sockel's. Every class starts `playground-`.
 
@@ -23,6 +23,13 @@
     --syntax-number: #0b5cad;
     --syntax-string: #2f7d4f;
     --syntax-punctuation: #5f625a;
+    --code-keyword: var(--syntax-keyword);
+    --code-name: var(--syntax-ident);
+    --code-member: var(--syntax-member);
+    --code-number: var(--syntax-number);
+    --code-string: var(--syntax-string);
+    --code-operator: var(--syntax-punctuation);
+    --code-punctuation: var(--syntax-punctuation);
     color-scheme: light;
 }
 
@@ -42,6 +49,13 @@
     --syntax-number: #79b8ff;
     --syntax-string: #7cc999;
     --syntax-punctuation: #a2a69b;
+    --code-keyword: var(--syntax-keyword);
+    --code-name: var(--syntax-ident);
+    --code-member: var(--syntax-member);
+    --code-number: var(--syntax-number);
+    --code-string: var(--syntax-string);
+    --code-operator: var(--syntax-punctuation);
+    --code-punctuation: var(--syntax-punctuation);
     color-scheme: dark;
 }
 
@@ -109,154 +123,6 @@ a {
 .playground-code {
     font-family: var(--code-font);
     font-size: var(--text-md);
-}
-
-// The code editor (src/code_editor.rs): a frame with a field's look,
-// scrolling sideways, holding a gutter of line numbers and, in one grid
-// cell, the highlighted code laid over a textarea whose text is
-// transparent. Both share the font, padding and line height so the two
-// never drift apart; the textarea grows with the code rather than
-// scrolling. `.playground-invalid`: the frame's border in `--danger`.
-.playground-editor {
-    @include p.input-box;
-    --editor-line: 1.6;
-    --editor-pad: var(--space-2);
-    display: grid;
-    grid-template-columns: auto minmax(max-content, 1fr);
-    height: auto;
-    padding: 0;
-    overflow: auto;
-    overscroll-behavior-x: contain;
-    font-size: var(--text-md);
-
-    &:focus-within {
-        outline: var(--focus-ring-width) solid var(--focus-ring-color);
-        outline-offset: var(--focus-ring-offset);
-    }
-
-    &.playground-invalid {
-        --input-edge: var(--danger);
-    }
-}
-
-.playground-editor-gutter {
-    position: sticky;
-    left: 0;
-    z-index: 2;
-    grid-area: 1 / 1;
-    padding-block: var(--editor-pad);
-    border-inline-end: var(--space-px) solid var(--border);
-    background: var(--surface);
-    color: var(--muted);
-    font-family: var(--code-font);
-    line-height: var(--editor-line);
-    user-select: none;
-}
-
-.playground-editor-line {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--space-1);
-    min-width: 4.5ch;
-    padding-inline: var(--space-1) var(--space-2);
-
-    &.playground-error {
-        color: var(--danger);
-    }
-}
-
-// The dot beside an error's line.
-.playground-editor-marker {
-    width: var(--space-2);
-    height: var(--space-2);
-    border-radius: 50%;
-    background: currentColor;
-}
-
-.playground-editor-code,
-.playground-editor-input {
-    grid-area: 1 / 2;
-    width: 100%;
-    min-height: calc(4lh + 2 * var(--editor-pad));
-    margin: 0;
-    padding: var(--editor-pad) var(--space-3);
-    border: 0;
-    border-radius: 0;
-    font-family: var(--code-font);
-    font-size: inherit;
-    line-height: var(--editor-line);
-    letter-spacing: normal;
-    tab-size: 4;
-    white-space: pre;
-    overflow-wrap: normal;
-}
-
-// Above the textarea, so its selection is painted under the text.
-.playground-editor-code {
-    z-index: 1;
-    color: var(--text);
-    pointer-events: none;
-}
-
-.playground-editor-input {
-    align-self: stretch;
-    overflow: hidden;
-    resize: none;
-    outline: none;
-    background: transparent;
-    color: transparent;
-    caret-color: var(--text);
-}
-
-// The caret's place in the code, which following the caret measures.
-.playground-editor-caret {
-    display: inline;
-}
-
-// An empty error span: an underlined, unseen character taking no room
-// (a space would not be underlined).
-.playground-editor-empty-mark::after {
-    content: "x";
-    margin-inline-end: -1ch;
-    color: transparent;
-}
-
-// The span an error points at.
-.playground-mark {
-    text-decoration: underline wavy var(--danger);
-    text-decoration-skip-ink: none;
-    text-decoration-thickness: 2px;
-    text-underline-offset: 3px;
-}
-
-// Highlighted code, by the class of each token.
-.playground-token-keyword {
-    color: var(--syntax-keyword);
-}
-
-.playground-token-ident {
-    color: var(--syntax-ident);
-}
-
-.playground-token-member {
-    color: var(--syntax-member);
-}
-
-.playground-token-number {
-    color: var(--syntax-number);
-}
-
-.playground-token-string {
-    color: var(--syntax-string);
-}
-
-.playground-token-punctuation {
-    color: var(--syntax-punctuation);
-}
-
-.playground-token-error {
-    color: var(--danger);
 }
 
 // The outcome, under the editor: room kept for a value or a short error,
