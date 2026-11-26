@@ -245,7 +245,7 @@ mod preview;
 mod result_view;
 mod type_badge;
 
-pub use self::editor::{Compiled, ExpressionEditor, ExpressionEditorProps};
+pub use self::editor::{Compiled, ExpressionEditor, ExpressionEditorProps, Mark};
 pub use self::error_view::{ErrorView, ErrorViewProps};
 pub use self::field::{ExpressionField, ExpressionFieldProps};
 pub use self::names::{NamesReference, NamesReferenceProps};

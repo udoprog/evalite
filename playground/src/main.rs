@@ -22,7 +22,7 @@ const INSTALL: &str = "cargo add evalite";
 use std::rc::Rc;
 
 use evalite::{Environment, Type, Value};
-use evalite_sockel::{ErrorView, ExpressionEditor, NamesReference, Ran, ResultView};
+use evalite_sockel::{ErrorView, ExpressionEditor, Mark, NamesReference, Ran, ResultView};
 use gloo_timers::callback::Timeout;
 use yew::prelude::*;
 
@@ -581,6 +581,11 @@ fn Playground(props: &PlaygroundProps) -> Html {
         ),
     };
 
+    let editor_marks: Rc<[Mark]> = match &outcome.outcome {
+        Err(Failed::Run(_, marks)) => marks.clone(),
+        _ => Rc::from([]),
+    };
+
     html! {
         <section aria-label="Playground" id={PLAYGROUND_ID}>
             <Stack gap={Gap::Tight}>
@@ -594,7 +599,7 @@ fn Playground(props: &PlaygroundProps) -> Html {
                     { for examples }
                 </Cluster>
                 <ExpressionEditor source={AttrValue::from(input.source.clone())} on_input={on_source}
-                    environment={environment.clone()} options={bounds.options()} />
+                    environment={environment.clone()} options={bounds.options()} marks={editor_marks} />
                 <Card class={class::OUTCOME} gap={Gap::Tight}>
                     <OutcomeView computed={(*outcome).clone()} />
                 </Card>
@@ -725,7 +730,7 @@ fn OutcomeView(props: &OutcomeProps) -> Html {
         Err(Failed::Compile(diagnostics)) => html! {
             <ErrorView diagnostics={diagnostics.clone()} source={props.computed.source.clone()} />
         },
-        Err(Failed::Run(ran)) => html! { <ResultView ran={ran.clone()} class={class::VALUE} /> },
+        Err(Failed::Run(ran, _)) => html! { <ResultView ran={ran.clone()} class={class::VALUE} /> },
     }
 }
 

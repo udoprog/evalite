@@ -6,7 +6,7 @@ use evalite::{
     DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, DEFAULT_MEMORY, Diagnostics, Environment,
     Limits, Machine, Options, RunError, Type, Value,
 };
-use evalite_sockel::Ran;
+use evalite_sockel::{Mark, Ran};
 
 /// The machine's bounds, as the page sets them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,7 +51,8 @@ pub enum Failed {
     /// It does not compile.
     Compile(Rc<Diagnostics>),
     /// A variable could not be declared, or the run failed.
-    Run(Rc<Ran>),
+    /// The run's error, and where in the source to underline it.
+    Run(Rc<Ran>, Rc<[Mark]>),
 }
 
 impl Bounds {
@@ -62,14 +63,25 @@ impl Bounds {
 
 /// Compile and run `source` with `bindings` declared and bound.
 pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Done, Failed> {
-    let env = environment(bindings).map_err(Failed::Run)?;
+    let env = environment(bindings).map_err(|ran| Failed::Run(ran, Rc::from([])))?;
 
     let (program, debug) = evalite::compile_debug(source, &env, &bounds.options())
         .map_err(|errors| Failed::Compile(Rc::new(errors)))?;
 
     let mut machine = Machine::new(Limits::new().memory(bounds.memory).fuel(bounds.fuel));
-    let failed =
-        |error: RunError| Failed::Run(Rc::new(Ran::failed(error.labels(&program, Some(&debug)))));
+    let failed = |error: RunError| {
+        let marks = error
+            .labels(&program, Some(&debug))
+            .filter_map(|label| {
+                Some(Mark::error(
+                    label.span()?.range(),
+                    label.message().to_string(),
+                ))
+            })
+            .collect();
+        let ran = Ran::failed(error.labels(&program, Some(&debug)));
+        Failed::Run(Rc::new(ran), marks)
+    };
     let mut run = machine.load(&program).map_err(failed)?;
 
     let read = run
@@ -140,7 +152,7 @@ mod tests {
             ..Bounds::default()
         };
         let failed = evaluate("1 + 2 + 3 + 4 + 5", &[], bounds).unwrap_err();
-        let Failed::Run(causes) = failed else {
+        let Failed::Run(causes, _) = failed else {
             panic!("{failed:?}");
         };
         assert!(!causes.errors().is_empty());

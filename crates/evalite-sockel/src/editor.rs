@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::ops::Range;
 use std::rc::Rc;
 
 use evalite::highlight::highlight;
@@ -17,6 +18,31 @@ use crate::highlight::token_class;
 
 /// What compiling the editor's source gives.
 pub type Compiled = Result<Rc<Program>, Rc<Diagnostics>>;
+
+/// An error the app found itself, such as where a run failed, underlined in
+/// the editor beside the compile diagnostics.
+///
+/// ```
+/// use evalite_sockel::Mark;
+///
+/// let mark = Mark::error(0..3, "overflow");
+/// # let _ = mark;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mark {
+    span: Range<usize>,
+    message: String,
+}
+
+impl Mark {
+    /// An error at the byte range `span` of the source.
+    pub fn error(span: Range<usize>, message: impl Into<String>) -> Self {
+        Self {
+            span,
+            message: message.into(),
+        }
+    }
+}
 
 #[derive(Properties)]
 pub struct ExpressionEditorProps {
@@ -50,6 +76,10 @@ pub struct ExpressionEditorProps {
     pub describedby: Option<AttrValue>,
     #[prop_or_default]
     pub class: Classes,
+    /// Errors to underline beside the compile diagnostics. Spans that no
+    /// longer fit the source are cut to it.
+    #[prop_or_default]
+    pub marks: Rc<[Mark]>,
 }
 
 impl PartialEq for ExpressionEditorProps {
@@ -66,6 +96,7 @@ impl PartialEq for ExpressionEditorProps {
             && self.id == other.id
             && self.describedby == other.describedby
             && self.class == other.class
+            && self.marks == other.marks
     }
 }
 
@@ -126,10 +157,12 @@ pub fn ExpressionEditor(props: &ExpressionEditorProps) -> Html {
         });
     }
 
-    let marks: Rc<[Diagnostic]> = match &*diagnostics {
-        Some(diagnostics) => marks_of(&props.source, diagnostics),
-        None => Rc::from([]),
+    let mut found: Vec<Diagnostic> = match &*diagnostics {
+        Some(diagnostics) => marks_of(&props.source, diagnostics).to_vec(),
+        None => Vec::new(),
     };
+    found.extend(props.marks.iter().map(|mark| extra_of(&props.source, mark)));
+    let marks: Rc<[Diagnostic]> = found.into();
 
     let complete = {
         let environment = props.environment.clone();
@@ -187,6 +220,12 @@ fn marks_of(source: &str, diagnostics: &Diagnostics) -> Rc<[Diagnostic]> {
             Diagnostic::new(start..end, Severity::Error, diagnostic.to_string())
         })
         .collect()
+}
+
+fn extra_of(source: &str, mark: &Mark) -> Diagnostic {
+    let start = boundary(source, mark.span.start);
+    let end = boundary(source, mark.span.end).max(start);
+    Diagnostic::new(start..end, Severity::Error, mark.message.clone())
 }
 
 /// `at`, or the nearest character boundary of `text` before it.
@@ -304,6 +343,12 @@ mod tests {
         let marks = marks_of("a + b", &errors);
         let ranges = marks.iter().map(|m| m.range.clone()).collect::<Vec<_>>();
         assert_eq!(ranges, [0..1, 4..5]);
+    }
+
+    #[test]
+    fn app_marks_are_cut_to_the_source() {
+        let diagnostic = extra_of("é", &Mark::error(0..9, "x"));
+        assert_eq!(diagnostic.range, 0..2);
     }
 
     #[test]
