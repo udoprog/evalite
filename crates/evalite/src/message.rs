@@ -13,6 +13,7 @@ use std::iter::FusedIterator;
 use syntree::Span;
 
 use crate::debug::DebugInfo;
+use crate::error::{ParseError, ParseText};
 use crate::program::Program;
 use crate::types::{TypeId, TypeNode};
 use crate::vm::is_field_name;
@@ -555,11 +556,13 @@ impl RunError {
             .and_then(|frame| frame.span(debug));
 
         Labels {
-            frames: frames.iter(),
-            program: Some(program),
-            debug,
-            innermost,
-            first: true,
+            inner: LabelsInner::Run {
+                frames: frames.iter(),
+                program: Some(program),
+                debug,
+                innermost,
+                first: true,
+            },
         }
     }
 }
@@ -682,39 +685,86 @@ where
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
 pub struct Labels<'a> {
-    frames: std::slice::Iter<'a, Frame>,
-    program: Option<&'a Program>,
-    debug: Option<&'a DebugInfo>,
-    /// The span of the innermost frame with one, which the primary label
-    /// takes when it has none of its own.
-    innermost: Option<Span<u32>>,
-    first: bool,
+    inner: LabelsInner<'a>,
+}
+
+enum LabelsInner<'a> {
+    Run {
+        frames: std::slice::Iter<'a, Frame>,
+        program: Option<&'a Program>,
+        debug: Option<&'a DebugInfo>,
+        /// The span of the innermost frame with one, which the primary
+        /// label takes when it has none of its own.
+        innermost: Option<Span<u32>>,
+        first: bool,
+    },
+    Parse {
+        error: &'a ParseError,
+        /// The index of the next label.
+        next: usize,
+    },
+}
+
+impl<'a> Labels<'a> {
+    /// The labels of a parse or type error.
+    pub(crate) fn parse(error: &'a ParseError) -> Self {
+        Self {
+            inner: LabelsInner::Parse { error, next: 0 },
+        }
+    }
 }
 
 impl<'a> Iterator for Labels<'a> {
     type Item = Label<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let frame = self.frames.next()?;
-        let primary = std::mem::replace(&mut self.first, false);
-        let mut span = frame.span(self.debug);
+        match &mut self.inner {
+            LabelsInner::Run {
+                frames,
+                program,
+                debug,
+                innermost,
+                first,
+            } => {
+                let frame = frames.next()?;
+                let primary = std::mem::replace(first, false);
+                let mut span = frame.span(*debug);
 
-        if primary {
-            span = span.or(self.innermost);
+                if primary {
+                    span = span.or(*innermost);
+                }
+
+                Some(Label {
+                    message: Text::Run(Shown {
+                        message: &frame.message,
+                        program: *program,
+                    }),
+                    span,
+                    primary,
+                })
+            }
+            LabelsInner::Parse { error, next } => {
+                let (message, span) = error.label(*next)?;
+                let primary = *next == 0;
+                *next = next.saturating_add(1);
+
+                Some(Label {
+                    message: Text::Parse(message),
+                    span: Some(span),
+                    primary,
+                })
+            }
         }
-
-        Some(Label {
-            message: Shown {
-                message: &frame.message,
-                program: self.program,
-            },
-            span,
-            primary,
-        })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.frames.size_hint()
+        match &self.inner {
+            LabelsInner::Run { frames, .. } => frames.size_hint(),
+            LabelsInner::Parse { error, next } => {
+                let n = error.label_count().saturating_sub(*next);
+                (n, Some(n))
+            }
+        }
     }
 }
 
@@ -725,7 +775,7 @@ impl FusedIterator for Labels<'_> {}
 /// One part of an error: a message, and where in the source it is about
 /// when that is known.
 pub struct Label<'a> {
-    message: Shown<'a>,
+    message: Text<'a>,
     span: Option<Span<u32>>,
     primary: bool,
 }
@@ -796,6 +846,21 @@ impl fmt::Debug for Label<'_> {
             .field("span", &self.span)
             .field("primary", &self.primary)
             .finish()
+    }
+}
+
+/// What a label says.
+enum Text<'a> {
+    Run(Shown<'a>),
+    Parse(ParseText<'a>),
+}
+
+impl fmt::Display for Text<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Run(shown) => shown.fmt(f),
+            Self::Parse(text) => text.fmt(f),
+        }
     }
 }
 

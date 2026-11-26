@@ -5,7 +5,7 @@
 /// operand; a `Method` its receiver, `.`, a `Name` and its `Args`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum Syntax {
+pub(crate) enum Syntax {
     /// The whole input: one expression and any whitespace around it.
     Root,
     /// An integer literal.
@@ -111,7 +111,7 @@ impl Syntax {
 /// The text of a string literal's source, quotes included: what is between
 /// the quotes with `\"` and `\\` unescaped. `None` when `literal` is not a
 /// well-formed string literal.
-pub fn unescape(literal: &str) -> Option<String> {
+pub(crate) fn unescape(literal: &str) -> Option<String> {
     let inner = literal.strip_prefix('"')?.strip_suffix('"')?;
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();

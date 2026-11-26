@@ -1,11 +1,11 @@
 use syntree::{Builder, FlavorDefault, Span};
 
-use crate::error::{Delimiter, Error, ErrorKind, Found, Nesting};
+use crate::error::{Delimiter, ErrorKind, Found, Nesting, ParseError};
 use crate::lexer::{Lexer, Token, span};
 use crate::syntax::Syntax;
 
 /// A parsed expression: a `Root` node over every byte of the input.
-pub type Tree = syntree::Tree<Syntax, FlavorDefault>;
+pub(crate) type Tree = syntree::Tree<Syntax, FlavorDefault>;
 
 type Checkpoint = syntree::Checkpoint<<FlavorDefault as syntree::Flavor>::Pointer>;
 
@@ -40,14 +40,18 @@ impl Default for Options {
 }
 
 /// Parse `source` as an expression with the default [`Options`].
-pub fn parse(source: &str) -> Result<Tree, Error> {
+#[cfg(test)]
+pub(crate) fn parse(source: &str) -> Result<Tree, ParseError> {
     parse_with(source, &Options::new())
 }
 
 /// Parse `source` as an expression.
-pub fn parse_with(source: &str, options: &Options) -> Result<Tree, Error> {
+pub(crate) fn parse_with(source: &str, options: &Options) -> Result<Tree, ParseError> {
     if u32::try_from(source.len()).is_err() {
-        return Err(Error::new(span(0, 0), ErrorKind::TooLong(source.len())));
+        return Err(ParseError::new(
+            span(0, 0),
+            ErrorKind::TooLong(source.len()),
+        ));
     }
 
     let mut parser = Parser {
@@ -129,7 +133,7 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
-    fn run(&mut self) -> Result<(), Error> {
+    fn run(&mut self) -> Result<(), ParseError> {
         self.tree.open(Syntax::Root).map_err(internal)?;
         let mut state = State::Operand;
 
@@ -148,7 +152,7 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn peek(&mut self) -> Result<Option<Token>, Error> {
+    fn peek(&mut self) -> Result<Option<Token>, ParseError> {
         if self.peeked.is_none() {
             while let Some(token) = self.lexer.next()? {
                 if token.kind == Syntax::Whitespace {
@@ -163,12 +167,12 @@ impl Parser<'_> {
         Ok(self.peeked)
     }
 
-    fn peek_kind(&mut self) -> Result<Option<Syntax>, Error> {
+    fn peek_kind(&mut self) -> Result<Option<Syntax>, ParseError> {
         Ok(self.peek()?.map(|token| token.kind))
     }
 
     /// Add pending whitespace to the tree.
-    fn flush(&mut self) -> Result<(), Error> {
+    fn flush(&mut self) -> Result<(), ParseError> {
         if let Some(token) = self.trivia.take() {
             self.tree
                 .token(Syntax::Whitespace, token.len())
@@ -179,7 +183,7 @@ impl Parser<'_> {
     }
 
     /// Add the peeked token to the tree.
-    fn bump(&mut self) -> Result<(), Error> {
+    fn bump(&mut self) -> Result<(), ParseError> {
         self.flush()?;
 
         if let Some(token) = self.peeked.take() {
@@ -189,12 +193,12 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn checkpoint(&mut self) -> Result<Checkpoint, Error> {
+    fn checkpoint(&mut self) -> Result<Checkpoint, ParseError> {
         self.flush()?;
         self.tree.checkpoint().map_err(internal)
     }
 
-    fn close_at(&mut self, c: &Checkpoint, kind: Syntax) -> Result<(), Error> {
+    fn close_at(&mut self, c: &Checkpoint, kind: Syntax) -> Result<(), ParseError> {
         self.tree.close_at(c, kind).map_err(internal)?;
         Ok(())
     }
@@ -210,9 +214,9 @@ impl Parser<'_> {
         }
     }
 
-    fn nest(&mut self, nesting: Nesting, at: Span<u32>) -> Result<(), Error> {
+    fn nest(&mut self, nesting: Nesting, at: Span<u32>) -> Result<(), ParseError> {
         if self.depth >= self.max_depth {
-            return Err(Error::new(
+            return Err(ParseError::new(
                 at,
                 ErrorKind::TooDeep {
                     nesting,
@@ -227,12 +231,12 @@ impl Parser<'_> {
 
     /// Parse what starts an operand: a prefix operator, which leaves the
     /// operand to come, or a primary.
-    fn operand(&mut self) -> Result<State, Error> {
+    fn operand(&mut self) -> Result<State, ParseError> {
         let token = self.peek()?;
 
         let Some(token) = token else {
             let (found, at) = self.found(None);
-            return Err(Error::new(at, ErrorKind::ExpectedExpression(found)));
+            return Err(ParseError::new(at, ErrorKind::ExpectedExpression(found)));
         };
 
         let c = self.checkpoint()?;
@@ -254,7 +258,7 @@ impl Parser<'_> {
                 let text = self.lexer_text(token);
 
                 if text.parse::<i64>().is_err() {
-                    return Err(Error::new(token.span(), ErrorKind::IntegerTooLarge));
+                    return Err(ParseError::new(token.span(), ErrorKind::IntegerTooLarge));
                 }
 
                 self.literal(c, Syntax::Integer)
@@ -275,7 +279,7 @@ impl Parser<'_> {
             }
             _ => {
                 let (found, at) = self.found(Some(token));
-                Err(Error::new(at, ErrorKind::ExpectedExpression(found)))
+                Err(ParseError::new(at, ErrorKind::ExpectedExpression(found)))
             }
         }
     }
@@ -284,7 +288,7 @@ impl Parser<'_> {
         self.lexer.text(token.start, token.end)
     }
 
-    fn literal(&mut self, c: Checkpoint, kind: Syntax) -> Result<State, Error> {
+    fn literal(&mut self, c: Checkpoint, kind: Syntax) -> Result<State, ParseError> {
         self.bump()?;
         self.close_at(&c, kind)?;
         self.primary = Some(c);
@@ -298,7 +302,7 @@ impl Parser<'_> {
         start: Checkpoint,
         args: Option<(Checkpoint, Syntax)>,
         open: Token,
-    ) -> Result<State, Error> {
+    ) -> Result<State, ParseError> {
         let nesting = match delimiter {
             Delimiter::Paren => Nesting::Paren,
             Delimiter::Args => Nesting::Args,
@@ -329,7 +333,7 @@ impl Parser<'_> {
     }
 
     /// Close the group on top of the stack at the peeked token, its closer.
-    fn close_group(&mut self) -> Result<State, Error> {
+    fn close_group(&mut self) -> Result<State, ParseError> {
         let Some(Frame::Group(group)) = self.frames.pop() else {
             return Err(internal("no group to close"));
         };
@@ -355,7 +359,7 @@ impl Parser<'_> {
 
     /// Reduce the frames binding at least as tightly as `power`, giving
     /// where the operand they make up starts.
-    fn reduce(&mut self, power: u8, at: Span<u32>) -> Result<Checkpoint, Error> {
+    fn reduce(&mut self, power: u8, at: Span<u32>) -> Result<Checkpoint, ParseError> {
         let mut left = self.start.clone();
 
         loop {
@@ -363,7 +367,7 @@ impl Parser<'_> {
                 Some(Frame::Prefix { start }) => (start.clone(), Syntax::Unary),
                 Some(Frame::Binary { start, power: p }) if *p >= power => {
                     if *p == COMPARE && power == COMPARE {
-                        return Err(Error::new(at, ErrorKind::ChainedComparison));
+                        return Err(ParseError::new(at, ErrorKind::ChainedComparison));
                     }
 
                     (start.clone(), Syntax::Binary)
@@ -392,14 +396,14 @@ impl Parser<'_> {
 
     /// Parse what follows a complete primary: postfixes, an operator, a
     /// separator or closer, or the end, which gives `None`.
-    fn operator(&mut self) -> Result<Option<State>, Error> {
+    fn operator(&mut self) -> Result<Option<State>, ParseError> {
         let token = self.peek()?;
 
         let Some(token) = token else {
             self.reduce(0, self.end_span())?;
 
             if let Some(group) = self.innermost() {
-                return Err(Error::new(
+                return Err(ParseError::new(
                     self.end_span(),
                     ErrorKind::Unclosed {
                         open: group.delimiter,
@@ -433,7 +437,7 @@ impl Parser<'_> {
 
                 if name.is_none_or(|t| t.kind != Syntax::NameToken) {
                     let (found, at) = self.found(name);
-                    return Err(Error::new(at, ErrorKind::ExpectedName(found)));
+                    return Err(ParseError::new(at, ErrorKind::ExpectedName(found)));
                 }
 
                 let c = self.checkpoint()?;
@@ -462,7 +466,7 @@ impl Parser<'_> {
                         ErrorKind::Unmatched(found)
                     };
 
-                    return Err(Error::new(at, kind));
+                    return Err(ParseError::new(at, kind));
                 };
 
                 let delimiter = group.delimiter;
@@ -478,7 +482,7 @@ impl Parser<'_> {
                 }
 
                 if token.kind != delimiter.close() {
-                    return Err(Error::new(
+                    return Err(ParseError::new(
                         token.span(),
                         ErrorKind::Unclosed {
                             open: delimiter,
@@ -493,12 +497,15 @@ impl Parser<'_> {
             _ => {
                 let open = self.innermost().map(|group| group.delimiter);
                 let (found, at) = self.found(Some(token));
-                Err(Error::new(at, ErrorKind::ExpectedOperator { found, open }))
+                Err(ParseError::new(
+                    at,
+                    ErrorKind::ExpectedOperator { found, open },
+                ))
             }
         }
     }
 }
 
-fn internal(error: impl std::fmt::Display) -> Error {
-    Error::new(span(0, 0), ErrorKind::Internal(error.to_string()))
+fn internal(error: impl std::fmt::Display) -> ParseError {
+    ParseError::new(span(0, 0), ErrorKind::Internal(error.to_string()))
 }

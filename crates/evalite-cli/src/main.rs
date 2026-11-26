@@ -31,7 +31,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use evalite::{
-    DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MEMORY, Environment, Limits, Machine, Options,
+    DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MEMORY, Environment, Labels, Limits, Machine, Options,
     RunError, Span,
 };
 
@@ -122,15 +122,10 @@ impl Session<'_> {
     fn try_eval(&self, source: &str) -> Result<String, String> {
         let options = Options::new().max_depth(self.cli.max_depth);
         let (program, debug) = evalite::compile_debug(source, &self.env, &options)
-            .map_err(|error| render(source, [(error.to_string(), Some(error.span()), true)]))?;
+            .map_err(|error| render(source, error.labels()))?;
         let mut machine = Machine::new(Limits::new().memory(self.cli.memory).fuel(self.cli.fuel));
 
-        let failed = |error: RunError| {
-            let labels = error
-                .labels(&program, Some(&debug))
-                .map(|l| (l.message().to_string(), l.span(), l.is_primary()));
-            render(source, labels)
-        };
+        let failed = |error: RunError| render(source, error.labels(&program, Some(&debug)));
 
         let mut run = machine.load(&program).map_err(failed)?;
 
@@ -199,20 +194,18 @@ impl Session<'_> {
     }
 }
 
-/// An error as text, from its labels, each a message, where in `source`
-/// it is about and whether it is the error itself: the primary message,
-/// the expression with a caret under the primary span, then every other
-/// label, with a caret line of its own when it points elsewhere.
-fn render<I>(source: &str, labels: I) -> String
-where
-    I: IntoIterator<Item = (String, Option<Span<u32>>, bool)>,
-{
+/// An error as text, from its labels: the primary message, the
+/// expression with a caret under the primary span, then every other label,
+/// with a caret line of its own when it points elsewhere.
+fn render(source: &str, labels: Labels<'_>) -> String {
     let mut out = String::new();
     let mut context = Vec::new();
     let mut shown = None;
 
-    for (message, span, primary) in labels {
-        if primary {
+    for label in labels {
+        let (message, span) = (label.message().to_string(), label.span());
+
+        if label.is_primary() {
             shown = span;
 
             out.push_str(&format!("error: {message}\n"));

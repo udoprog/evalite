@@ -1,5 +1,6 @@
 #![allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
+use crate::error::ErrorKind;
 use crate::*;
 
 fn env() -> Environment {

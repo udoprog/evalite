@@ -2,16 +2,34 @@ use std::fmt;
 
 use syntree::Span;
 
+use crate::message::Labels;
 use crate::{Syntax, Type};
 
-/// Why text is not an expression, and where.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Error {
+/// Why text is not an expression of its environment, and where: a syntax
+/// error, or a type error found when it is compiled.
+///
+/// It is opaque. Its [`Display`](fmt::Display) is the primary message, and
+/// it is inspected through its [`span`](Self::span) and its
+/// [`labels`](Self::labels).
+///
+/// ```
+/// use evalite::{Environment, Type};
+///
+/// let mut env = Environment::with_builtins();
+/// env.value("strength", Type::Int)?;
+///
+/// let error = evalite::compile("strength + true", &env).unwrap_err();
+/// assert_eq!(error.to_string(), "`+` takes Int and Int, found Int and Bool");
+/// assert_eq!(error.span().range(), 0..15);
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Clone, PartialEq, Eq)]
+pub struct ParseError {
     span: Span<u32>,
     kind: Box<ErrorKind>,
 }
 
-impl Error {
+impl ParseError {
     pub(crate) fn new(span: Span<u32>, kind: ErrorKind) -> Self {
         Self {
             span,
@@ -19,20 +37,134 @@ impl Error {
         }
     }
 
-    /// The bytes of the input the error is about.
+    /// The bytes of the input the error is about: the span of its primary
+    /// label.
+    ///
+    /// ```
+    /// let env = evalite::Environment::with_builtins();
+    ///
+    /// let error = evalite::compile("1 +", &env).unwrap_err();
+    /// assert_eq!(error.to_string(), "expected an expression, found the end of the expression");
+    /// assert_eq!(error.span().range(), 3..3);
+    /// ```
     pub fn span(&self) -> Span<u32> {
         self.span
     }
 
-    pub fn kind(&self) -> &ErrorKind {
+    /// Each place in the input the error is about, primary first, then
+    /// secondary ones, such as where an unclosed group was opened. Every
+    /// label of a parse error has a span.
+    ///
+    /// A syntax error has one label:
+    ///
+    /// ```
+    /// let env = evalite::Environment::with_builtins();
+    ///
+    /// let error = evalite::compile("1 $ 2", &env).unwrap_err();
+    /// let labels: Vec<_> = error.labels().map(|l| (l.message().to_string(), l.span().map(|s| s.range()), l.is_primary())).collect();
+    /// assert_eq!(labels, [("unexpected character '$'".to_owned(), Some(2..3), true)]);
+    /// ```
+    ///
+    /// An unclosed group has two, the second where it was opened:
+    ///
+    /// ```
+    /// let env = evalite::Environment::with_builtins();
+    ///
+    /// let error = evalite::compile("(1 + 2", &env).unwrap_err();
+    /// let labels: Vec<_> = error.labels().map(|l| (l.message().to_string(), l.span().map(|s| s.range()), l.is_primary())).collect();
+    /// assert_eq!(labels, [
+    ///     ("expected `)` to close the `(` at byte 0, found the end of the expression".to_owned(), Some(6..6), true),
+    ///     ("the `(` opened here".to_owned(), Some(0..1), false),
+    /// ]);
+    /// ```
+    ///
+    /// A type error:
+    ///
+    /// ```
+    /// use evalite::{Environment, Type};
+    ///
+    /// let mut env = Environment::with_builtins();
+    /// env.value("skills", Type::list(Type::Int))?;
+    ///
+    /// let error = evalite::compile("skills[true]", &env).unwrap_err();
+    /// let labels: Vec<_> = error.labels().map(|l| (l.message().to_string(), l.span().map(|s| s.range()))).collect();
+    /// assert_eq!(labels, [("a List<Int> is indexed by an Int, found Bool".to_owned(), Some(7..11))]);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// An expression nested deeper than its options allow:
+    ///
+    /// ```
+    /// use evalite::{Environment, Options};
+    ///
+    /// let env = Environment::with_builtins();
+    /// let options = Options::new().max_depth(2);
+    ///
+    /// let error = evalite::compile_with("(((1)))", &env, &options).unwrap_err();
+    /// let labels: Vec<_> = error.labels().map(|l| (l.message().to_string(), l.span().map(|s| s.range()))).collect();
+    /// assert_eq!(labels, [("this parenthesis nests too deeply, the limit is 2 levels of nesting".to_owned(), Some(2..3))]);
+    /// ```
+    pub fn labels(&self) -> Labels<'_> {
+        Labels::parse(self)
+    }
+
+    /// The message and span of label `n`.
+    pub(crate) fn label(&self, n: usize) -> Option<(ParseText<'_>, Span<u32>)> {
+        match (n, &*self.kind) {
+            (0, _) => Some((ParseText::Primary(self), self.span)),
+            (
+                1,
+                ErrorKind::Unclosed {
+                    open, open_span, ..
+                },
+            ) => Some((ParseText::Opened(*open), *open_span)),
+            _ => None,
+        }
+    }
+
+    /// How many labels it has.
+    pub(crate) fn label_count(&self) -> usize {
+        match &*self.kind {
+            ErrorKind::Unclosed { .. } => 2,
+            _ => 1,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn kind(&self) -> &ErrorKind {
         &self.kind
+    }
+}
+
+impl fmt::Debug for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ParseError")
+            .field("span", &self.span)
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
+/// What a label of a [`ParseError`] says.
+pub(crate) enum ParseText<'a> {
+    /// The error itself.
+    Primary(&'a ParseError),
+    /// Where a group that was not closed was opened.
+    Opened(Delimiter),
+}
+
+impl fmt::Display for ParseText<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Primary(error) => error.fmt(f),
+            Self::Opened(open) => write!(f, "the {} opened here", open.open_text()),
+        }
     }
 }
 
 /// What is wrong with an expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ErrorKind {
+pub(crate) enum ErrorKind {
     /// A character that is no part of any token.
     UnexpectedCharacter(char),
     /// `=`, `&` or `|` alone, which are not operators.
@@ -141,7 +273,7 @@ pub enum ErrorKind {
 
 /// What a call calls, as an error names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Callee {
+pub(crate) enum Callee {
     Function(String),
     Method { receiver: Type, name: String },
 }
@@ -157,7 +289,7 @@ impl fmt::Display for Callee {
 
 /// How many arguments a function takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Arity {
+pub(crate) enum Arity {
     Exactly(usize),
     AtLeast(usize),
 }
@@ -177,14 +309,14 @@ impl fmt::Display for Arity {
 
 /// What was found where something else was expected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Found {
+pub(crate) enum Found {
     Token(Syntax),
     End,
 }
 
 /// A group that a closing `)` or `]` ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Delimiter {
+pub(crate) enum Delimiter {
     /// `( expr )`.
     Paren,
     /// A call's or method's `( args )`.
@@ -217,7 +349,7 @@ impl Delimiter {
 
 /// A construct that nests one level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Nesting {
+pub(crate) enum Nesting {
     Paren,
     Args,
     List,
@@ -247,7 +379,7 @@ impl fmt::Display for Nesting {
     }
 }
 
-impl fmt::Display for Error {
+impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &*self.kind {
             ErrorKind::UnexpectedCharacter(c) => {
@@ -465,7 +597,7 @@ fn closer(open: Delimiter) -> char {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for ParseError {}
 
 fn did_you_mean(f: &mut fmt::Formatter<'_>, suggestion: &Option<String>) -> fmt::Result {
     match suggestion {

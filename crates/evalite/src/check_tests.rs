@@ -8,6 +8,7 @@
 
 use std::ops::Range;
 
+use crate::error::ErrorKind;
 use crate::program::{Constant, FORMAT, Global, HostFunction, Instr, Scalar, Stored};
 use crate::tests::Rng;
 use crate::types::{FieldNode, TypeId, TypeNode};

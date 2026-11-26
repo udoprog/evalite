@@ -7,19 +7,16 @@
 //!   on an explicit stack bounded by a settable `max_depth`, so even 100 000
 //!   parentheses give an error, not a stack overflow. Runtime code never
 //!   panics.
-//! - **Clear errors.** Every error has a byte span and says what was
-//!   expected and what was found.
-//! - **Lossless trees.** The parse is a [`syntree`](https://docs.rs/syntree)
-//!   tree covering every byte of the input, whitespace included.
+//! - **Clear errors.** Every error says what was expected and what was
+//!   found, with [`Label`]s pointing at each place in the input it is
+//!   about.
 //!
 //! ```
-//! let tree = evalite::parse("min(wits, dexterity) + athletics")?;
-//! assert_eq!(tree.span().range(), 0..32);
+//! let env = evalite::Environment::with_builtins();
 //!
-//! let error = evalite::parse("1 +").unwrap_err();
+//! let error = evalite::compile("1 +", &env).unwrap_err();
 //! assert_eq!(error.to_string(), "expected an expression, found the end of the expression");
 //! assert_eq!(error.span().range(), 3..3);
-//! # Ok::<_, evalite::Error>(())
 //! ```
 //!
 //! ## Types
@@ -277,15 +274,17 @@ pub use self::check::{compile, compile_debug, compile_with};
 pub use self::complete::{CompleteError, Completion, CompletionKind, Insert};
 pub use self::debug::DebugInfo;
 pub use self::env::{Builtin, DeclareError, Environment};
-pub use self::error::{Arity, Callee, Delimiter, Error, ErrorKind, Found, Nesting};
+pub use self::error::ParseError;
 pub use self::message::{Label, Labels, RunError};
-pub use self::parser::{DEFAULT_MAX_DEPTH, Options, Tree, parse, parse_with};
+pub use self::parser::{DEFAULT_MAX_DEPTH, Options};
+#[cfg(test)]
+pub(crate) use self::parser::{Tree, parse, parse_with};
 pub use self::program::{Memory, Program, StoreError};
 pub use self::structure::{
     BinaryOp, EditError, HOLE, LoadError, Node, NodeId, Structure, StructureError,
     StructureErrorKind, UnaryOp,
 };
-pub use self::syntax::{Syntax, unescape};
+pub(crate) use self::syntax::Syntax;
 pub use self::types::{MAX_TYPE_DEPTH, Type};
 pub use self::vm::{DEFAULT_FUEL, DEFAULT_MEMORY, Host, Limits, Machine, Outcome, Run, Value};
 pub use syntree::Span;

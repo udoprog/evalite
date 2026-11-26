@@ -10,7 +10,7 @@ use syntree::{FlavorDefault, Node as TreeNode, Span};
 use crate::check::compile_tree_debug;
 use crate::debug::DebugInfo;
 use crate::env::Environment;
-use crate::error::Error;
+use crate::error::{ErrorKind, ParseError};
 use crate::parser::{Options, Tree, parse_with};
 use crate::program::Program;
 use crate::syntax::{Syntax, unescape};
@@ -316,7 +316,7 @@ pub enum StructureErrorKind {
     InvalidName(String),
     /// The error compiling [`Structure::to_text`]'s text gives: its span
     /// is in that text.
-    Compile(Error),
+    Compile(ParseError),
 }
 
 impl StructureError {
@@ -586,12 +586,12 @@ impl Structure {
     /// Parse `source` into a structure, with the default [`Options`]. `_`
     /// is a hole, as a value or as a field's or method's name.
     /// Parentheses are dropped, and `-12` is the integer `-12`.
-    pub fn from_text(source: &str) -> Result<Self, Error> {
+    pub fn from_text(source: &str) -> Result<Self, ParseError> {
         Self::from_text_with(source, &Options::new())
     }
 
     /// Parse `source` into a structure.
-    pub fn from_text_with(source: &str, options: &Options) -> Result<Self, Error> {
+    pub fn from_text_with(source: &str, options: &Options) -> Result<Self, ParseError> {
         let tree = parse_with(source, options)?;
         from_tree(source, &tree)
     }
@@ -920,7 +920,7 @@ fn compile_node_debug(
 
     let (text, spans) = render(nodes, root);
 
-    let error = |error: Error| {
+    let error = |error: ParseError| {
         let node = locate(&spans, error.span()).unwrap_or(root);
         StructureError {
             node,
@@ -1131,10 +1131,10 @@ pub(crate) fn escape(out: &mut String, s: &str) {
 }
 
 /// Build a structure from a parse of `source`.
-fn from_tree(source: &str, tree: &Tree) -> Result<Structure, Error> {
+fn from_tree(source: &str, tree: &Tree) -> Result<Structure, ParseError> {
     let text = |node: N<'_>| source.get(node.range()).unwrap_or_default();
     let internal = |message: &str| {
-        Error::new(
+        ParseError::new(
             Span::new(0, 0),
             crate::error::ErrorKind::Internal(message.to_owned()),
         )
@@ -1204,13 +1204,13 @@ fn from_tree(source: &str, tree: &Tree) -> Result<Structure, Error> {
                     .next()
                     .map(text)
                     .and_then(|t| format!("-{t}").parse::<i64>().ok())
-                    .ok_or_else(|| Error::new(*node.span(), crate::ErrorKind::IntegerTooLarge))?;
+                    .ok_or_else(|| ParseError::new(*node.span(), ErrorKind::IntegerTooLarge))?;
                 Node::Int(n)
             }
             Syntax::Integer => Node::Int(
                 text(node)
                     .parse()
-                    .map_err(|_| Error::new(*node.span(), crate::ErrorKind::IntegerTooLarge))?,
+                    .map_err(|_| ParseError::new(*node.span(), ErrorKind::IntegerTooLarge))?,
             ),
             Syntax::Bool => Node::Bool(text(node) == "true"),
             Syntax::String => Node::String(

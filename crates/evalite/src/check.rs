@@ -8,7 +8,7 @@ use syntree::{FlavorDefault, Node, Span};
 use crate::Type;
 use crate::debug::DebugInfo;
 use crate::env::{Builtin, Environment, Overload};
-use crate::error::{Arity, Callee, Error, ErrorKind};
+use crate::error::{Arity, Callee, ErrorKind, ParseError};
 use crate::methods::{self, MethodSig, Receiver, Slot};
 use crate::parser::{Options, Tree, parse_with};
 use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
@@ -37,12 +37,16 @@ type N<'a> = Node<'a, Syntax, FlavorDefault>;
 /// );
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
-pub fn compile(source: &str, env: &Environment) -> Result<Program, Error> {
+pub fn compile(source: &str, env: &Environment) -> Result<Program, ParseError> {
     compile_with(source, env, &Options::new())
 }
 
 /// Parse `source` with `options` and compile it against `env`.
-pub fn compile_with(source: &str, env: &Environment, options: &Options) -> Result<Program, Error> {
+pub fn compile_with(
+    source: &str,
+    env: &Environment,
+    options: &Options,
+) -> Result<Program, ParseError> {
     let tree = parse_with(source, options)?;
     compile_tree(source, &tree, env)
 }
@@ -78,13 +82,17 @@ pub fn compile_debug(
     source: &str,
     env: &Environment,
     options: &Options,
-) -> Result<(Program, DebugInfo), Error> {
+) -> Result<(Program, DebugInfo), ParseError> {
     let tree = parse_with(source, options)?;
     compile_tree_debug(source, &tree, env)
 }
 
 /// Compile a tree [`parse`](crate::parse) made of `source`.
-pub(crate) fn compile_tree(source: &str, tree: &Tree, env: &Environment) -> Result<Program, Error> {
+pub(crate) fn compile_tree(
+    source: &str,
+    tree: &Tree,
+    env: &Environment,
+) -> Result<Program, ParseError> {
     Ok(compile_tree_debug(source, tree, env)?.0)
 }
 
@@ -94,7 +102,7 @@ pub(crate) fn compile_tree_debug(
     source: &str,
     tree: &Tree,
     env: &Environment,
-) -> Result<(Program, DebugInfo), Error> {
+) -> Result<(Program, DebugInfo), ParseError> {
     let mut compiler = Compiler::new(source, env)?;
 
     let root = tree
@@ -188,7 +196,7 @@ struct Compiler<'a> {
 }
 
 impl<'a> Compiler<'a> {
-    fn new(source: &'a str, env: &'a Environment) -> Result<Self, Error> {
+    fn new(source: &'a str, env: &'a Environment) -> Result<Self, ParseError> {
         let mut types = Types::new();
         let int = types.add(TypeNode::Int).ok_or_else(|| internal("no Int"))?;
         let bool = types
@@ -224,16 +232,16 @@ impl<'a> Compiler<'a> {
         self.types.to_type(id).unwrap_or(Type::Int)
     }
 
-    fn node(&mut self, node: TypeNode, at: Span<u32>) -> Result<TypeId, Error> {
+    fn node(&mut self, node: TypeNode, at: Span<u32>) -> Result<TypeId, ParseError> {
         self.types
             .add(node)
-            .ok_or_else(|| Error::new(at, ErrorKind::TypeTooDeep))
+            .ok_or_else(|| ParseError::new(at, ErrorKind::TypeTooDeep))
     }
 
-    fn intern(&mut self, ty: &Type, at: Span<u32>) -> Result<TypeId, Error> {
+    fn intern(&mut self, ty: &Type, at: Span<u32>) -> Result<TypeId, ParseError> {
         self.types
             .intern(ty)
-            .ok_or_else(|| Error::new(at, ErrorKind::TypeTooDeep))
+            .ok_or_else(|| ParseError::new(at, ErrorKind::TypeTooDeep))
     }
 
     /// Emit `instr`. The memory the code uses is the verifier's to count
@@ -253,14 +261,14 @@ impl<'a> Compiler<'a> {
         self.values.push(Value { ty, span });
     }
 
-    fn pop(&mut self) -> Result<Value, Error> {
+    fn pop(&mut self) -> Result<Value, ParseError> {
         self.values
             .pop()
             .ok_or_else(|| internal("no value where one was expected"))
     }
 
     /// The last `n` values, in order.
-    fn pop_n(&mut self, n: usize) -> Result<Vec<Value>, Error> {
+    fn pop_n(&mut self, n: usize) -> Result<Vec<Value>, ParseError> {
         let at = self
             .values
             .len()
@@ -269,7 +277,7 @@ impl<'a> Compiler<'a> {
         Ok(self.values.split_off(at))
     }
 
-    fn run(&mut self, root: N<'a>) -> Result<(), Error> {
+    fn run(&mut self, root: N<'a>) -> Result<(), ParseError> {
         let mut work = vec![Work::Enter(root)];
 
         while let Some(item) = work.pop() {
@@ -311,7 +319,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn enter(&mut self, node: N<'a>, work: &mut Vec<Work<'a>>) -> Result<(), Error> {
+    fn enter(&mut self, node: N<'a>, work: &mut Vec<Work<'a>>) -> Result<(), ParseError> {
         let span = *node.span();
         let mut parts = exprs(node);
 
@@ -320,7 +328,7 @@ impl<'a> Compiler<'a> {
                 let value = self
                     .text(node)
                     .parse::<i64>()
-                    .map_err(|_| Error::new(span, ErrorKind::IntegerTooLarge))?;
+                    .map_err(|_| ParseError::new(span, ErrorKind::IntegerTooLarge))?;
                 self.emit(Instr::Int(value));
                 self.push(self.int, span);
             }
@@ -403,7 +411,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn string(&mut self, text: String) -> Result<u32, Error> {
+    fn string(&mut self, text: String) -> Result<u32, ParseError> {
         if let Some(c) = self.strings.get(&text) {
             return Ok(*c);
         }
@@ -415,7 +423,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Where the global `name` is held, in words, and its type.
-    fn global(&mut self, name: &str, at: Span<u32>) -> Result<(u32, TypeId), Error> {
+    fn global(&mut self, name: &str, at: Span<u32>) -> Result<(u32, TypeId), ParseError> {
         let Some(ty) = self.env.values.get(name) else {
             let kind = if self.env.functions.contains_key(name) {
                 ErrorKind::FunctionAsValue(name.to_owned())
@@ -426,7 +434,7 @@ impl<'a> Compiler<'a> {
                 }
             };
 
-            return Err(Error::new(at, kind));
+            return Err(ParseError::new(at, kind));
         };
 
         let ty = self.intern(ty, at)?;
@@ -445,15 +453,16 @@ impl<'a> Compiler<'a> {
         Ok((g, ty))
     }
 
-    fn function(&self, name: &str, at: Span<u32>) -> Result<&'a [Overload], Error> {
+    fn function(&self, name: &str, at: Span<u32>) -> Result<&'a [Overload], ParseError> {
         let env = self.env;
 
         match env.functions.get(name) {
             Some(overloads) if !overloads.is_empty() => Ok(overloads),
-            _ if env.values.contains_key(name) => {
-                Err(Error::new(at, ErrorKind::NotAFunction(name.to_owned())))
-            }
-            _ => Err(Error::new(
+            _ if env.values.contains_key(name) => Err(ParseError::new(
+                at,
+                ErrorKind::NotAFunction(name.to_owned()),
+            )),
+            _ => Err(ParseError::new(
                 at,
                 ErrorKind::UnknownFunction {
                     name: name.to_owned(),
@@ -463,7 +472,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn unary(&mut self, node: N<'a>, start: usize) -> Result<(), Error> {
+    fn unary(&mut self, node: N<'a>, start: usize) -> Result<(), ParseError> {
         let op = operator(node).ok_or_else(|| internal("a unary without an operator"))?;
         let value = self.pop()?;
         let span = *node.span();
@@ -474,7 +483,7 @@ impl<'a> Compiler<'a> {
         };
 
         if value.ty != want {
-            return Err(Error::new(
+            return Err(ParseError::new(
                 span,
                 ErrorKind::Operator {
                     op,
@@ -501,7 +510,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn binary(&mut self, node: N<'a>) -> Result<(), Error> {
+    fn binary(&mut self, node: N<'a>) -> Result<(), ParseError> {
         let op = operator(node).ok_or_else(|| internal("a binary without an operator"))?;
         let right = self.pop()?;
         let left = self.pop()?;
@@ -530,7 +539,7 @@ impl<'a> Compiler<'a> {
         };
 
         if !fits {
-            return Err(Error::new(
+            return Err(ParseError::new(
                 span,
                 ErrorKind::Operator {
                     op,
@@ -544,14 +553,14 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn logic(&mut self, node: N<'a>) -> Result<(), Error> {
+    fn logic(&mut self, node: N<'a>) -> Result<(), ParseError> {
         let op = operator(node).ok_or_else(|| internal("a binary without an operator"))?;
         let right = self.pop()?;
         let left = self.pop()?;
         let span = *node.span();
 
         if left.ty != self.bool || right.ty != self.bool {
-            return Err(Error::new(
+            return Err(ParseError::new(
                 span,
                 ErrorKind::Operator {
                     op,
@@ -582,7 +591,12 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn call(&mut self, node: N<'a>, overloads: &'a [Overload], name: String) -> Result<(), Error> {
+    fn call(
+        &mut self,
+        node: N<'a>,
+        overloads: &'a [Overload],
+        name: String,
+    ) -> Result<(), ParseError> {
         let args = args_of(node);
         let values = self.pop_n(args.len())?;
         let found = values.iter().map(|v| v.ty).collect::<Vec<_>>();
@@ -603,7 +617,7 @@ impl<'a> Compiler<'a> {
 
         match (overloads, first) {
             ([_], Some(mismatch)) => Err(self.mismatch(mismatch, callee, &values, &args, node)),
-            _ => Err(Error::new(
+            _ => Err(ParseError::new(
                 span,
                 ErrorKind::NoOverload {
                     function: name,
@@ -621,7 +635,7 @@ impl<'a> Compiler<'a> {
         overload: &Overload,
         found: &[TypeId],
         at: Span<u32>,
-    ) -> Result<Result<TypeId, Mismatch>, Error> {
+    ) -> Result<Result<TypeId, Mismatch>, ParseError> {
         let int = self.int;
 
         let ints = |from: usize| {
@@ -681,7 +695,7 @@ impl<'a> Compiler<'a> {
         ret: TypeId,
         found: &[TypeId],
         span: Span<u32>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ParseError> {
         let n = found.len();
 
         let instr = match overload {
@@ -721,7 +735,7 @@ impl<'a> Compiler<'a> {
         values: &[Value],
         args: &[N<'_>],
         node: N<'_>,
-    ) -> Error {
+    ) -> ParseError {
         match mismatch {
             Mismatch::Count(expected) => {
                 let at = node
@@ -729,7 +743,7 @@ impl<'a> Compiler<'a> {
                     .find(|n| n.value() == Syntax::Args)
                     .map_or(*node.span(), |n| *n.span());
 
-                Error::new(
+                ParseError::new(
                     at,
                     ErrorKind::ArgumentCount {
                         callee,
@@ -739,7 +753,7 @@ impl<'a> Compiler<'a> {
                 )
             }
             Mismatch::Argument(n, expected) => match values.get(n) {
-                Some(value) => Error::new(
+                Some(value) => ParseError::new(
                     value.span,
                     ErrorKind::ArgumentType {
                         callee,
@@ -753,7 +767,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn method(&mut self, node: N<'a>, work: &mut Vec<Work<'a>>) -> Result<(), Error> {
+    fn method(&mut self, node: N<'a>, work: &mut Vec<Work<'a>>) -> Result<(), ParseError> {
         let receiver = *self
             .values
             .last()
@@ -773,7 +787,7 @@ impl<'a> Compiler<'a> {
         let receiver_type = self.ty(receiver.ty);
 
         let Some((method, inner)) = method else {
-            return Err(Error::new(
+            return Err(ParseError::new(
                 *name_node.span(),
                 ErrorKind::UnknownMethod {
                     available: methods::method_names(&receiver_type),
@@ -799,7 +813,7 @@ impl<'a> Compiler<'a> {
         method: &MethodSig,
         inner: TypeId,
         callee: Callee,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ParseError> {
         let args = args_of(node);
         let values = self.pop_n(args.len())?;
         let receiver = self.pop()?;
@@ -830,7 +844,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn field(&mut self, node: N<'a>) -> Result<(), Error> {
+    fn field(&mut self, node: N<'a>) -> Result<(), ParseError> {
         let receiver = self.pop()?;
         let name_node = name_of(node).ok_or_else(|| internal("a field without a name"))?;
         let name = self.text(name_node);
@@ -845,7 +859,7 @@ impl<'a> Compiler<'a> {
         at: Span<u32>,
         span: Span<u32>,
         dotted: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ParseError> {
         let Some(TypeNode::Record(fields)) = self.types.get(receiver.ty) else {
             let receiver = self.ty(receiver.ty);
 
@@ -858,7 +872,7 @@ impl<'a> Compiler<'a> {
                 ErrorKind::NotIndexable(receiver)
             };
 
-            return Err(Error::new(at, kind));
+            return Err(ParseError::new(at, kind));
         };
 
         let Some((at_word, field)) = self
@@ -866,7 +880,7 @@ impl<'a> Compiler<'a> {
             .field_offsets(fields)
             .find(|(_, f)| f.name == name)
         else {
-            return Err(Error::new(
+            return Err(ParseError::new(
                 at,
                 ErrorKind::UnknownField {
                     field: name.to_owned(),
@@ -884,7 +898,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn index(&mut self, node: N<'a>, work: &mut Vec<Work<'a>>) -> Result<(), Error> {
+    fn index(&mut self, node: N<'a>, work: &mut Vec<Work<'a>>) -> Result<(), ParseError> {
         let receiver = *self
             .values
             .last()
@@ -906,20 +920,20 @@ impl<'a> Compiler<'a> {
                 };
 
                 let Some(name) = name else {
-                    return Err(Error::new(*index.span(), ErrorKind::RecordIndex));
+                    return Err(ParseError::new(*index.span(), ErrorKind::RecordIndex));
                 };
 
                 self.pop()?;
                 self.read_field(receiver, &name, *index.span(), *node.span(), false)
             }
-            _ => Err(Error::new(
+            _ => Err(ParseError::new(
                 receiver.span,
                 ErrorKind::NotIndexable(self.ty(receiver.ty)),
             )),
         }
     }
 
-    fn index_exit(&mut self, node: N<'a>) -> Result<(), Error> {
+    fn index_exit(&mut self, node: N<'a>) -> Result<(), ParseError> {
         let index = self.pop()?;
         let list = self.pop()?;
 
@@ -930,7 +944,7 @@ impl<'a> Compiler<'a> {
         let entry = *entry;
 
         if index.ty != self.int {
-            return Err(Error::new(
+            return Err(ParseError::new(
                 index.span,
                 ErrorKind::IndexType {
                     list: self.ty(list.ty),
@@ -944,20 +958,20 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn list(&mut self, node: N<'a>, start: usize) -> Result<(), Error> {
+    fn list(&mut self, node: N<'a>, start: usize) -> Result<(), ParseError> {
         let n = exprs(node).count();
         let values = self.pop_n(n)?;
         let span = *node.span();
 
         let Some(first) = values.first() else {
-            return Err(Error::new(span, ErrorKind::EmptyList));
+            return Err(ParseError::new(span, ErrorKind::EmptyList));
         };
 
         let entry = first.ty;
 
         for (at, value) in values.iter().enumerate().skip(1) {
             if value.ty != entry {
-                return Err(Error::new(
+                return Err(ParseError::new(
                     value.span,
                     ErrorKind::ListEntry {
                         index: at.saturating_add(1),
@@ -1002,7 +1016,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn finish(self) -> Result<(Program, DebugInfo), Error> {
+    fn finish(self) -> Result<(Program, DebugInfo), ParseError> {
         let [value] = self.values.as_slice() else {
             return Err(internal("not one value at the end"));
         };
@@ -1077,12 +1091,12 @@ fn push_args<'a>(work: &mut Vec<Work<'a>>, node: N<'a>) {
     work.extend(args_of(node).into_iter().rev().map(Work::Enter));
 }
 
-fn count(n: usize) -> Result<u32, Error> {
-    u32::try_from(n).map_err(|_| Error::new(Span::new(0, 0), ErrorKind::TooLarge))
+fn count(n: usize) -> Result<u32, ParseError> {
+    u32::try_from(n).map_err(|_| ParseError::new(Span::new(0, 0), ErrorKind::TooLarge))
 }
 
-fn internal(message: impl std::fmt::Display) -> Error {
-    Error::new(Span::new(0, 0), ErrorKind::Internal(message.to_string()))
+fn internal(message: impl std::fmt::Display) -> ParseError {
+    ParseError::new(Span::new(0, 0), ErrorKind::Internal(message.to_string()))
 }
 
 /// A declared name `name` may be a misspelling of: one equal but for

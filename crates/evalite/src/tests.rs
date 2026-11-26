@@ -6,7 +6,9 @@
 
 use syntree::{FlavorDefault, Node};
 
+use crate::error::{Delimiter, ErrorKind, Found, Nesting};
 use crate::lexer::span;
+use crate::syntax::unescape;
 use crate::*;
 
 type N<'a> = Node<'a, Syntax, FlavorDefault>;
@@ -835,11 +837,11 @@ fn error_kinds() {
     );
 
     assert_eq!(
-        Error::new(span(0, 0), ErrorKind::TooLong(5_000_000_000)).to_string(),
+        ParseError::new(span(0, 0), ErrorKind::TooLong(5_000_000_000)).to_string(),
         "the expression is 5000000000 bytes long, more than the 4294967295 that can be parsed"
     );
     assert_eq!(
-        Error::new(span(0, 0), ErrorKind::Internal("x".to_owned())).to_string(),
+        ParseError::new(span(0, 0), ErrorKind::Internal("x".to_owned())).to_string(),
         "internal error in evalite: x"
     );
 

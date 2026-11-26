@@ -105,6 +105,17 @@ fn type_error_shows_caret() {
 }
 
 #[test]
+fn unclosed_group_shows_its_opener() {
+    let out = run(&["eval", "(1 + 2"], "");
+    assert!(!out.ok);
+    assert_eq!(
+        out.stderr,
+        "error: expected `)` to close the `(` at byte 0, found the end of the expression\n  \
+         | (1 + 2\n  |       ^\n  = the `(` opened here\n  | (1 + 2\n  | ^\n"
+    );
+}
+
+#[test]
 fn depth_limit() {
     let out = run(&["eval", "((((1))))", "--max-depth", "2"], "");
     assert!(!out.ok);
