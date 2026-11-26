@@ -18,7 +18,7 @@ fn track() -> Type {
 }
 
 /// The environment most tests compile against.
-fn env() -> Environment {
+pub(crate) fn env() -> Environment {
     let mut env = Environment::with_builtins();
 
     for name in [
@@ -1407,7 +1407,7 @@ fn random_corruption() {
 /// A random well-typed expression of type `ty`: Int, Bool, Option<Int> or
 /// List<Int>. Operands of operators are parenthesized so precedence never
 /// changes what was built.
-fn generate(rng: &mut Rng, ty: &str, budget: usize) -> String {
+pub(crate) fn generate(rng: &mut Rng, ty: &str, budget: usize) -> String {
     let leaf = budget == 0 || rng.below(4) == 0;
 
     match ty {

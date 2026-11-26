@@ -118,6 +118,54 @@
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! ## Running
+//!
+//! A [`Machine`] runs programs in a fixed memory, [`DEFAULT_MEMORY`] slots
+//! unless [`Limits::memory`] says otherwise, reserved when it is made.
+//! [`Machine::load`] refuses a program whose memory, with a slot per value
+//! it reads, is more than that, saying how much it needs. Each value the
+//! program reads is then bound with [`Run::bind`], which checks it against
+//! the value's declared type and that its parts fit in the memory left; a
+//! missing or mistyped binding is an error, never a default. The caller's
+//! functions are a [`Host`].
+//!
+//! A run takes at most [`DEFAULT_FUEL`] steps unless [`Limits::fuel`]
+//! says otherwise: one per instruction, one more per entry of a list,
+//! `min` or `max` it makes, and one per slot of a value a function
+//! returns. Faults are errors, never panics: `Int` arithmetic that
+//! overflows, dividing by zero, `list[i]` past either end (`lookup`
+//! clamps instead), `clamp` with its bounds the wrong way round, and a
+//! function's failure or wrongly typed result.
+//!
+//! ```
+//! use shex::{Environment, Limits, Machine, Type, Value};
+//!
+//! let mut env = Environment::with_builtins();
+//! env.value("health", Type::opaque("Track"))?;
+//! env.value("brawl", Type::option(Type::Int))?;
+//! env.function("count", [Type::opaque("Track")], Type::Int)?;
+//!
+//! let program = shex::compile("count(health) + brawl.unwrap_or(0)", &env)?;
+//!
+//! let mut machine = Machine::new(Limits::new().fuel(100));
+//! let mut run = machine.load(&program)?;
+//! run.bind("health", Value::opaque("Track", 7))?;
+//! run.bind("brawl", Value::None)?;
+//!
+//! let mut host = |name: &str, args: Vec<Value>| match (name, args.as_slice()) {
+//!     ("count", [Value::Opaque { handle: 7, .. }]) => Ok(Value::Int(3)),
+//!     _ => Err(format!("no function {name}")),
+//! };
+//!
+//! let outcome = run.run_with(&mut host)?;
+//! assert_eq!(outcome.value, Value::Int(3));
+//! assert_eq!(outcome.steps, 6);
+//!
+//! let error = Machine::new(Limits::new().memory(2)).load(&program).unwrap_err();
+//! assert_eq!(error.to_string(), "the program needs 5 slots of memory, more than the 2 the machine allows");
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! ## Grammar
 //!
 //! Lowest precedence first; whitespace may separate any two tokens.
@@ -169,12 +217,16 @@ mod parser;
 mod program;
 mod syntax;
 mod types;
+mod vm;
 
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod check_tests;
+
+#[cfg(test)]
+mod vm_tests;
 
 pub use self::check::{compile, compile_with};
 pub use self::env::{Builtin, DeclareError, Environment};
@@ -183,4 +235,7 @@ pub use self::parser::{DEFAULT_MAX_DEPTH, Options, Tree, parse, parse_with};
 pub use self::program::{Memory, Program, StoreError};
 pub use self::syntax::{Syntax, unescape};
 pub use self::types::{MAX_TYPE_DEPTH, Type};
+pub use self::vm::{
+    DEFAULT_FUEL, DEFAULT_MEMORY, Host, Limits, Machine, Outcome, Run, RunError, Value,
+};
 pub use syntree::Span;
