@@ -8,6 +8,7 @@ use syntree::{FlavorDefault, Node, Span};
 use crate::Type;
 use crate::env::{Builtin, Environment, Overload};
 use crate::error::{Arity, Callee, Error, ErrorKind};
+use crate::methods::{self, MethodSig, Receiver, Slot};
 use crate::parser::{Options, Tree, parse_with};
 use crate::program::{Constant, Global, HostFunction, Instr, Memory, Program, Scalar};
 use crate::syntax::{Syntax, unescape};
@@ -58,30 +59,6 @@ pub(crate) fn compile_tree(source: &str, tree: &Tree, env: &Environment) -> Resu
     compiler.finish()
 }
 
-/// The methods a value of type `ty` has, in name order.
-pub(crate) fn method_names(ty: &Type) -> &'static [&'static str] {
-    match ty {
-        Type::Int => &["abs", "clamp", "max", "min"],
-        Type::Option(..) => &["is_none", "is_some", "unwrap_or"],
-        Type::List(..) => &["len"],
-        _ => &[],
-    }
-}
-
-/// A method resolved on its receiver's type.
-#[derive(Debug, Clone, Copy)]
-enum Method {
-    Abs,
-    Min,
-    Max,
-    Clamp,
-    /// `unwrap_or` of an `Option<T>`, with `T`.
-    UnwrapOr(TypeId),
-    IsSome,
-    IsNone,
-    Len,
-}
-
 enum Work<'a> {
     Enter(N<'a>),
     /// After a unary operator's operand, whose code starts at `usize`.
@@ -97,7 +74,8 @@ enum Work<'a> {
     /// After a method's receiver.
     Method(N<'a>),
     /// After a method's arguments.
-    MethodExit(N<'a>, Method, Callee),
+    /// After a method's arguments, with its receiver's `T`.
+    MethodExit(N<'a>, &'static MethodSig, TypeId, Callee),
     Field(N<'a>),
     /// After an index's receiver.
     Index(N<'a>),
@@ -251,7 +229,9 @@ impl<'a> Compiler<'a> {
                 }
                 Work::Call(node, overloads, name) => self.call(node, overloads, name)?,
                 Work::Method(node) => self.method(node, &mut work)?,
-                Work::MethodExit(node, method, callee) => self.method_exit(node, method, callee)?,
+                Work::MethodExit(node, method, inner, callee) => {
+                    self.method_exit(node, method, inner, callee)?
+                }
                 Work::Field(node) => self.field(node)?,
                 Work::Index(node) => self.index(node, &mut work)?,
                 Work::IndexExit(node) => self.index_exit(node)?,
@@ -712,25 +692,22 @@ impl<'a> Compiler<'a> {
         let name_node = name_of(node).ok_or_else(|| internal("a method without a name"))?;
         let name = self.text(name_node);
 
-        let method = match (self.types.get(receiver.ty), name) {
-            (Some(TypeNode::Int), "abs") => Some(Method::Abs),
-            (Some(TypeNode::Int), "min") => Some(Method::Min),
-            (Some(TypeNode::Int), "max") => Some(Method::Max),
-            (Some(TypeNode::Int), "clamp") => Some(Method::Clamp),
-            (Some(TypeNode::Option(t)), "unwrap_or") => Some(Method::UnwrapOr(*t)),
-            (Some(TypeNode::Option(_)), "is_some") => Some(Method::IsSome),
-            (Some(TypeNode::Option(_)), "is_none") => Some(Method::IsNone),
-            (Some(TypeNode::List(_)), "len") => Some(Method::Len),
+        let kind = match self.types.get(receiver.ty) {
+            Some(TypeNode::Int) => Some((Receiver::Int, self.int)),
+            Some(TypeNode::Option(t)) => Some((Receiver::Option, *t)),
+            Some(TypeNode::List(t)) => Some((Receiver::List, *t)),
             _ => None,
         };
 
+        let method = kind.and_then(|(kind, inner)| Some((methods::find(kind, name)?, inner)));
+
         let receiver_type = self.ty(receiver.ty);
 
-        let Some(method) = method else {
+        let Some((method, inner)) = method else {
             return Err(Error::new(
                 *name_node.span(),
                 ErrorKind::UnknownMethod {
-                    available: method_names(&receiver_type).to_vec(),
+                    available: methods::method_names(&receiver_type),
                     receiver: receiver_type,
                     method: name.to_owned(),
                 },
@@ -742,27 +719,30 @@ impl<'a> Compiler<'a> {
             name: name.to_owned(),
         };
 
-        work.push(Work::MethodExit(node, method, callee));
+        work.push(Work::MethodExit(node, method, inner, callee));
         push_args(work, node);
         Ok(())
     }
 
-    fn method_exit(&mut self, node: N<'a>, method: Method, callee: Callee) -> Result<(), Error> {
+    fn method_exit(
+        &mut self,
+        node: N<'a>,
+        method: &MethodSig,
+        inner: TypeId,
+        callee: Callee,
+    ) -> Result<(), Error> {
         let args = args_of(node);
         let values = self.pop_n(args.len())?;
         self.pop()?;
         let span = *node.span();
 
-        let (params, instr, ret): (Vec<TypeId>, Instr, TypeId) = match method {
-            Method::Abs => (vec![], Instr::Abs, self.int),
-            Method::Min => (vec![self.int], Instr::Min(2), self.int),
-            Method::Max => (vec![self.int], Instr::Max(2), self.int),
-            Method::Clamp => (vec![self.int, self.int], Instr::Clamp, self.int),
-            Method::UnwrapOr(t) => (vec![t], Instr::UnwrapOr, t),
-            Method::IsSome => (vec![], Instr::IsSome, self.bool),
-            Method::IsNone => (vec![], Instr::IsNone, self.bool),
-            Method::Len => (vec![], Instr::Len, self.int),
-        };
+        let resolve = |slot: Slot| slot.resolve(&self.int, &self.bool, &inner);
+        let params = method
+            .params
+            .iter()
+            .map(|p| resolve(*p))
+            .collect::<Vec<_>>();
+        let (instr, ret) = (method.instr, resolve(method.ret));
 
         if params.len() != values.len() {
             let mismatch = Mismatch::Count(Arity::Exactly(params.len()));

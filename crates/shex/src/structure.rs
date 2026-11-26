@@ -247,6 +247,9 @@ pub enum EditError {
     Attached(NodeId),
     /// Making a node part of itself.
     Cycle(NodeId),
+    /// A completion of a field or method in place of a node that is
+    /// neither.
+    NotAMember(NodeId),
     /// Too many nodes to number.
     TooLarge,
 }
@@ -257,6 +260,7 @@ impl fmt::Display for EditError {
             Self::UnknownNode(id) => write!(f, "there is no node {id}"),
             Self::Attached(id) => write!(f, "node {id} is already part of another node"),
             Self::Cycle(id) => write!(f, "node {id} would be part of itself"),
+            Self::NotAMember(id) => write!(f, "node {id} is not a field or a method"),
             Self::TooLarge => write!(f, "the structure has too many nodes"),
         }
     }
@@ -606,6 +610,15 @@ impl Structure {
         compile_node(&self.nodes, self.root, env, options)
     }
 
+    /// Compile the expression at node `id` alone.
+    pub(crate) fn compile_at(
+        &self,
+        id: NodeId,
+        env: &Environment,
+    ) -> Result<Program, StructureError> {
+        compile_node(&self.nodes, id, env, &Options::new())
+    }
+
     /// The stored form, which [`Structure::from_bytes`] reads. Unused
     /// nodes are left out.
     pub fn to_bytes(&self) -> Result<Vec<u8>, LoadError> {
@@ -877,7 +890,7 @@ pub(crate) fn compile_node(
 }
 
 /// Names that are written as other tokens, or as a hole.
-fn is_reserved(name: &str) -> bool {
+pub(crate) fn is_reserved(name: &str) -> bool {
     matches!(name, "true" | "false" | HOLE)
 }
 
@@ -1060,7 +1073,7 @@ fn separated(then: &mut Vec<Emit>, ids: &[NodeId]) {
 }
 
 /// Write `s` as a string literal.
-fn escape(out: &mut String, s: &str) {
+pub(crate) fn escape(out: &mut String, s: &str) {
     out.push('"');
 
     for c in s.chars() {

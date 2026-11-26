@@ -175,6 +175,13 @@
 //! naming the [`NodeId`] it is about; a hole is an error. Writing one as
 //! text and parsing that back gives the same structure.
 //!
+//! [`Structure::complete`] lists what fits in a hole, for a form to offer:
+//! the values, paths into records, methods, calls, literals and operators
+//! whose type the hole's place takes, which comes from what holds it. At a
+//! member hole, `bonus._` with `bonus` an `Option<Int>` in an `Int`'s
+//! place, that is `unwrap_or(_)`. [`Structure::apply`] fills the hole with
+//! one, leaving holes for its arguments.
+//!
 //! ## Grammar
 //!
 //! Lowest precedence first; whitespace may separate any two tokens.
@@ -219,9 +226,11 @@
 //! too deep. Chains of operators, fields and methods do not nest.
 
 mod check;
+mod complete;
 mod env;
 mod error;
 mod lexer;
+mod methods;
 mod parser;
 mod program;
 mod structure;
@@ -241,7 +250,11 @@ mod vm_tests;
 #[cfg(test)]
 mod structure_tests;
 
+#[cfg(test)]
+mod complete_tests;
+
 pub use self::check::{compile, compile_with};
+pub use self::complete::{CompleteError, Completion, CompletionKind, Insert};
 pub use self::env::{Builtin, DeclareError, Environment};
 pub use self::error::{Arity, Callee, Delimiter, Error, ErrorKind, Found, Nesting};
 pub use self::parser::{DEFAULT_MAX_DEPTH, Options, Tree, parse, parse_with};

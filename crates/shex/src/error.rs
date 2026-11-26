@@ -404,7 +404,7 @@ impl fmt::Display for Error {
             ErrorKind::NoFields { receiver, field } => {
                 write!(f, "{receiver} has no fields, so no `.{field}`")?;
 
-                if crate::check::method_names(receiver).contains(&field.as_str()) {
+                if crate::methods::method_names(receiver).contains(&field.as_str()) {
                     write!(f, ", `{field}` is a method, call it with `.{field}(...)`")?;
                 }
 
