@@ -1,19 +1,16 @@
 [package]
 name = "evalite-cli"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [[bin]]
 name = "evalite"
 path = "src/main.rs"
 
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
-indexing_slicing = "deny"
-string_slice = "deny"
-arithmetic_side_effects = "deny"
+[lints]
+workspace = true
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
