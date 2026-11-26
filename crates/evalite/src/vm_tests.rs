@@ -313,12 +313,18 @@ const CASES: &[(&str, &str)] = &[
     ("lookup(2, [true, false])", "none"),
     ("lookup(0, [levels])", "some([10, 20, 30])"),
     ("lookup(1, [levels])", "none"),
-    // A list of options gives the option itself
-    ("lookup(0, [bonus, label(3)])", "some(2)"),
-    ("lookup(1, [bonus, label(3)])", "none"),
+    // A list of options gives an option of an option, telling an absent
+    // entry from one out of range
+    ("lookup(0, [bonus, label(3)])", "some(some(2))"),
+    ("lookup(1, [bonus, label(3)])", "some(none)"),
     ("lookup(2, [bonus, label(3)])", "none"),
-    ("lookup(0, [maybe])", "none"),
+    ("lookup(0, [maybe])", "some(none)"),
     ("lookup(1, [maybe])", "none"),
+    ("lookup(0, [maybe_track])!!.boxes", "5"),
+    (
+        "lookup(0, [[maybe_track]])!",
+        "[some({boxes: 5, count: [5]})]",
+    ),
     // Unwrap, `!`
     ("bonus!", "2"),
     ("bonus! + 1", "3"),
@@ -615,7 +621,7 @@ fn lookup_errors() {
             "`!` found no value: the optional value is none",
         ),
         (
-            "lookup(1, [maybe_track])!.boxes",
+            "lookup(1, [maybe_track])!!.boxes",
             "`!` found no value: the optional value is none",
         ),
     ];
@@ -1278,7 +1284,8 @@ fn option_layouts() {
                     ("o.unwrap_or(d)", unwrapped.clone()),
                     ("[o, o, o][2]", o.clone()),
                     ("[o, give()]", Value::list(vec![o.clone(), o.clone()])),
-                    ("lookup(1, [give(), o])", o.clone()),
+                    ("lookup(1, [give(), o])", Value::some(o.clone())),
+                    ("lookup(1, [give(), o])!", o.clone()),
                     ("lookup(9, [give(), o])", Value::none()),
                     ("r.o", o.clone()),
                     ("r.z", int(-5)),
@@ -1360,9 +1367,21 @@ fn list_of_optional_ints() {
         ("l[0].unwrap_or(5)", "5"),
         ("lookup(-9, l)", "none"),
         ("lookup(99, l)", "none"),
-        ("lookup(0, l)", "none"),
-        ("lookup(1, l)", "some(-9223372036854775808)"),
-        ("lookup(4, l)", "some(0)"),
+        ("lookup(0, l)", "some(none)"),
+        ("lookup(1, l)", "some(some(-9223372036854775808))"),
+        ("lookup(4, l)", "some(some(0))"),
+        ("lookup(4, l)!", "some(0)"),
+        ("lookup(4, l)!!", "0"),
+        ("lookup(0, l)!.is_none()", "true"),
+        ("lookup(0, l).is_some()", "true"),
+        ("lookup(9, l).is_some()", "false"),
+        ("lookup(0, l).unwrap_or(o)", "none"),
+        ("lookup(9, l).unwrap_or(o)", "some(-1)"),
+        ("lookup(2, l).unwrap_or(o)", "some(9223372036854775807)"),
+        (
+            "[lookup(0, l), lookup(9, l), lookup(3, l)]",
+            "[some(none), none, some(some(-1))]",
+        ),
         ("l.len()", "5"),
         (
             "[l[2], o, l[0]]",
@@ -1757,4 +1776,110 @@ fn tampered_programs_never_fault() {
         "only {refused} tampered programs were refused"
     );
     assert!(ran > 1_000, "only {ran} tampered programs ran");
+}
+
+/// Options of options, of every kind of value, bind, read back, and work
+/// with every option operation; a tagged option takes a word more than its
+/// value, an option of a value with a niche one word.
+#[test]
+fn nested_options() {
+    let o = Type::option;
+    let int_values = [int(-1), int(0), int(i64::MIN)];
+    let bool_values = [Value::bool(true), Value::bool(false)];
+    let string_values = [Value::from(""), Value::from("Essence")];
+
+    let cases: Vec<(Type, &[Value], usize)> = vec![
+        (o(o(Type::int())), &int_values, 3),
+        (o(o(o(Type::int()))), &int_values, 4),
+        (o(o(Type::bool())), &bool_values, 2),
+        (o(o(o(Type::bool()))), &bool_values, 3),
+        (o(o(Type::string())), &string_values, 2),
+    ];
+
+    for (ty, inner, words) in cases {
+        let mut env = env();
+        env.value("x", ty.clone()).unwrap();
+        let program = compile("x", &env).unwrap();
+        assert_eq!(program.memory().globals(), words as u32, "{ty}");
+
+        // Every value of the type: none, and each inner value wrapped in as
+        // many `some`s as it can take, and every depth of `none` between.
+        let mut depth = 0;
+        let mut t = &ty;
+
+        while let Some(inner) = t.as_option() {
+            depth += 1;
+            t = inner;
+        }
+
+        let mut values = Vec::new();
+
+        for d in 0..depth {
+            let mut v = Value::none();
+
+            for _ in 0..d {
+                v = Value::some(v);
+            }
+
+            values.push(v);
+        }
+
+        for v in inner {
+            let mut v = v.clone();
+
+            for _ in 0..depth {
+                v = Value::some(v);
+            }
+
+            values.push(v);
+        }
+
+        for value in values {
+            let extra = [("y", ty.clone(), value.clone())];
+            let run = |source: &str| eval_in(source, &extra, Limits::new());
+
+            assert_eq!(run("y").unwrap().value, value, "{ty} {value}");
+
+            let present = value != Value::none();
+            assert_eq!(
+                run("y.is_some()").unwrap().value,
+                Value::bool(present),
+                "{ty} {value}"
+            );
+            assert_eq!(
+                run("y.is_none()").unwrap().value,
+                Value::bool(!present),
+                "{ty} {value}"
+            );
+            assert_eq!(run("[y, y][1]").unwrap().value, value, "{ty} {value}");
+            assert_eq!(
+                run("lookup(0, [y])").unwrap().value,
+                Value::some(value.clone()),
+                "{ty} {value}"
+            );
+            assert_eq!(
+                run("lookup(1, [y])").unwrap().value,
+                Value::none(),
+                "{ty} {value}"
+            );
+
+            match value.as_option() {
+                Some(Some(inner)) => {
+                    assert_eq!(run("y!").unwrap().value, *inner, "{ty} {value}");
+                    assert_eq!(
+                        run("y.unwrap_or(y!)").unwrap().value,
+                        *inner,
+                        "{ty} {value}"
+                    );
+                }
+                _ => {
+                    let error = run("y!").unwrap_err();
+                    assert_eq!(
+                        error.to_string(),
+                        "`!` found no value: the optional value is none"
+                    );
+                }
+            }
+        }
+    }
 }

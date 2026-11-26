@@ -178,7 +178,7 @@ fn bad_var() {
         "x:Int",
         "x:Float=1",
         "x:Int=abc",
-        "x:Option<Option<Int>>=none",
+        "x:Option<Option<Int>>=some(1)",
     ] {
         let out = run(&["eval", "1", "--var", var], "");
         assert!(!out.ok, "{var}");

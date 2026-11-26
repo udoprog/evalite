@@ -422,8 +422,7 @@ impl Want {
         }
     }
 
-    /// Options of what this takes, which `!` unwraps to it. An option
-    /// of an option is not a type, so an option taken has none.
+    /// Options of what this takes, which `!` unwraps to it.
     fn option_of(self) -> Self {
         match self {
             Self::Any => Self::OneOf(vec![Pattern::Option]),
@@ -431,11 +430,10 @@ impl Want {
                 let mut out = Self::OneOf(Vec::new());
 
                 for p in patterns {
-                    match p {
-                        Pattern::Type(Type(Kind::Option(_))) | Pattern::Option => {}
-                        Pattern::Type(t) => out.push(Pattern::Type(Type::option(t))),
-                        _ => out.push(Pattern::Option),
-                    }
+                    out.push(match p {
+                        Pattern::Type(t) => Pattern::Type(Type::option(t)),
+                        _ => Pattern::Option,
+                    });
                 }
 
                 out
@@ -443,27 +441,17 @@ impl Want {
         }
     }
 
-    /// The one type that is not an option this takes, if that is all it
-    /// takes: what `_!` gives in its place.
+    /// What `_!` gives in this place, if anything fits it: an option's
+    /// value may be of any type, options too, so anything that fits here
+    /// does. Its type is known when this takes one type alone.
     fn unwrapped(&self) -> Option<Option<Type>> {
         match self {
             Self::Any => Some(None),
-            Self::OneOf(patterns) => {
-                // `!` never gives an option, so a place only an option fits,
-                // such as before `.unwrap_or(...)`, takes no `_!`.
-                let mut takes = patterns.iter().filter(|p| match p {
-                    Pattern::Option | Pattern::Type(Type(Kind::Option(_))) => false,
-                    Pattern::Method(name) => methods::METHODS
-                        .iter()
-                        .any(|m| m.name == name && !matches!(m.receiver, Shape::Option(_))),
-                    _ => true,
-                });
-
-                match (takes.next()?, takes.next()) {
-                    (Pattern::Type(ty), None) => Some(Some(ty.clone())),
-                    _ => Some(None),
-                }
-            }
+            Self::OneOf(patterns) => match patterns.as_slice() {
+                [] => None,
+                [Pattern::Type(ty)] => Some(Some(ty.clone())),
+                _ => Some(None),
+            },
         }
     }
 

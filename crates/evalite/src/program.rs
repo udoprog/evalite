@@ -12,9 +12,11 @@ pub(crate) const FORMAT: u32 = 3;
 /// One instruction of a stack machine over words of memory. A value takes
 /// the words its type's layout gives it: one for an `Int`, a `Bool` (0 or
 /// 1), and a string, list or record (a reference packing where its parts
-/// are and how many there are); an option is one word with
-/// [`Word::NONE`](crate::word::Word::NONE) for absent, except an `Option<Int>`,
-/// which is two (present or not, then the `Int`). Operands are pushed in
+/// are and how many there are). An option of a `Bool`, string, list or
+/// record is one word with [`Word::NONE`](crate::word::Word::NONE) for
+/// absent; an option of an `Int` or of an option is tagged, a word for
+/// present or not, then its value's words, so `Option<Int>` is two words
+/// and `Option<Option<Int>>` three. Operands are pushed in
 /// source order, so a binary operator finds its right operand on top.
 ///
 /// Instructions whose work depends on a type carry it, and the verifier
@@ -76,7 +78,7 @@ pub(crate) enum Instr {
     /// `value.clamp(low, high)`.
     Clamp,
     /// `lookup(index, list)` of a list of `T`s: an `Option<T>`, absent when
-    /// the index is out of range, or the entry itself when `T` is an option.
+    /// the index is out of range.
     Lookup(TypeId),
     /// `option.unwrap_or(default)` of this option type.
     UnwrapOr(TypeId),
@@ -627,12 +629,7 @@ impl Verifier<'_> {
                         .map_err(|_| fail(Invalid::LookupNonList))?;
                     need(stack.pop(), int)?;
 
-                    // An option of the entry, which is the entry itself
-                    // when it is an option.
-                    match self.types.get(entry) {
-                        Some(TypeNode::Option(_)) => entry,
-                        _ => self.find(TypeNode::Option(entry))?,
-                    }
+                    self.find(TypeNode::Option(entry))?
                 }
                 Instr::List { len, entry } => {
                     self.known(entry)?;

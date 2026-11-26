@@ -597,21 +597,20 @@ impl<'a> Run<'a> {
                 let i = self.pop_int()?;
                 let at = usize::try_from(i).ok().filter(|at| *at < len);
 
-                // An `Int` entry is given as an `Option<Int>`, two words; an
-                // `Option<Int>` one as itself; and any other as one word,
-                // `Word::NONE` when out of range.
-                let int = types.get(entry) == Some(&TypeNode::Int);
+                // An option of the entry: tagged when the entry has no
+                // niche, else the entry's one word or `Word::NONE`.
+                let width = types.width(entry);
+                let tagged = !types.has_niche(entry);
 
                 match at {
-                    Some(at) if int => {
-                        self.push(Word::present(true))?;
-                        self.push_entry(start, at, 1)?;
+                    Some(at) => {
+                        if tagged {
+                            self.push(Word::present(true))?;
+                        }
+
+                        self.push_entry(start, at, width)?;
                     }
-                    Some(at) => self.push_entry(start, at, types.width(entry))?,
-                    None if int || types.is_option_int(entry) => {
-                        self.push(Word::present(false))?;
-                        self.push(Word::int(0))?;
-                    }
+                    None if tagged => self.push_absent(width)?,
                     None => self.push(Word::NONE)?,
                 }
 
@@ -674,31 +673,46 @@ impl<'a> Run<'a> {
                 Word::int(value.clamp(low, high))
             }
             Instr::UnwrapOr(option) => {
-                let default = self.pop()?;
+                if let Some(width) = types.tagged(option) {
+                    // The option's tag, its value and the default, each
+                    // value `width` words: the one kept moves over the tag.
+                    let tag = self.below(width.saturating_mul(2).saturating_add(1))?;
+                    let keep = if self.get(Some(tag))?.as_bool()? {
+                        tag.saturating_add(1)
+                    } else {
+                        tag.saturating_add(1).saturating_add(width)
+                    };
 
-                if types.is_option_int(option) {
-                    let value = self.pop()?;
-                    let present = self.pop()?.as_bool()?;
-                    if present { value } else { default }
-                } else {
-                    let value = self.pop()?;
-                    if value.is_none() { default } else { value }
+                    self.move_down(keep, tag, width)?;
+                    return Ok(next);
                 }
+
+                let default = self.pop()?;
+                let value = self.pop()?;
+                if value.is_none() { default } else { value }
             }
             Instr::Unwrap(option) => {
-                let value = if types.is_option_int(option) {
-                    let value = self.pop()?;
-                    self.pop()?.as_bool()?.then_some(value)
-                } else {
-                    Some(self.pop()?).filter(|value| !value.is_none())
-                };
+                if let Some(width) = types.tagged(option) {
+                    let tag = self.below(width.saturating_add(1))?;
 
-                value.ok_or_else(|| RunError::new(Message::UnwrapNone))?
+                    if !self.get(Some(tag))?.as_bool()? {
+                        return Err(RunError::new(Message::UnwrapNone));
+                    }
+
+                    self.move_down(tag.saturating_add(1), tag, width)?;
+                    return Ok(next);
+                }
+
+                Some(self.pop()?)
+                    .filter(|value| !value.is_none())
+                    .ok_or_else(|| RunError::new(Message::UnwrapNone))?
             }
             Instr::IsSome(option) | Instr::IsNone(option) => {
-                let none = if types.is_option_int(option) {
-                    self.pop()?;
-                    !self.pop()?.as_bool()?
+                let none = if let Some(width) = types.tagged(option) {
+                    let tag = self.below(width.saturating_add(1))?;
+                    let present = self.get(Some(tag))?.as_bool()?;
+                    self.drop_words(width.saturating_add(1))?;
+                    !present
                 } else {
                     self.pop()?.is_none()
                 };
@@ -812,6 +826,50 @@ impl<'a> Run<'a> {
         self.sp = sp;
         self.peak_sp = self.peak_sp.max(sp);
         Ok(at)
+    }
+
+    /// Where the word `n` words below the top of the stack is, `n` from 1.
+    fn below(&self, n: usize) -> Result<usize, RunError> {
+        self.sp
+            .checked_sub(n)
+            .and_then(|at| self.stack_base.checked_add(at))
+            .ok_or_else(|| fault(Fault::EmptyStack))
+    }
+
+    /// Drop the top `n` words of the stack.
+    fn drop_words(&mut self, n: usize) -> Result<(), RunError> {
+        self.sp = self
+            .sp
+            .checked_sub(n)
+            .ok_or_else(|| fault(Fault::EmptyStack))?;
+        Ok(())
+    }
+
+    /// Move the `n` words at `from` down to `to`, below them on the stack,
+    /// and make them its top.
+    fn move_down(&mut self, from: usize, to: usize, n: usize) -> Result<(), RunError> {
+        let end = from
+            .checked_add(n)
+            .filter(|end| *end <= self.words.len() && to <= from)
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+        self.words.copy_within(from..end, to);
+        self.sp = to
+            .checked_add(n)
+            .and_then(|top| top.checked_sub(self.stack_base))
+            .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
+        Ok(())
+    }
+
+    /// Push an absent tagged option whose value is `width` words: its tag,
+    /// then zeros where the value would be.
+    fn push_absent(&mut self, width: usize) -> Result<(), RunError> {
+        self.push(Word::present(false))?;
+
+        for _ in 0..width {
+            self.push(Word::int(0))?;
+        }
+
+        Ok(())
     }
 
     fn push(&mut self, word: Word) -> Result<(), RunError> {
@@ -992,14 +1050,20 @@ impl<'a> Run<'a> {
             let ty_node = types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))?;
 
             let word = match (ty_node, &value.0) {
-                (TypeNode::Option(_), Repr::None) if types.is_option_int(ty) => {
-                    self.put(Some(dest), Word::present(false))?;
-                    self.put(dest.checked_add(1), Word::int(0))?;
-                    continue;
-                }
-                (TypeNode::Option(_), Repr::None) => Word::NONE,
+                (TypeNode::Option(_), Repr::None) => match types.tagged(ty) {
+                    Some(width) => {
+                        self.put(Some(dest), Word::present(false))?;
+
+                        for n in 1..=width {
+                            self.put(dest.checked_add(n), Word::int(0))?;
+                        }
+
+                        continue;
+                    }
+                    None => Word::NONE,
+                },
                 (TypeNode::Option(inner), Repr::Some(value)) => {
-                    let dest = if types.is_option_int(ty) {
+                    let dest = if types.tagged(ty).is_some() {
                         self.put(Some(dest), Word::present(true))?;
                         dest.checked_add(1)
                             .ok_or_else(|| fault(Fault::OutsideMemory))?
@@ -1074,7 +1138,7 @@ impl<'a> Run<'a> {
 
                     match types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))? {
                         TypeNode::Option(inner) => {
-                            let at = if types.is_option_int(ty) {
+                            let at = if types.tagged(ty).is_some() {
                                 if !word.as_bool()? {
                                     out.push(Value::none());
                                     continue;

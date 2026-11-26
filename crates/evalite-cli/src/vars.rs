@@ -99,11 +99,6 @@ fn parse_type_at(text: &str, depth: usize) -> Result<Type, VarError> {
             .and_then(|t| t.strip_suffix('>'))
         {
             let inner = parse_type_at(inner, depth.saturating_add(1))?;
-
-            if head == "Option" && inner.as_option().is_some() {
-                return fail("`Option<Option<T>>` is not a type");
-            }
-
             return Ok(make(inner));
         }
     }
@@ -313,7 +308,10 @@ mod tests {
         assert!(parse_var("a:Int").is_err());
         assert!(parse_var("a:Float=1").is_err());
         assert!(parse_var("a:Int=x").is_err());
-        assert!(parse_var("a:Option<Option<Int>>=none").is_err());
+        assert!(parse_var("a:Option<Option<Int>>=none").is_ok());
+        assert!(parse_var("a:Option<Option<Int>>=some(none)").is_ok());
+        assert!(parse_var("a:Option<Option<Int>>=some(some(1))").is_ok());
+        assert!(parse_var("a:Option<Option<Int>>=some(1)").is_err());
         assert!(parse_var("a:Int=1 2").is_err());
     }
 }

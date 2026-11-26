@@ -16,8 +16,8 @@ pub const MAX_TYPE_DEPTH: usize = 64;
 /// [`Type::record`], and look into one with the `is_*` and `as_*`
 /// try-accessors, which give `false` or `None` for any other type.
 ///
-/// `Option<Option<T>>` is not a type: an optional value is either absent or
-/// a `T`, so [`Environment`](crate::Environment) refuses declaring one.
+/// Options nest: an `Option<Option<Int>>` is `none`, `some(none)` or
+/// `some(some(n))`, as a lookup in a list of optional values gives.
 ///
 /// ```
 /// use evalite::Type;
@@ -289,12 +289,10 @@ pub(crate) fn is_field_name(name: &str) -> bool {
 /// Why a type cannot be declared.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TypeFault {
-    NestedOption,
     TooDeep,
 }
 
-/// Check that `ty` is a type evalite has: no `Option<Option<T>>`, at most
-/// [`MAX_TYPE_DEPTH`] deep.
+/// Check that `ty` is a type evalite has: at most [`MAX_TYPE_DEPTH`] deep.
 pub(crate) fn check_type(ty: &Type) -> Result<(), TypeFault> {
     let mut stack = vec![(ty, 1usize)];
 
@@ -307,14 +305,7 @@ pub(crate) fn check_type(ty: &Type) -> Result<(), TypeFault> {
 
         match ty {
             Type(Kind::Int) | Type(Kind::Bool) | Type(Kind::String) => {}
-            Type(Kind::List(entry)) => stack.push((entry, next)),
-            Type(Kind::Option(value)) => {
-                if value.is_option() {
-                    return Err(TypeFault::NestedOption);
-                }
-
-                stack.push((value, next));
-            }
+            Type(Kind::List(entry)) | Type(Kind::Option(entry)) => stack.push((entry, next)),
             Type(Kind::Record(fields)) => stack.extend(fields.values().map(|t| (t, next))),
         }
     }
@@ -412,6 +403,8 @@ pub(crate) struct Types {
     ids: HashMap<TypeNode, TypeId>,
     /// How deeply each type nests.
     depths: Vec<usize>,
+    /// The words a value of each type takes where it is held.
+    widths: Vec<usize>,
 }
 
 impl Types {
@@ -431,21 +424,38 @@ impl Types {
         self.ids.get(node).copied()
     }
 
-    /// Whether `id` is `Option<Int>`, the one type two words wide.
-    pub(crate) fn is_option_int(&self, id: TypeId) -> bool {
+    /// Whether a value of type `id` is one word that is never
+    /// [`Word::NONE`](crate::word::Word::NONE): a `Bool`, or a string, list
+    /// or record, which are a word referring to their parts. An option of
+    /// it can use `Word::NONE` for absent.
+    pub(crate) fn has_niche(&self, id: TypeId) -> bool {
+        matches!(
+            self.get(id),
+            Some(TypeNode::Bool | TypeNode::String | TypeNode::List(_) | TypeNode::Record(_))
+        )
+    }
+
+    /// The words of the value inside the option `id`, when the option is
+    /// tagged: a word saying whether it is present, then its value, always
+    /// held, so an absent one takes the same room. An option is tagged when
+    /// its value has no niche: an `Option<Int>`, since every word is an
+    /// `Int`, and an option of an option, since the inner one's absence is
+    /// a value of the outer. `None` for any other type.
+    pub(crate) fn tagged(&self, id: TypeId) -> Option<usize> {
         match self.get(id) {
-            Some(TypeNode::Option(inner)) => self.get(*inner) == Some(&TypeNode::Int),
-            _ => false,
+            Some(TypeNode::Option(inner)) if !self.has_niche(*inner) => Some(self.width(*inner)),
+            _ => None,
         }
     }
 
-    /// The words a value of type `id` takes where it is held: two for an
-    /// `Option<Int>` (whether it is present, then the `Int`), one for
-    /// every other type. Strings, lists and records are a word referring
-    /// to their parts, and every other option is one word with
-    /// [`Word::NONE`](crate::word::Word::NONE) for absent.
+    /// The words a value of type `id` takes where it is held: one for an
+    /// `Int`, a `Bool`, a string, list or record, one for an option of a
+    /// value with a niche (with [`Word::NONE`](crate::word::Word::NONE) for
+    /// absent), and one more than its value for a [`tagged`](Self::tagged)
+    /// option, so `Option<Int>` is two words and `Option<Option<Int>>`
+    /// three. It is worked out once, when the type is added.
     pub(crate) fn width(&self, id: TypeId) -> usize {
-        if self.is_option_int(id) { 2 } else { 1 }
+        self.widths.get(id.index()).copied().unwrap_or(1)
     }
 
     /// The word offset of each field of the record `fields` from its
@@ -490,9 +500,17 @@ impl Types {
             return None;
         }
 
+        let width = match &node {
+            TypeNode::Option(inner) if !self.has_niche(*inner) => {
+                self.width(*inner).saturating_add(1)
+            }
+            _ => 1,
+        };
+
         let id = TypeId(u32::try_from(self.nodes.len()).ok()?);
         self.nodes.push(node.clone());
         self.depths.push(depth);
+        self.widths.push(width);
         self.ids.insert(node, id);
         Some(id)
     }
@@ -600,8 +618,7 @@ impl Types {
     }
 
     /// Check a stored table: each part before what holds it, each node
-    /// once, records sorted, no `Option<Option<T>>` and nothing nested
-    /// past [`MAX_TYPE_DEPTH`].
+    /// once, records sorted, and nothing nested past [`MAX_TYPE_DEPTH`].
     pub(crate) fn from_stored(nodes: Vec<TypeNode>) -> Result<Self, StoreError> {
         let mut types = Self::new();
 
@@ -619,9 +636,6 @@ impl Types {
             }
 
             match &node {
-                TypeNode::Option(t) if matches!(types.get(*t), Some(TypeNode::Option(..))) => {
-                    return Err(fail(Invalid::OptionOfOption));
-                }
                 TypeNode::Record(fields)
                     if !fields.windows(2).all(|w| match w {
                         [a, b] => a.name < b.name,

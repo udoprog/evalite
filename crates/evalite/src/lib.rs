@@ -102,7 +102,9 @@
 //!   function declared with it, or from `lookup`. It is never used as a `T`:
 //!   unwrap it with `x.unwrap_or(0)`, which gives `0` when it is absent, or
 //!   with `x!`, which stops the run with an error when it is absent. Test it
-//!   with `x.is_some()` and `x.is_none()`. `Option<Option<T>>` is not a type.
+//!   with `x.is_some()` and `x.is_none()`. Options nest: an
+//!   `Option<Option<Int>>` is `none`, `some(none)` or `some(some(1))`, and
+//!   `x!!` unwraps both.
 //!
 //! Operators, tightest first. Binary operators are left-associative, except
 //! comparisons, which do not chain (`a < b < c` is an error):
@@ -142,7 +144,8 @@
 //! `lookup(1, [10, 20])` is `some(20)`, an `Option<Int>`, and
 //! `lookup(2, [10, 20])` is `none`. Unwrap it like any option, as in
 //! `lookup(rank, [10, 20, 30]).unwrap_or(0)`. On a list of options it gives
-//! the entry itself, since `Option<Option<T>>` is not a type.
+//! an option of an option, so an index out of range (`none`) is told apart
+//! from an absent entry (`some(none)`).
 //!
 //! Every other name, value or function, is one the caller declares, with its
 //! type. A function name may be declared several ways, and a call takes the

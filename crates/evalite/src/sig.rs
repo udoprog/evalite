@@ -17,8 +17,7 @@ pub(crate) enum Shape {
     /// The type variable `T`, bound by the first argument that holds it.
     Var,
     List(&'static Shape),
-    /// `Option<T>`, which is `T` itself when `T` is already an option,
-    /// since `Option<Option<T>>` is not a type.
+    /// `Option<T>`.
     Option(&'static Shape),
 }
 
@@ -58,10 +57,7 @@ impl Shape {
             Self::Bool => Type::bool(),
             Self::Var => t?.clone(),
             Self::List(inner) => Type::list(inner.resolve(t)?),
-            Self::Option(inner) => match inner.resolve(t)? {
-                option @ Type(Kind::Option(_)) => option,
-                value => Type::option(value),
-            },
+            Self::Option(inner) => Type::option(inner.resolve(t)?),
         })
     }
 

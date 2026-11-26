@@ -152,15 +152,25 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         ("_", 0, Some(Type::int()), INT.to_vec()),
         ("_", 0, Some(Type::bool()), BOOL.to_vec()),
         // What `!` unwraps is an option, of the type its place takes.
-        ("1 + _!", 0, None, vec!["bonus", "m.brawl", "lookup(_, _)"]),
-        ("_!", 0, None, vec!["bonus", "m.brawl", "lookup(_, _)"]),
-        ("_!", 0, Some(Type::bool()), vec!["lookup(_, _)"]),
+        (
+            "1 + _!",
+            0,
+            None,
+            vec!["bonus", "m.brawl", "lookup(_, _)", "_!"],
+        ),
+        (
+            "_!",
+            0,
+            None,
+            vec!["bonus", "m.brawl", "lookup(_, _)", "_!"],
+        ),
+        ("_!", 0, Some(Type::bool()), vec!["lookup(_, _)", "_!"]),
         // `lookup` gives an option, so it fits where one is wanted.
         (
             "_",
             0,
             Some(Type::option(Type::int())),
-            vec!["bonus", "m.brawl", "lookup(_, _)"],
+            vec!["bonus", "m.brawl", "lookup(_, _)", "_!"],
         ),
         ("_", 0, Some(Type::string()), vec!["table", r#""""#, "_!"]),
         (
@@ -225,7 +235,7 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             "_.unwrap_or(1)",
             0,
             None,
-            vec!["bonus", "m.brawl", "lookup(_, _)"],
+            vec!["bonus", "m.brawl", "lookup(_, _)", "_!"],
         ),
         ("_.len()", 0, None, vec!["dots", "health.count", "_!"]),
         ("_.abs()", 0, None, INT.to_vec()),

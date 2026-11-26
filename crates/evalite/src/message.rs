@@ -114,7 +114,6 @@ pub(crate) enum Message {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Invalid {
     TypeRefersLater,
-    OptionOfOption,
     FieldsUnsorted,
     TypeRepeated,
     TypeTooDeep,
@@ -162,7 +161,6 @@ impl fmt::Display for Invalid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let what = match self {
             Self::TypeRefersLater => "the type refers to a later type",
-            Self::OptionOfOption => "the type is an option of an option",
             Self::FieldsUnsorted => "the type has fields that are not sorted and unique",
             Self::TypeRepeated => "the type repeats an earlier type",
             Self::TypeTooDeep => "the type nests too deeply",

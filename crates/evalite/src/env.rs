@@ -16,9 +16,9 @@ pub enum Builtin {
     Max,
     /// `lookup(index, list)`: the `List<T>`'s entry at an `Int` index, from
     /// 0, or none when the index is out of range, so `lookup(1, [10, 20])`
-    /// is `some(20)` and `lookup(2, [10, 20])` is `none`. A list of
-    /// options gives the option itself, since `Option<Option<T>>` is not a
-    /// type.
+    /// is `some(20)` and `lookup(2, [10, 20])` is `none`. Of a list of
+    /// options it is an option of an option, so `none` (out of range) is
+    /// told apart from `some(none)` (an absent entry).
     Lookup,
 }
 
@@ -115,8 +115,14 @@ impl Overload {
 ///     "`Strength` is not a valid name, names are lowercase letters, digits and `_`, starting with a letter or `_`"
 /// );
 ///
-/// let error = env.value("x", Type::option(Type::option(Type::int()))).unwrap_err();
-/// assert_eq!(error.to_string(), "the type of `x` has an option of an option, which is not a type");
+/// let mut deep = Type::int();
+///
+/// for _ in 0..evalite::MAX_TYPE_DEPTH {
+///     deep = Type::list(deep);
+/// }
+///
+/// let error = env.value("x", deep).unwrap_err();
+/// assert_eq!(error.to_string(), "the type of `x` nests more than 64 levels");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclareError {
@@ -129,8 +135,6 @@ pub(crate) enum DeclareKind {
     /// A name other than a lowercase letter or `_` followed by lowercase
     /// letters, digits and `_`.
     InvalidName,
-    /// `Option<Option<T>>`, which is not a type.
-    NestedOption,
     /// A type nesting more than [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH)
     /// levels.
     TypeTooDeep,
@@ -154,10 +158,6 @@ impl fmt::Display for DeclareError {
             DeclareKind::InvalidName => write!(
                 f,
                 "`{name}` is not a valid name, names are lowercase letters, digits and `_`, starting with a letter or `_`"
-            ),
-            DeclareKind::NestedOption => write!(
-                f,
-                "the type of `{name}` has an option of an option, which is not a type"
             ),
             DeclareKind::TypeTooDeep => write!(
                 f,
@@ -212,9 +212,8 @@ impl Environment {
     /// # Errors
     ///
     /// Returns a [`DeclareError`] when `name` is not a valid name (lowercase
-    /// letters, digits and `_`, starting with a letter or `_`), or `ty` holds
-    /// an `Option<Option<T>>` or nests deeper than
-    /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH).
+    /// letters, digits and `_`, starting with a letter or `_`), or `ty` nests
+    /// deeper than [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH).
     pub fn value(&mut self, name: &str, ty: Type) -> Result<(), DeclareError> {
         check_name(name)?;
         check(name, &ty)?;
@@ -240,7 +239,7 @@ impl Environment {
     /// # Errors
     ///
     /// Returns a [`DeclareError`] when `name` is not a valid name, or a
-    /// parameter or `ret` holds an `Option<Option<T>>` or nests deeper than
+    /// parameter or `ret` nests deeper than
     /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH).
     pub fn function(
         &mut self,
@@ -286,7 +285,6 @@ fn check_name(name: &str) -> Result<(), DeclareError> {
 
 fn check(name: &str, ty: &Type) -> Result<(), DeclareError> {
     check_type(ty).map_err(|fault| match fault {
-        TypeFault::NestedOption => DeclareError::new(DeclareKind::NestedOption, name),
         TypeFault::TooDeep => DeclareError::new(DeclareKind::TypeTooDeep, name),
     })
 }

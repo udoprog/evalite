@@ -9,9 +9,11 @@
 //! - a reference packs where a string's, list's or record's parts start
 //!   (the low 32 bits) and how many there are (the high 32: a string's
 //!   bytes, a list's entries or a record's words), never all ones;
-//! - an `Option<Int>` is two words, a presence word (a `Bool`: 1 present,
-//!   0 absent) then the `Int`; every other option is one word,
-//!   [`Word::NONE`] when absent;
+//! - an option of a `Bool`, string, list or record is one word,
+//!   [`Word::NONE`] when absent, since no such value is `Word::NONE`;
+//! - an option of an `Int` or of an option is tagged: a presence word (a
+//!   `Bool`: 1 present, 0 absent) then its value's words, zero when absent,
+//!   so `Option<Int>` is two words and `Option<Option<Int>>` three;
 //! - a string's bytes are packed 8 to a word, little-endian.
 //!
 //! Nothing outside this module sees the raw `u64`.

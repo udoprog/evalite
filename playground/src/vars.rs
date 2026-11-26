@@ -159,8 +159,6 @@ impl Cursor<'_> {
 
                 if word == "List" {
                     Ok(Type::list(inner))
-                } else if inner.as_option().is_some() {
-                    fail("`Option<Option<T>>` is not a type")
                 } else {
                     Ok(Type::option(inner))
                 }
@@ -312,7 +310,13 @@ mod tests {
         );
         let track = parse_type("{boxes: Int, count: List<Int>}").unwrap();
         assert_eq!(track.to_string(), "{boxes: Int, count: List<Int>}");
-        assert!(parse_type("Option<Option<Int>>").is_err());
+        let nested = parse_type("Option<Option<Int>>").unwrap();
+        assert_eq!(nested.to_string(), "Option<Option<Int>>");
+        assert_eq!(
+            parse_value(&nested, "some(none)").unwrap().to_string(),
+            "some(none)"
+        );
+        assert!(parse_value(&nested, "some(1)").is_err());
         assert!(parse_type("Float").is_err());
         assert!(parse_type("Int x").is_err());
     }

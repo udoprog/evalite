@@ -211,8 +211,11 @@ fn functions() {
             "lookup(1, tracks)",
             "Option<{boxes: Int, count: List<Int>}>",
         ),
-        ("lookup(1, [bonus])", "Option<Int>"),
-        ("lookup(1, [maybe, maybe])", "Option<Bool>"),
+        ("lookup(1, [bonus])", "Option<Option<Int>>"),
+        ("lookup(1, [maybe, maybe])", "Option<Option<Bool>>"),
+        ("lookup(1, [bonus])!", "Option<Int>"),
+        ("lookup(1, [bonus])!!", "Int"),
+        ("lookup(1, [bonus]).unwrap_or(label(3))", "Option<Int>"),
         ("lookup(1, levels).unwrap_or(0)", "Int"),
         (r#"lookup(primal_urge, "Essence (1e)")"#, "Int"),
         ("count(health)", "Int"),
@@ -829,27 +832,28 @@ fn declarations() {
         );
     }
 
+    // Options nest, anywhere a type may be written.
     assert_eq!(
         env.value("x", Type::option(Type::option(Type::int()))),
-        Err(DeclareError::new(DeclareKind::NestedOption, "x"))
+        Ok(())
     );
     assert_eq!(
         env.value(
-            "x",
+            "y",
             Type::list(Type::record([(
                 "a",
                 Type::option(Type::option(Type::int()))
             )]))
         ),
-        Err(DeclareError::new(DeclareKind::NestedOption, "x"))
+        Ok(())
     );
     assert_eq!(
-        env.function("f", [Type::option(Type::option(Type::int()))], Type::int()),
-        Err(DeclareError::new(DeclareKind::NestedOption, "f"))
-    );
-    assert_eq!(
-        env.function("f", [], Type::option(Type::option(Type::int()))),
-        Err(DeclareError::new(DeclareKind::NestedOption, "f"))
+        env.function(
+            "f",
+            [Type::option(Type::option(Type::int()))],
+            Type::option(Type::option(Type::bool()))
+        ),
+        Ok(())
     );
 
     let mut deep = Type::int();
@@ -868,10 +872,6 @@ fn declarations() {
         (
             DeclareError::new(DeclareKind::InvalidName, "A"),
             "`A` is not a valid name, names are lowercase letters, digits and `_`, starting with a letter or `_`",
-        ),
-        (
-            DeclareError::new(DeclareKind::NestedOption, "x"),
-            "the type of `x` has an option of an option, which is not a type",
         ),
         (
             DeclareError::new(DeclareKind::TypeTooDeep, "x"),
@@ -1537,11 +1537,6 @@ fn tampered_programs() {
             "levels",
             Box::new(|s| s.types.push(TypeNode::Int)),
             "the type repeats an earlier type: at type 3: while verifying the program",
-        ),
-        (
-            "bonus",
-            Box::new(|s| s.types.push(TypeNode::Option(TypeId(2)))),
-            "the type is an option of an option: at type 3: while verifying the program",
         ),
         (
             "specialties",
