@@ -166,6 +166,15 @@
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! ## Structures
+//!
+//! A [`Structure`] is an expression as data, the shape a form builds: a
+//! table of [`Node`]s, which may have holes (`_` as text) while it is being
+//! edited. It encodes with `musli`, and compiles exactly as its
+//! [`to_text`](Structure::to_text) would, with the same errors, each also
+//! naming the [`NodeId`] it is about; a hole is an error. Writing one as
+//! text and parsing that back gives the same structure.
+//!
 //! ## Grammar
 //!
 //! Lowest precedence first; whitespace may separate any two tokens.
@@ -215,6 +224,7 @@ mod error;
 mod lexer;
 mod parser;
 mod program;
+mod structure;
 mod syntax;
 mod types;
 mod vm;
@@ -228,11 +238,18 @@ mod check_tests;
 #[cfg(test)]
 mod vm_tests;
 
+#[cfg(test)]
+mod structure_tests;
+
 pub use self::check::{compile, compile_with};
 pub use self::env::{Builtin, DeclareError, Environment};
 pub use self::error::{Arity, Callee, Delimiter, Error, ErrorKind, Found, Nesting};
 pub use self::parser::{DEFAULT_MAX_DEPTH, Options, Tree, parse, parse_with};
 pub use self::program::{Memory, Program, StoreError};
+pub use self::structure::{
+    BinaryOp, EditError, HOLE, LoadError, Node, NodeId, Structure, StructureError,
+    StructureErrorKind, UnaryOp,
+};
 pub use self::syntax::{Syntax, unescape};
 pub use self::types::{MAX_TYPE_DEPTH, Type};
 pub use self::vm::{

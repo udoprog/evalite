@@ -85,7 +85,7 @@ pub(crate) fn is_value_name(name: &str) -> bool {
 }
 
 /// Whether a record field can be read as `.name`.
-fn is_field_name(name: &str) -> bool {
+pub(crate) fn is_field_name(name: &str) -> bool {
     let mut chars = name.chars();
 
     chars
