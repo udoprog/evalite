@@ -8,7 +8,7 @@ use crate::Type;
 use crate::env::{Builtin, Environment, Overload};
 use crate::methods::{self, Receiver};
 use crate::structure::{
-    BinaryOp, EditError, HOLE, Node, NodeId, Structure, StructureError, UnaryOp, escape,
+    BinaryOp, EditError, HOLE, Node, NodeId, Repr, Structure, StructureError, UnaryOp, escape,
     is_reserved,
 };
 use crate::types::Kind;
@@ -30,14 +30,15 @@ pub enum CompletionKind {
     Method,
     /// A call of the environment's function.
     Function,
+    /// A literal, such as `0`, `true` or `""`.
     Literal,
+    /// An operator with holes for its operands, such as `_ + _`.
     Operator,
 }
 
 /// How [`Structure::apply`] fills a hole with a [`Completion`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Insert {
+pub(crate) enum Insert {
     /// Put this expression, holes and all, in the node's place.
     Expr(Structure),
     /// Name a member hole's field, read as `["name"]` when it is not
@@ -47,15 +48,108 @@ pub enum Insert {
     Method { name: String, args: usize },
 }
 
-/// Something that fits in a hole.
+/// Something that fits in a hole, from [`Structure::complete`], which
+/// [`Structure::apply`] puts there.
+///
+/// It is read through its [`label`](Self::label), [`kind`](Self::kind)
+/// and [`ty`](Self::ty); what it inserts stays inside, so it is only
+/// applied as offered.
+///
+/// ```
+/// use evalite::{CompletionKind, Environment, Structure, Type};
+///
+/// let mut env = Environment::with_builtins();
+/// env.value("bonus", Type::option(Type::int()))?;
+///
+/// let mut s = Structure::from_text("1 + _")?;
+/// let hole = s.holes()[0];
+/// let completions = s.complete(&env, hole, None)?;
+///
+/// let unwrap = completions
+///     .iter()
+///     .find(|c| c.label() == "bonus.unwrap_or(_)")
+///     .ok_or("not offered")?;
+/// assert_eq!(unwrap.kind(), CompletionKind::Method);
+/// assert_eq!(unwrap.ty(), Some(&Type::int()));
+///
+/// s.apply(hole, unwrap)?;
+/// assert_eq!(s.to_text(), "1 + bonus.unwrap_or(_)");
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Completion {
-    /// What it looks like, as text, such as `bonus.unwrap_or(_)`.
-    pub label: String,
-    pub kind: CompletionKind,
-    /// The type it gives, when known before its holes are filled.
-    pub ty: Option<Type>,
-    pub insert: Insert,
+    pub(crate) label: String,
+    pub(crate) kind: CompletionKind,
+    pub(crate) ty: Option<Type>,
+    pub(crate) insert: Insert,
+}
+
+impl Completion {
+    /// What it looks like, as text, such as `bonus.unwrap_or(_)`. At a
+    /// member hole it is the member alone: `unwrap_or(_)`, or a field's
+    /// name, or `["Brawl (bar)"]` for one not written as a name.
+    ///
+    /// ```
+    /// use evalite::{Environment, Structure, Type};
+    ///
+    /// let mut env = Environment::with_builtins();
+    /// env.value("m", Type::record([("athletics", Type::int()), ("Brawl (bar)", Type::int())]))?;
+    ///
+    /// let s = Structure::from_text("m._")?;
+    /// let labels = s
+    ///     .complete(&env, s.holes()[0], None)?
+    ///     .into_iter()
+    ///     .map(|c| c.label().to_owned())
+    ///     .collect::<Vec<_>>();
+    /// assert!(labels.iter().any(|l| l == "athletics"));
+    /// assert!(labels.iter().any(|l| l == r#"["Brawl (bar)"]"#));
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// What it offers: a value, field, method, call, literal or operator.
+    ///
+    /// ```
+    /// use evalite::{CompletionKind, Environment, Structure, Type};
+    ///
+    /// let mut env = Environment::with_builtins();
+    /// env.value("wits", Type::int())?;
+    ///
+    /// let s = Structure::from_text("_")?;
+    /// let all = s.complete(&env, s.root(), Some(&Type::int()))?;
+    /// let kind = |label: &str| all.iter().find(|c| c.label() == label).map(|c| c.kind());
+    /// assert_eq!(kind("wits"), Some(CompletionKind::Value));
+    /// assert_eq!(kind("0"), Some(CompletionKind::Literal));
+    /// assert_eq!(kind("_ + _"), Some(CompletionKind::Operator));
+    /// assert_eq!(kind("max(_, _)"), Some(CompletionKind::Function));
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn kind(&self) -> CompletionKind {
+        self.kind
+    }
+
+    /// The type it gives, when known before its holes are filled: `None`
+    /// for one whose type depends on what fills them.
+    ///
+    /// ```
+    /// use evalite::{Environment, Structure, Type};
+    ///
+    /// let mut env = Environment::with_builtins();
+    /// env.value("bonus", Type::option(Type::int()))?;
+    ///
+    /// let s = Structure::from_text("_")?;
+    /// let all = s.complete(&env, s.root(), Some(&Type::int()))?;
+    /// let ty = |label: &str| all.iter().find(|c| c.label() == label).map(|c| c.ty().cloned());
+    /// assert_eq!(ty("bonus.unwrap_or(_)"), Some(Some(Type::int())));
+    /// // The builtin `lookup` gives whatever its list holds.
+    /// assert_eq!(ty("lookup(_, _)"), Some(None));
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn ty(&self) -> Option<&Type> {
+        self.ty.as_ref()
+    }
 }
 
 /// Why a structure cannot be completed at a node.
@@ -227,12 +321,12 @@ impl Structure {
     /// The place's type comes from what holds it, and `root` is the type
     /// the whole expression must have, if any.
     ///
-    /// At a member hole (a [`Node::Field`] or [`Node::Method`] without a
+    /// At a member hole (a [`Node::field`] or [`Node::method`] without a
     /// name) these are its receiver's fields and methods; anywhere else,
     /// expressions to put in the node's place.
     ///
     /// ```
-    /// use evalite::{Environment, Insert, Structure, Type};
+    /// use evalite::{Environment, Structure, Type};
     ///
     /// let mut env = Environment::with_builtins();
     /// env.value("bonus", Type::option(Type::int()))?;
@@ -240,7 +334,7 @@ impl Structure {
     /// let mut s = Structure::from_text("1 + bonus._")?;
     /// let hole = s.holes()[0];
     ///
-    /// let labels = s.complete(&env, hole, None)?.into_iter().map(|c| c.label).collect::<Vec<_>>();
+    /// let labels = s.complete(&env, hole, None)?.into_iter().map(|c| c.label().to_owned()).collect::<Vec<_>>();
     /// assert_eq!(labels, ["unwrap_or(_)"]);
     ///
     /// let completion = &s.complete(&env, hole, None)?[0];
@@ -258,15 +352,15 @@ impl Structure {
         let want = self.want(env, at, root);
 
         let mut out = match node {
-            Node::Field {
+            Node(Repr::Field {
                 receiver,
                 name: None,
-            }
-            | Node::Method {
+            })
+            | Node(Repr::Method {
                 receiver,
                 name: None,
                 ..
-            } => {
+            }) => {
                 let program = self
                     .compile_at(*receiver, env)
                     .map_err(CompleteError::Receiver)?;
@@ -284,8 +378,8 @@ impl Structure {
     /// for it.
     pub fn apply(&mut self, at: NodeId, completion: &Completion) -> Result<(), EditError> {
         let (receiver, old_args) = match self.get(at) {
-            Some(Node::Field { receiver, .. }) => (Some(*receiver), Vec::new()),
-            Some(Node::Method { receiver, args, .. }) => (Some(*receiver), args.clone()),
+            Some(Node(Repr::Field { receiver, .. })) => (Some(*receiver), Vec::new()),
+            Some(Node(Repr::Method { receiver, args, .. })) => (Some(*receiver), args.clone()),
             Some(_) => (None, Vec::new()),
             None => return Err(EditError::UnknownNode(at)),
         };
@@ -298,14 +392,14 @@ impl Structure {
                 if is_field_name(name) && !is_reserved(name) {
                     self.replace(
                         at,
-                        Node::Field {
+                        Node(Repr::Field {
                             receiver,
                             name: Some(name.clone()),
-                        },
+                        }),
                     )
                 } else {
-                    let index = self.add(Node::String(name.clone()))?;
-                    self.replace(at, Node::Index { receiver, index })
+                    let index = self.add(Node(Repr::String(name.clone())))?;
+                    self.replace(at, Node(Repr::Index { receiver, index }))
                 }
             }
             Insert::Method { name, args } => {
@@ -315,17 +409,17 @@ impl Structure {
                     old_args
                 } else {
                     (0..*args)
-                        .map(|_| self.add(Node::Hole))
+                        .map(|_| self.add(Node(Repr::Hole)))
                         .collect::<Result<Vec<_>, _>>()?
                 };
 
                 self.replace(
                     at,
-                    Node::Method {
+                    Node(Repr::Method {
                         receiver,
                         name: Some(name.clone()),
                         args,
-                    },
+                    }),
                 )
             }
         }
@@ -364,13 +458,13 @@ impl Structure {
             };
 
             break match node {
-                Node::Unary {
+                Node(Repr::Unary {
                     op: UnaryOp::Neg, ..
-                } => Want::exactly(Type::int()),
-                Node::Unary {
+                }) => Want::exactly(Type::int()),
+                Node(Repr::Unary {
                     op: UnaryOp::Not, ..
-                } => Want::exactly(Type::bool()),
-                Node::Binary { op, left, right } => match op {
+                }) => Want::exactly(Type::bool()),
+                Node(Repr::Binary { op, left, right }) => match op {
                     BinaryOp::And | BinaryOp::Or => Want::exactly(Type::bool()),
                     BinaryOp::Eq | BinaryOp::Ne => {
                         let other = if *left == at { *right } else { *left };
@@ -385,12 +479,12 @@ impl Structure {
                     }
                     _ => Want::exactly(Type::int()),
                 },
-                Node::Call { function, args } => self.argument(env, function, args, at),
-                Node::Method {
+                Node(Repr::Call { function, args }) => self.argument(env, function, args, at),
+                Node(Repr::Method {
                     receiver,
                     name,
                     args,
-                } => {
+                }) => {
                     let sig = name.as_deref().and_then(|name| {
                         let ty = self.type_of(env, *receiver)?;
                         let (kind, _) = Receiver::of(&ty)?;
@@ -406,13 +500,13 @@ impl Structure {
                         _ => Want::Any,
                     }
                 }
-                Node::Field {
+                Node(Repr::Field {
                     name: Some(name), ..
-                } => Want::OneOf(vec![Pattern::Field(name.clone())]),
-                Node::Index { receiver, index } if *receiver == at => {
+                }) => Want::OneOf(vec![Pattern::Field(name.clone())]),
+                Node(Repr::Index { receiver, index }) if *receiver == at => {
                     Want::OneOf(match self.get(*index) {
-                        Some(Node::String(name)) => vec![Pattern::Field(name.clone())],
-                        Some(Node::Hole) => vec![Pattern::List, Pattern::Record],
+                        Some(Node(Repr::String(name))) => vec![Pattern::Field(name.clone())],
+                        Some(Node(Repr::Hole)) => vec![Pattern::List, Pattern::Record],
                         _ => {
                             steps_up.push(Up::ListOf);
                             at = parent;
@@ -420,14 +514,14 @@ impl Structure {
                         }
                     })
                 }
-                Node::Index { receiver, index } if *index == at => {
+                Node(Repr::Index { receiver, index }) if *index == at => {
                     match self.type_of(env, *receiver) {
                         Some(Type(Kind::List(_))) => Want::exactly(Type(Kind::Int)),
                         Some(Type(Kind::Record(_))) => Want::exactly(Type(Kind::String)),
                         _ => Want::Any,
                     }
                 }
-                Node::List { entries } => {
+                Node(Repr::List { entries }) => {
                     let sibling = entries
                         .iter()
                         .filter(|e| **e != at)
@@ -515,7 +609,7 @@ impl Structure {
 
         // A record's index: its fields' names.
         let record = match self.parent(at).and_then(|p| self.get(p)) {
-            Some(Node::Index { receiver, index }) if *index == at => {
+            Some(Node(Repr::Index { receiver, index })) if *index == at => {
                 match self.type_of(env, *receiver) {
                     Some(Type(Kind::Record(fields))) => Some(fields),
                     _ => None,

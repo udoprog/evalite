@@ -52,6 +52,14 @@ pub enum UnaryOp {
 }
 
 impl UnaryOp {
+    /// How it is written.
+    ///
+    /// ```
+    /// use evalite::UnaryOp;
+    ///
+    /// assert_eq!(UnaryOp::Neg.symbol(), "-");
+    /// assert_eq!(UnaryOp::Not.symbol(), "!");
+    /// ```
     pub fn symbol(self) -> &'static str {
         match self {
             Self::Neg => "-",
@@ -61,24 +69,49 @@ impl UnaryOp {
 }
 
 /// An operator between two operands.
+///
+/// The operators are the language's own, so a form can offer them as a
+/// menu; [`BinaryOp::ALL`] lists them. Their order is the stored form's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Encode, Decode)]
 pub enum BinaryOp {
+    /// `a + b`, of `Int`s.
     Add,
+    /// `a - b`, of `Int`s.
     Sub,
+    /// `a * b`, of `Int`s.
     Mul,
+    /// `a / b`, of `Int`s, rounding toward zero.
     Div,
+    /// `a % b`, of `Int`s.
     Rem,
+    /// `a == b`, of two `Int`s or two `Bool`s.
     Eq,
+    /// `a != b`, of two `Int`s or two `Bool`s.
     Ne,
+    /// `a < b`, of `Int`s.
     Lt,
+    /// `a <= b`, of `Int`s.
     Le,
+    /// `a > b`, of `Int`s.
     Gt,
+    /// `a >= b`, of `Int`s.
     Ge,
+    /// `a && b`, of `Bool`s, not reading `b` when `a` is `false`.
     And,
+    /// `a || b`, of `Bool`s, not reading `b` when `a` is `true`.
     Or,
 }
 
 impl BinaryOp {
+    /// Every operator, as a form would list them.
+    ///
+    /// ```
+    /// use evalite::BinaryOp;
+    ///
+    /// let symbols = BinaryOp::ALL.map(BinaryOp::symbol);
+    /// assert_eq!(symbols[..3], ["+", "-", "*"]);
+    /// assert_eq!(symbols.len(), 13);
+    /// ```
     pub const ALL: [BinaryOp; 13] = [
         Self::Add,
         Self::Sub,
@@ -95,6 +128,14 @@ impl BinaryOp {
         Self::Or,
     ];
 
+    /// How it is written.
+    ///
+    /// ```
+    /// use evalite::BinaryOp;
+    ///
+    /// assert_eq!(BinaryOp::Le.symbol(), "<=");
+    /// assert_eq!(BinaryOp::And.symbol(), "&&");
+    /// ```
     pub fn symbol(self) -> &'static str {
         match self {
             Self::Add => "+",
@@ -152,8 +193,488 @@ const PREFIX: u8 = 6;
 const ATOM: u8 = 7;
 
 /// One expression of a [`Structure`], its parts other nodes.
+///
+/// A node is built through its constructors, one per kind of expression,
+/// and read through try-accessors, each `Some` only for its own kind. This
+/// is the same shape as [`Value`](crate::Value)'s: a form reads a node by
+/// asking what it is, never by matching on its insides.
+///
+/// ```
+/// use evalite::{BinaryOp, Node, Structure};
+///
+/// let mut s = Structure::new();
+/// let wits = s.add(Node::name("wits"))?;
+/// let one = s.add(Node::int(1))?;
+/// s.replace(s.root(), Node::binary(BinaryOp::Add, wits, one))?;
+/// assert_eq!(s.to_text(), "wits + 1");
+///
+/// let root = s.get(s.root()).ok_or("no root")?;
+/// assert_eq!(root.as_binary(), Some((BinaryOp::Add, wits, one)));
+/// assert_eq!(root.as_int(), None);
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Encode, Decode)]
-pub enum Node {
+#[musli(transparent)]
+pub struct Node(pub(crate) Repr);
+
+impl Node {
+    /// An unfinished expression, written `_`.
+    ///
+    /// ```
+    /// use evalite::Node;
+    ///
+    /// assert!(Node::hole().is_hole());
+    /// assert!(!Node::int(0).is_hole());
+    /// ```
+    pub fn hole() -> Self {
+        Self(Repr::Hole)
+    }
+
+    /// An integer, written `-12` when negative.
+    ///
+    /// ```
+    /// use evalite::Node;
+    ///
+    /// assert_eq!(Node::int(i64::MIN).as_int(), Some(i64::MIN));
+    /// assert_eq!(Node::int(i64::MAX).as_int(), Some(i64::MAX));
+    /// ```
+    pub fn int(value: i64) -> Self {
+        Self(Repr::Int(value))
+    }
+
+    /// `true` or `false`.
+    ///
+    /// ```
+    /// use evalite::Node;
+    ///
+    /// assert_eq!(Node::bool(true).as_bool(), Some(true));
+    /// ```
+    pub fn bool(value: bool) -> Self {
+        Self(Repr::Bool(value))
+    }
+
+    /// A string literal, escaped as needed when written.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let mut s = Structure::new();
+    /// s.replace(s.root(), Node::string("a \"b\""))?;
+    /// assert_eq!(s.to_text(), r#""a \"b\"""#);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn string(value: impl Into<String>) -> Self {
+        Self(Repr::String(value.into()))
+    }
+
+    /// A value of the environment.
+    ///
+    /// ```
+    /// use evalite::Node;
+    ///
+    /// assert_eq!(Node::name("wits").as_name(), Some("wits"));
+    /// assert_eq!(Node::string("wits").as_name(), None);
+    /// ```
+    pub fn name(name: impl Into<String>) -> Self {
+        Self(Repr::Name(name.into()))
+    }
+
+    /// A prefix operator applied to `operand`.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure, UnaryOp};
+    ///
+    /// let mut s = Structure::new();
+    /// let dead = s.add(Node::name("dead"))?;
+    /// s.replace(s.root(), Node::unary(UnaryOp::Not, dead))?;
+    /// assert_eq!(s.to_text(), "!dead");
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn unary(op: UnaryOp, operand: NodeId) -> Self {
+        Self(Repr::Unary { op, operand })
+    }
+
+    /// An operator between `left` and `right`.
+    ///
+    /// ```
+    /// use evalite::{BinaryOp, Node, Structure};
+    ///
+    /// let mut s = Structure::new();
+    /// let a = s.add(Node::int(1))?;
+    /// let b = s.add(Node::int(2))?;
+    /// s.replace(s.root(), Node::binary(BinaryOp::Mul, a, b))?;
+    /// assert_eq!(s.to_text(), "1 * 2");
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn binary(op: BinaryOp, left: NodeId, right: NodeId) -> Self {
+        Self(Repr::Binary { op, left, right })
+    }
+
+    /// A call of the environment's function `function`.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let mut s = Structure::new();
+    /// let a = s.add(Node::int(1))?;
+    /// let b = s.add(Node::hole())?;
+    /// s.replace(s.root(), Node::call("max", [a, b]))?;
+    /// assert_eq!(s.to_text(), "max(1, _)");
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn call(function: impl Into<String>, args: impl IntoIterator<Item = NodeId>) -> Self {
+        Self(Repr::Call {
+            function: function.into(),
+            args: args.into_iter().collect(),
+        })
+    }
+
+    /// `receiver.name(args)`; a `name` of `None` is a hole, written `_`.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let mut s = Structure::new();
+    /// let bonus = s.add(Node::name("bonus"))?;
+    /// let zero = s.add(Node::int(0))?;
+    /// s.replace(s.root(), Node::method(bonus, Some("unwrap_or"), [zero]))?;
+    /// assert_eq!(s.to_text(), "bonus.unwrap_or(0)");
+    ///
+    /// s.replace(s.root(), Node::method(bonus, None::<&str>, [zero]))?;
+    /// assert_eq!(s.to_text(), "bonus._(0)");
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn method(
+        receiver: NodeId,
+        name: Option<impl Into<String>>,
+        args: impl IntoIterator<Item = NodeId>,
+    ) -> Self {
+        Self(Repr::Method {
+            receiver,
+            name: name.map(Into::into),
+            args: args.into_iter().collect(),
+        })
+    }
+
+    /// `receiver.name`; a `name` of `None` is a hole, written `_`. A name
+    /// that is not written as one is `receiver["name"]`, an
+    /// [`index`](Self::index) by a string.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let mut s = Structure::new();
+    /// let m = s.add(Node::name("m"))?;
+    /// s.replace(s.root(), Node::field(m, Some("athletics")))?;
+    /// assert_eq!(s.to_text(), "m.athletics");
+    ///
+    /// s.replace(s.root(), Node::field(m, None::<&str>))?;
+    /// assert_eq!(s.to_text(), "m._");
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn field(receiver: NodeId, name: Option<impl Into<String>>) -> Self {
+        Self(Repr::Field {
+            receiver,
+            name: name.map(Into::into),
+        })
+    }
+
+    /// `receiver[index]`.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let mut s = Structure::new();
+    /// let dots = s.add(Node::name("dots"))?;
+    /// let zero = s.add(Node::int(0))?;
+    /// s.replace(s.root(), Node::index(dots, zero))?;
+    /// assert_eq!(s.to_text(), "dots[0]");
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn index(receiver: NodeId, index: NodeId) -> Self {
+        Self(Repr::Index { receiver, index })
+    }
+
+    /// `[entries]`.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let mut s = Structure::new();
+    /// let a = s.add(Node::int(1))?;
+    /// let b = s.add(Node::int(2))?;
+    /// s.replace(s.root(), Node::list([a, b]))?;
+    /// assert_eq!(s.to_text(), "[1, 2]");
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn list(entries: impl IntoIterator<Item = NodeId>) -> Self {
+        Self(Repr::List {
+            entries: entries.into_iter().collect(),
+        })
+    }
+
+    /// The integer, if it is one.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text("-12")?;
+    /// assert_eq!(s.get(s.root()).and_then(Node::as_int), Some(-12));
+    /// assert_eq!(Node::bool(true).as_int(), None);
+    /// assert_eq!(Node::string("1").as_int(), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_int(&self) -> Option<i64> {
+        match self.0 {
+            Repr::Int(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// The boolean, if it is one.
+    ///
+    /// ```
+    /// use evalite::Node;
+    ///
+    /// assert_eq!(Node::bool(false).as_bool(), Some(false));
+    /// assert_eq!(Node::int(0).as_bool(), None);
+    /// assert_eq!(Node::name("true_ish").as_bool(), None);
+    /// ```
+    pub fn as_bool(&self) -> Option<bool> {
+        match self.0 {
+            Repr::Bool(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// The string literal's text, unescaped, if it is one.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text(r#""a \"b\"""#)?;
+    /// assert_eq!(s.get(s.root()).and_then(Node::as_string), Some("a \"b\""));
+    /// assert_eq!(Node::name("a").as_string(), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_string(&self) -> Option<&str> {
+        match &self.0 {
+            Repr::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The environment value's name, if it is one.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text("wits")?;
+    /// assert_eq!(s.get(s.root()).and_then(Node::as_name), Some("wits"));
+    /// assert_eq!(Node::string("wits").as_name(), None);
+    /// assert_eq!(Node::hole().as_name(), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_name(&self) -> Option<&str> {
+        match &self.0 {
+            Repr::Name(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The operator and operand, if it is a prefix operator.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure, UnaryOp};
+    ///
+    /// let s = Structure::from_text("-wits")?;
+    /// let root = s.get(s.root()).ok_or("no root")?;
+    /// let (op, operand) = root.as_unary().ok_or("not unary")?;
+    /// assert_eq!(op, UnaryOp::Neg);
+    /// assert_eq!(s.get(operand).and_then(Node::as_name), Some("wits"));
+    ///
+    /// // A negative integer is a literal, not an operator.
+    /// let s = Structure::from_text("-1")?;
+    /// assert_eq!(s.get(s.root()).and_then(Node::as_unary), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_unary(&self) -> Option<(UnaryOp, NodeId)> {
+        match self.0 {
+            Repr::Unary { op, operand } => Some((op, operand)),
+            _ => None,
+        }
+    }
+
+    /// The operator and operands, if it is an operator between two.
+    ///
+    /// ```
+    /// use evalite::{BinaryOp, Node, Structure};
+    ///
+    /// let s = Structure::from_text("1 < 2 && dead")?;
+    /// let (op, left, _) = s.get(s.root()).and_then(Node::as_binary).ok_or("not binary")?;
+    /// assert_eq!(op, BinaryOp::And);
+    /// assert_eq!(s.get(left).and_then(Node::as_binary).map(|(op, ..)| op), Some(BinaryOp::Lt));
+    /// assert_eq!(Node::int(1).as_binary(), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_binary(&self) -> Option<(BinaryOp, NodeId, NodeId)> {
+        match self.0 {
+            Repr::Binary { op, left, right } => Some((op, left, right)),
+            _ => None,
+        }
+    }
+
+    /// The function and arguments, if it is a call.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text("max(1, 2)")?;
+    /// let (function, args) = s.get(s.root()).and_then(Node::as_call).ok_or("not a call")?;
+    /// assert_eq!(function, "max");
+    /// assert_eq!(args.len(), 2);
+    ///
+    /// // A method is not a call.
+    /// let s = Structure::from_text("wits.max(1)")?;
+    /// assert_eq!(s.get(s.root()).and_then(Node::as_call), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_call(&self) -> Option<(&str, &[NodeId])> {
+        match &self.0 {
+            Repr::Call { function, args } => Some((function, args)),
+            _ => None,
+        }
+    }
+
+    /// The receiver, the name (`None` for a hole) and the arguments, if
+    /// it is a method.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text("bonus.unwrap_or(0)")?;
+    /// let (_, name, args) = s.get(s.root()).and_then(Node::as_method).ok_or("not a method")?;
+    /// assert_eq!((name, args.len()), (Some("unwrap_or"), 1));
+    ///
+    /// let s = Structure::from_text("bonus._(0)")?;
+    /// let (_, name, _) = s.get(s.root()).and_then(Node::as_method).ok_or("not a method")?;
+    /// assert_eq!(name, None);
+    ///
+    /// let s = Structure::from_text("m.athletics")?;
+    /// assert_eq!(s.get(s.root()).and_then(Node::as_method), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_method(&self) -> Option<(NodeId, Option<&str>, &[NodeId])> {
+        match &self.0 {
+            Repr::Method {
+                receiver,
+                name,
+                args,
+            } => Some((*receiver, name.as_deref(), args)),
+            _ => None,
+        }
+    }
+
+    /// The receiver and the name (`None` for a hole), if it is a field.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text("m.athletics")?;
+    /// let (_, name) = s.get(s.root()).and_then(Node::as_field).ok_or("not a field")?;
+    /// assert_eq!(name, Some("athletics"));
+    ///
+    /// let s = Structure::from_text("m._")?;
+    /// let (_, name) = s.get(s.root()).and_then(Node::as_field).ok_or("not a field")?;
+    /// assert_eq!(name, None);
+    ///
+    /// // A name that is not written as one is an index.
+    /// let s = Structure::from_text(r#"m["Brawl (bar)"]"#)?;
+    /// assert_eq!(s.get(s.root()).and_then(Node::as_field), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_field(&self) -> Option<(NodeId, Option<&str>)> {
+        match &self.0 {
+            Repr::Field { receiver, name } => Some((*receiver, name.as_deref())),
+            _ => None,
+        }
+    }
+
+    /// The receiver and index, if it is an index.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text("dots[0]")?;
+    /// let (receiver, index) = s.get(s.root()).and_then(Node::as_index).ok_or("not an index")?;
+    /// assert_eq!(s.get(receiver).and_then(Node::as_name), Some("dots"));
+    /// assert_eq!(s.get(index).and_then(Node::as_int), Some(0));
+    /// assert_eq!(Node::list([]).as_index(), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_index(&self) -> Option<(NodeId, NodeId)> {
+        match self.0 {
+            Repr::Index { receiver, index } => Some((receiver, index)),
+            _ => None,
+        }
+    }
+
+    /// The entries, if it is a list.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text("[1, [2]]")?;
+    /// let entries = s.get(s.root()).and_then(Node::as_list).ok_or("not a list")?;
+    /// assert_eq!(entries.len(), 2);
+    /// assert_eq!(s.get(entries[1]).and_then(Node::as_list).map(<[_]>::len), Some(1));
+    /// assert_eq!(Node::list([]).as_list(), Some(&[][..]));
+    /// assert_eq!(Node::int(1).as_list(), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_list(&self) -> Option<&[NodeId]> {
+        match &self.0 {
+            Repr::List { entries } => Some(entries),
+            _ => None,
+        }
+    }
+
+    /// Its parts, in the order they are written.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text("bonus.unwrap_or(0)")?;
+    /// let root = s.get(s.root()).ok_or("no root")?;
+    /// let parts = root.children().into_iter().map(|id| s.text_of(id)).collect::<Vec<_>>();
+    /// assert_eq!(parts, ["bonus", "0"]);
+    /// assert!(Node::int(1).children().is_empty());
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn children(&self) -> Vec<NodeId> {
+        self.0.children()
+    }
+
+    /// Whether it is a hole: a value's, or a member name's.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text("_ + m._ + bonus._(1)")?;
+    /// assert_eq!(s.holes().len(), 3);
+    /// assert!(s.holes().iter().all(|&h| s.get(h).is_some_and(Node::is_hole)));
+    /// assert!(!Node::name("_x").is_hole());
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn is_hole(&self) -> bool {
+        self.0.is_hole()
+    }
+}
+
+/// What a [`Node`] is. Its encoding is the stored form's, so variants
+/// and their fields keep their order.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Encode, Decode)]
+pub(crate) enum Repr {
     /// An unfinished expression, written `_`.
     Hole,
     /// An integer, written `-12` when negative.
@@ -198,9 +719,9 @@ pub enum Node {
     },
 }
 
-impl Node {
+impl Repr {
     /// Its parts, in the order they are written.
-    pub fn children(&self) -> Vec<NodeId> {
+    fn children(&self) -> Vec<NodeId> {
         match self {
             Self::Hole | Self::Int(_) | Self::Bool(_) | Self::String(_) | Self::Name(_) => {
                 Vec::new()
@@ -220,7 +741,7 @@ impl Node {
     }
 
     /// Whether it is a hole: a value's, or a member name's.
-    pub fn is_hole(&self) -> bool {
+    fn is_hole(&self) -> bool {
         matches!(
             self,
             Self::Hole | Self::Method { name: None, .. } | Self::Field { name: None, .. }
@@ -285,7 +806,7 @@ pub enum StructureErrorKind {
     Hole,
     /// A name that cannot be written as one, such as `"Strength"` for a
     /// value or `"true"`. A record field of any name is read with
-    /// [`Node::Index`] and a [`Node::String`].
+    /// [`Node::index`] by a [`Node::string`].
     InvalidName(String),
     /// The error compiling [`Structure::to_text`]'s text gives: its span
     /// is in that text.
@@ -341,10 +862,10 @@ struct Stored {
 /// env.value("bonus", Type::option(Type::int()))?;
 ///
 /// let mut s = Structure::new();
-/// let bonus = s.add(Node::Name("bonus".into()))?;
-/// let zero = s.add(Node::Int(0))?;
-/// let unwrap = s.add(Node::Method { receiver: bonus, name: Some("unwrap_or".into()), args: vec![zero] })?;
-/// s.replace(s.root(), Node::Call { function: "max".into(), args: vec![unwrap] })?;
+/// let bonus = s.add(Node::name("bonus"))?;
+/// let zero = s.add(Node::int(0))?;
+/// let unwrap = s.add(Node::method(bonus, Some("unwrap_or"), [zero]))?;
+/// s.replace(s.root(), Node::call("max", [unwrap]))?;
 ///
 /// assert_eq!(s.to_text(), "max(bonus.unwrap_or(0))");
 /// assert_eq!(Structure::from_text("max(bonus.unwrap_or(0))")?, s);
@@ -369,7 +890,7 @@ impl Structure {
     /// A structure that is one hole.
     pub fn new() -> Self {
         Self {
-            nodes: vec![Node::Hole],
+            nodes: vec![Node(Repr::Hole)],
             parents: vec![None],
             root: NodeId(0),
         }
@@ -469,8 +990,10 @@ impl Structure {
             let node = other
                 .get(id)
                 .ok_or(EditError::UnknownNode(id))?
+                .0
                 .clone()
                 .renumber(|child| ids.get(child.index()).copied().flatten())
+                .map(Node)
                 .ok_or(EditError::UnknownNode(id))?;
 
             let new = if id == other.root {
@@ -705,10 +1228,11 @@ impl Structure {
         for id in order {
             let node = self
                 .get(id)?
+                .0
                 .clone()
                 .renumber(|c| ids.get(c.index()).copied().flatten())?;
             *ids.get_mut(id.index())? = Some(NodeId(u32::try_from(nodes.len()).ok()?));
-            nodes.push(node);
+            nodes.push(Node(node));
         }
 
         let root = NodeId(u32::try_from(nodes.len().checked_sub(1)?).ok()?);
@@ -716,7 +1240,7 @@ impl Structure {
     }
 }
 
-impl Node {
+impl Repr {
     /// The same node with its parts' ids mapped.
     fn renumber(self, f: impl Fn(NodeId) -> Option<NodeId>) -> Option<Self> {
         let map = |ids: Vec<NodeId>| ids.into_iter().map(&f).collect::<Option<Vec<_>>>();
@@ -760,7 +1284,7 @@ impl Node {
     }
 
     /// Whether the two are the same but for their parts.
-    fn same_shape(&self, other: &Node) -> bool {
+    fn same_shape(&self, other: &Repr) -> bool {
         match (self, other) {
             (Self::Unary { op: a, .. }, Self::Unary { op: b, .. }) => a == b,
             (Self::Binary { op: a, .. }, Self::Binary { op: b, .. }) => a == b,
@@ -801,7 +1325,7 @@ impl PartialEq for Structure {
                 return false;
             };
 
-            if !a.same_shape(b) {
+            if !a.0.same_shape(&b.0) {
                 return false;
             }
 
@@ -893,15 +1417,15 @@ fn compile_node_debug(
         }
 
         let name = match node {
-            Node::Name(name) | Node::Call { function: name, .. } => {
+            Node(Repr::Name(name)) | Node(Repr::Call { function: name, .. }) => {
                 Some(name).filter(|n| !is_value_name(n) || is_reserved(n))
             }
-            Node::Method {
+            Node(Repr::Method {
                 name: Some(name), ..
-            }
-            | Node::Field {
+            })
+            | Node(Repr::Field {
                 name: Some(name), ..
-            } => Some(name).filter(|n| !is_field_name(n) || is_reserved(n)),
+            }) => Some(name).filter(|n| !is_field_name(n) || is_reserved(n)),
             _ => None,
         };
 
@@ -1007,22 +1531,22 @@ fn render(nodes: &[Node], root: NodeId) -> (String, Vec<(NodeId, Span<u32>)>) {
 
         // What follows the node's first characters, pushed in reverse.
         let mut then = Vec::new();
-        let power = |id: NodeId| get(id).map_or(ATOM, Node::power);
+        let power = |id: NodeId| get(id).map_or(ATOM, |n| n.0.power());
 
         match node {
-            Node::Hole => out.push_str(HOLE),
-            Node::Int(n) => out.push_str(&n.to_string()),
-            Node::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Node::String(s) => escape(&mut out, s),
-            Node::Name(name) => out.push_str(name),
-            Node::Unary { op, operand } => {
+            Node(Repr::Hole) => out.push_str(HOLE),
+            Node(Repr::Int(n)) => out.push_str(&n.to_string()),
+            Node(Repr::Bool(b)) => out.push_str(if *b { "true" } else { "false" }),
+            Node(Repr::String(s)) => escape(&mut out, s),
+            Node(Repr::Name(name)) => out.push_str(name),
+            Node(Repr::Unary { op, operand }) => {
                 out.push_str(op.symbol());
                 // `-(12)`, since `-12` is the integer.
-                let literal =
-                    *op == UnaryOp::Neg && matches!(get(*operand), Some(Node::Int(n)) if *n >= 0);
+                let literal = *op == UnaryOp::Neg
+                    && matches!(get(*operand), Some(Node(Repr::Int(n))) if *n >= 0);
                 then.push(Emit::Node(*operand, literal || power(*operand) < PREFIX));
             }
-            Node::Binary { op, left, right } => {
+            Node(Repr::Binary { op, left, right }) => {
                 let p = op.power();
                 let lp = power(*left);
                 then.push(Emit::Node(*left, lp < p || (p == COMPARE && lp == COMPARE)));
@@ -1043,17 +1567,17 @@ fn render(nodes: &[Node], root: NodeId) -> (String, Vec<(NodeId, Span<u32>)>) {
                 }));
                 then.push(Emit::Node(*right, power(*right) <= p));
             }
-            Node::Call { function, args } => {
+            Node(Repr::Call { function, args }) => {
                 out.push_str(function);
                 then.push(Emit::Text("("));
                 separated(&mut then, args);
                 then.push(Emit::Text(")"));
             }
-            Node::Method {
+            Node(Repr::Method {
                 receiver,
                 name,
                 args,
-            } => {
+            }) => {
                 then.push(Emit::Node(*receiver, power(*receiver) < ATOM));
                 then.push(Emit::Text("."));
                 then.push(name_emit(name.as_deref()));
@@ -1061,18 +1585,18 @@ fn render(nodes: &[Node], root: NodeId) -> (String, Vec<(NodeId, Span<u32>)>) {
                 separated(&mut then, args);
                 then.push(Emit::Text(")"));
             }
-            Node::Field { receiver, name } => {
+            Node(Repr::Field { receiver, name }) => {
                 then.push(Emit::Node(*receiver, power(*receiver) < ATOM));
                 then.push(Emit::Text("."));
                 then.push(name_emit(name.as_deref()));
             }
-            Node::Index { receiver, index } => {
+            Node(Repr::Index { receiver, index }) => {
                 then.push(Emit::Node(*receiver, power(*receiver) < ATOM));
                 then.push(Emit::Text("["));
                 then.push(Emit::Node(*index, false));
                 then.push(Emit::Text("]"));
             }
-            Node::List { entries } => {
+            Node(Repr::List { entries }) => {
                 out.push('[');
                 separated(&mut then, entries);
                 then.push(Emit::Text("]"));
@@ -1197,38 +1721,38 @@ fn from_tree(source: &str, tree: &Tree) -> Result<Structure, ParseError> {
                     .map(text)
                     .and_then(|t| format!("-{t}").parse::<i64>().ok())
                     .ok_or_else(|| ParseError::new(*node.span(), ErrorKind::IntegerTooLarge))?;
-                Node::Int(n)
+                Node(Repr::Int(n))
             }
-            Syntax::Integer => Node::Int(
-                text(node)
-                    .parse()
-                    .map_err(|_| ParseError::new(*node.span(), ErrorKind::IntegerTooLarge))?,
-            ),
-            Syntax::Bool => Node::Bool(text(node) == "true"),
-            Syntax::String => Node::String(
+            Syntax::Integer => {
+                Node(Repr::Int(text(node).parse().map_err(|_| {
+                    ParseError::new(*node.span(), ErrorKind::IntegerTooLarge)
+                })?))
+            }
+            Syntax::Bool => Node(Repr::Bool(text(node) == "true")),
+            Syntax::String => Node(Repr::String(
                 unescape(text(node)).ok_or_else(|| internal("a malformed string literal"))?,
-            ),
-            Syntax::Name if text(node) == HOLE => Node::Hole,
-            Syntax::Name => Node::Name(text(node).to_owned()),
-            Syntax::Unary => Node::Unary {
+            )),
+            Syntax::Name if text(node) == HOLE => Node(Repr::Hole),
+            Syntax::Name => Node(Repr::Name(text(node).to_owned())),
+            Syntax::Unary => Node(Repr::Unary {
                 op: match operator(node) {
                     Some(Syntax::Minus) => UnaryOp::Neg,
                     _ => UnaryOp::Not,
                 },
                 operand: *parts.first().ok_or_else(|| internal("a lone operator"))?,
-            },
+            }),
             Syntax::Binary => {
                 let [left, right] = parts.as_slice() else {
                     return Err(internal("a binary operator without two operands"));
                 };
 
-                Node::Binary {
+                Node(Repr::Binary {
                     op: operator(node)
                         .and_then(BinaryOp::from_syntax)
                         .ok_or_else(|| internal("an unknown binary operator"))?,
                     left: *left,
                     right: *right,
-                }
+                })
             }
             Syntax::Call => {
                 let function = node
@@ -1236,34 +1760,34 @@ fn from_tree(source: &str, tree: &Tree) -> Result<Structure, ParseError> {
                     .find(|n| n.value() == Syntax::Name)
                     .map(text)
                     .ok_or_else(|| internal("a call without a name"))?;
-                Node::Call {
+                Node(Repr::Call {
                     function: function.to_owned(),
                     args: parts,
-                }
+                })
             }
             Syntax::Method => {
                 let mut parts = parts.into_iter();
-                Node::Method {
+                Node(Repr::Method {
                     receiver: parts.next().ok_or_else(|| internal("no receiver"))?,
                     name: member(),
                     args: parts.collect(),
-                }
+                })
             }
-            Syntax::Field => Node::Field {
+            Syntax::Field => Node(Repr::Field {
                 receiver: *parts.first().ok_or_else(|| internal("no receiver"))?,
                 name: member(),
-            },
+            }),
             Syntax::Index => {
                 let [receiver, index] = parts.as_slice() else {
                     return Err(internal("an index without two parts"));
                 };
 
-                Node::Index {
+                Node(Repr::Index {
                     receiver: *receiver,
                     index: *index,
-                }
+                })
             }
-            Syntax::List => Node::List { entries: parts },
+            Syntax::List => Node(Repr::List { entries: parts }),
             _ => return Err(internal("not an expression")),
         };
 

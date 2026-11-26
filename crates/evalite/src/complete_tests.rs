@@ -1,6 +1,8 @@
 #![allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
+use crate::complete::Insert;
 use crate::error::ErrorKind;
+use crate::structure::Repr;
 use crate::types::Kind;
 use crate::*;
 
@@ -717,25 +719,25 @@ fn method_table_matches_the_checker() {
 fn deep_structures() {
     let env = env();
     let mut s = Structure::new();
-    let first = s.add(Node::Hole).unwrap();
+    let first = s.add(Node(Repr::Hole)).unwrap();
     let mut inner = first;
 
     for _ in 0..100_000 {
         inner = s
-            .add(Node::List {
+            .add(Node(Repr::List {
                 entries: vec![inner],
-            })
+            }))
             .unwrap();
     }
 
-    let index = s.add(Node::Int(0)).unwrap();
+    let index = s.add(Node(Repr::Int(0))).unwrap();
     let root = s.root();
     s.replace(
         root,
-        Node::Index {
+        Node(Repr::Index {
             receiver: inner,
             index,
-        },
+        }),
     )
     .unwrap();
 

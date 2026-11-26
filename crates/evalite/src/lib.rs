@@ -272,7 +272,7 @@ mod complete_tests;
 mod message_tests;
 
 pub use self::check::{compile, compile_debug, compile_with};
-pub use self::complete::{CompleteError, Completion, CompletionKind, Insert};
+pub use self::complete::{CompleteError, Completion, CompletionKind};
 pub use self::debug::DebugInfo;
 pub use self::env::{Builtin, DeclareError, Environment};
 pub use self::error::ParseError;

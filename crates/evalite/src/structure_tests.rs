@@ -2,6 +2,7 @@
 
 use crate::error::ErrorKind;
 use crate::message::Message;
+use crate::structure::Repr;
 use crate::*;
 
 fn env() -> Environment {
@@ -113,28 +114,28 @@ fn every_construct_round_trips_through_text() {
 #[test]
 fn text_parses_to_the_nodes_it_names() {
     let structure = s("-12");
-    assert_eq!(structure.get(structure.root()), Some(&Node::Int(-12)));
+    assert_eq!(structure.get(structure.root()), Some(&Node(Repr::Int(-12))));
 
     let structure = s("-(12)");
-    let Some(Node::Unary {
+    let Some(Node(Repr::Unary {
         op: UnaryOp::Neg,
         operand,
-    }) = structure.get(structure.root())
+    })) = structure.get(structure.root())
     else {
         panic!("{structure:?}");
     };
-    assert_eq!(structure.get(*operand), Some(&Node::Int(12)));
+    assert_eq!(structure.get(*operand), Some(&Node(Repr::Int(12))));
 
     let structure = s("m._");
     assert!(matches!(
         structure.get(structure.root()),
-        Some(Node::Field { name: None, .. })
+        Some(Node(Repr::Field { name: None, .. }))
     ));
 
     let structure = s("bonus._()");
     assert!(matches!(
         structure.get(structure.root()),
-        Some(Node::Method { name: None, .. })
+        Some(Node(Repr::Method { name: None, .. }))
     ));
 
     let structure = s("min(1, _)");
@@ -145,23 +146,23 @@ fn text_parses_to_the_nodes_it_names() {
 #[test]
 fn built_structures_render_and_parse_back() {
     let mut b = Structure::new();
-    let one = b.add(Node::Int(1)).unwrap();
-    let two = b.add(Node::Int(2)).unwrap();
+    let one = b.add(Node(Repr::Int(1))).unwrap();
+    let two = b.add(Node(Repr::Int(2))).unwrap();
     let sum = b
-        .add(Node::Binary {
+        .add(Node(Repr::Binary {
             op: BinaryOp::Add,
             left: one,
             right: two,
-        })
+        }))
         .unwrap();
-    let three = b.add(Node::Int(3)).unwrap();
+    let three = b.add(Node(Repr::Int(3))).unwrap();
     b.replace(
         b.root(),
-        Node::Binary {
+        Node(Repr::Binary {
             op: BinaryOp::Mul,
             left: sum,
             right: three,
-        },
+        }),
     )
     .unwrap();
 
@@ -170,12 +171,12 @@ fn built_structures_render_and_parse_back() {
     assert_ne!(s("1 + 2 * 3"), b);
 
     let mut odd = Structure::new();
-    let name = odd.add(Node::String("a\"b\\".into())).unwrap();
+    let name = odd.add(Node(Repr::String("a\"b\\".into()))).unwrap();
     odd.replace(
         odd.root(),
-        Node::List {
+        Node(Repr::List {
             entries: vec![name],
-        },
+        }),
     )
     .unwrap();
     assert_eq!(odd.to_text(), r#"["a\"b\\"]"#);
@@ -187,14 +188,14 @@ fn negative_integer_receivers_and_operands() {
     // A structure holding `Int(-5)` where a postfix or `-` would bind it
     // differently gets parentheses.
     let mut b = Structure::new();
-    let n = b.add(Node::Int(-5)).unwrap();
+    let n = b.add(Node(Repr::Int(-5))).unwrap();
     b.replace(
         b.root(),
-        Node::Method {
+        Node(Repr::Method {
             receiver: n,
             name: Some("abs".into()),
             args: vec![],
-        },
+        }),
     )
     .unwrap();
     assert_eq!(b.to_text(), "(-5).abs()");
@@ -206,7 +207,7 @@ fn negative_integer_receivers_and_operands() {
 
     // `i64::MIN` has no text, as in a text expression.
     let mut min = Structure::new();
-    min.replace(min.root(), Node::Int(i64::MIN)).unwrap();
+    min.replace(min.root(), Node(Repr::Int(i64::MIN))).unwrap();
     let error = min.compile(&env()).unwrap_err();
     assert_eq!(error.node(), min.root());
     assert!(matches!(
@@ -308,16 +309,16 @@ fn names_that_are_no_names_are_refused() {
     let env = env();
 
     for (node, name) in [
-        (Node::Name("Strength".into()), "Strength"),
-        (Node::Name("true".into()), "true"),
-        (Node::Name("_".into()), "_"),
-        (Node::Name("a b".into()), "a b"),
-        (Node::Name(String::new()), ""),
+        (Node(Repr::Name("Strength".into())), "Strength"),
+        (Node(Repr::Name("true".into())), "true"),
+        (Node(Repr::Name("_".into())), "_"),
+        (Node(Repr::Name("a b".into())), "a b"),
+        (Node(Repr::Name(String::new())), ""),
         (
-            Node::Call {
+            Node(Repr::Call {
                 function: "x-y".into(),
                 args: vec![],
-            },
+            }),
             "x-y",
         ),
     ] {
@@ -332,13 +333,13 @@ fn names_that_are_no_names_are_refused() {
     }
 
     let mut b = Structure::new();
-    let m = b.add(Node::Name("m".into())).unwrap();
+    let m = b.add(Node(Repr::Name("m".into()))).unwrap();
     b.replace(
         b.root(),
-        Node::Field {
+        Node(Repr::Field {
             receiver: m,
             name: Some("Brawl (bar)".into()),
-        },
+        }),
     )
     .unwrap();
     let error = b.compile(&env).unwrap_err();
@@ -359,13 +360,13 @@ fn parse_depth_limits_apply() {
     // A structure nesting past the limit is refused when compiled, at the
     // node too deep.
     let mut b = Structure::new();
-    let mut inner = b.add(Node::Int(1)).unwrap();
+    let mut inner = b.add(Node(Repr::Int(1))).unwrap();
 
     for _ in 0..40 {
         inner = b
-            .add(Node::List {
+            .add(Node(Repr::List {
                 entries: vec![inner],
-            })
+            }))
             .unwrap();
     }
 
@@ -375,7 +376,7 @@ fn parse_depth_limits_apply() {
         error.kind(),
         StructureErrorKind::Compile(e) if matches!(e.kind(), ErrorKind::TooDeep { .. })
     ));
-    assert!(matches!(b.get(error.node()), Some(Node::List { .. })));
+    assert!(matches!(b.get(error.node()), Some(Node(Repr::List { .. }))));
     assert!(
         b.compile_with(&env(), &Options::new().max_depth(64))
             .is_ok()
@@ -394,14 +395,14 @@ fn long_chains_do_not_recurse() {
 
     // 100 000 deep through `-x`, which nests: an error, not an overflow.
     let mut b = Structure::new();
-    let mut inner = b.add(Node::Name("wits".into())).unwrap();
+    let mut inner = b.add(Node(Repr::Name("wits".into()))).unwrap();
 
     for _ in 0..100_000 {
         inner = b
-            .add(Node::Unary {
+            .add(Node(Repr::Unary {
                 op: UnaryOp::Neg,
                 operand: inner,
-            })
+            }))
             .unwrap();
     }
 
@@ -426,17 +427,17 @@ fn structures_round_trip_through_musli() {
 #[test]
 fn storing_leaves_out_unused_nodes() {
     let mut b = s("wits + 1");
-    let two = b.add(Node::Int(2)).unwrap();
-    let Some(Node::Binary { left, .. }) = b.get(b.root()).cloned() else {
+    let two = b.add(Node(Repr::Int(2))).unwrap();
+    let Some(Node(Repr::Binary { left, .. })) = b.get(b.root()).cloned() else {
         panic!();
     };
     b.replace(
         b.root(),
-        Node::Binary {
+        Node(Repr::Binary {
             op: BinaryOp::Add,
             left,
             right: two,
-        },
+        }),
     )
     .unwrap();
     assert_eq!(b.to_text(), "wits + 2");
@@ -458,10 +459,12 @@ fn tampered_structures_are_refused() {
         other => panic!("{other:?}"),
     };
 
-    let leaf = Node::Int(1);
-    let neg = |n| Node::Unary {
-        op: UnaryOp::Neg,
-        operand: id(n),
+    let leaf = Node(Repr::Int(1));
+    let neg = |n| {
+        Node(Repr::Unary {
+            op: UnaryOp::Neg,
+            operand: id(n),
+        })
     };
 
     // Valid as a baseline.
@@ -476,11 +479,11 @@ fn tampered_structures_are_refused() {
     );
 
     // A part used twice.
-    let both = Node::Binary {
+    let both = Node(Repr::Binary {
         op: BinaryOp::Add,
         left: id(0),
         right: id(0),
-    };
+    });
     assert_eq!(
         invalid(stored_with(vec![leaf.clone(), both], 1)),
         "the node is a part twice: at node #0: while reading a stored structure"
@@ -539,52 +542,52 @@ fn stored_with(nodes: Vec<Node>, root: u32) -> Vec<u8> {
 #[test]
 fn edits_keep_the_structure_a_tree() {
     let mut b = Structure::new();
-    let one = b.add(Node::Int(1)).unwrap();
+    let one = b.add(Node(Repr::Int(1))).unwrap();
     let neg = b
-        .add(Node::Unary {
+        .add(Node(Repr::Unary {
             op: UnaryOp::Neg,
             operand: one,
-        })
+        }))
         .unwrap();
 
     // `one` is part of `neg` now.
     assert_eq!(
-        b.add(Node::List { entries: vec![one] }),
+        b.add(Node(Repr::List { entries: vec![one] })),
         Err(EditError::Attached(one))
     );
     // A node twice in one node.
-    let two = b.add(Node::Int(2)).unwrap();
+    let two = b.add(Node(Repr::Int(2))).unwrap();
     assert_eq!(
-        b.add(Node::List {
+        b.add(Node(Repr::List {
             entries: vec![two, two]
-        }),
+        })),
         Err(EditError::Attached(two))
     );
     // The root.
     assert_eq!(
-        b.add(Node::List {
+        b.add(Node(Repr::List {
             entries: vec![b.root()]
-        }),
+        })),
         Err(EditError::Attached(b.root()))
     );
     // Unknown nodes.
     let unknown = id(99);
     assert_eq!(
-        b.add(Node::List {
+        b.add(Node(Repr::List {
             entries: vec![unknown]
-        }),
+        })),
         Err(EditError::UnknownNode(unknown))
     );
     assert_eq!(
-        b.replace(unknown, Node::Hole),
+        b.replace(unknown, Node(Repr::Hole)),
         Err(EditError::UnknownNode(unknown))
     );
 
     b.replace(
         b.root(),
-        Node::List {
+        Node(Repr::List {
             entries: vec![neg, two],
-        },
+        }),
     )
     .unwrap();
     assert_eq!(b.to_text(), "[-(1), 2]");
@@ -592,45 +595,45 @@ fn edits_keep_the_structure_a_tree() {
 
     // Making `neg` part of what it holds.
     assert_eq!(
-        b.replace(one, Node::List { entries: vec![neg] }),
+        b.replace(one, Node(Repr::List { entries: vec![neg] })),
         Err(EditError::Attached(neg))
     );
 
     // A free subtree holding the node it would replace.
     let mut c = Structure::new();
-    let x = c.add(Node::Int(1)).unwrap();
+    let x = c.add(Node(Repr::Int(1))).unwrap();
     let free = c
-        .add(Node::Unary {
+        .add(Node(Repr::Unary {
             op: UnaryOp::Neg,
             operand: x,
-        })
+        }))
         .unwrap();
     assert_eq!(
         c.replace(
             x,
-            Node::List {
+            Node(Repr::List {
                 entries: vec![free]
-            }
+            })
         ),
         Err(EditError::Cycle(free))
     );
 
     // Replacing a node frees its parts for reuse.
-    b.replace(b.root(), Node::List { entries: vec![two] })
+    b.replace(b.root(), Node(Repr::List { entries: vec![two] }))
         .unwrap();
     assert_eq!(b.parent(neg), None);
     b.replace(
         b.root(),
-        Node::List {
+        Node(Repr::List {
             entries: vec![two, neg],
-        },
+        }),
     )
     .unwrap();
     assert_eq!(b.to_text(), "[2, -(1)]");
 
     // A new root, whose old root is then free.
     let old = b.root();
-    let top = b.add(Node::Name("wits".into())).unwrap();
+    let top = b.add(Node(Repr::Name("wits".into()))).unwrap();
     b.set_root(top).unwrap();
     assert_eq!(b.to_text(), "wits");
     assert_eq!(b.set_root(two), Err(EditError::Attached(two)));
@@ -718,61 +721,61 @@ fn random_node(rng: &mut Rng, b: &mut Structure, depth: u32) -> NodeId {
 
     let node = if leaf {
         match rng.below(6) {
-            0 => Node::Hole,
-            1 => Node::Int(rng.below(200) as i64 - 100),
-            2 => Node::Bool(rng.below(2) == 0),
-            3 => Node::String(
+            0 => Node(Repr::Hole),
+            1 => Node(Repr::Int(rng.below(200) as i64 - 100)),
+            2 => Node(Repr::Bool(rng.below(2) == 0)),
+            3 => Node(Repr::String(
                 rng.pick(&["", "Brawl (bar)", "a\"b", "\\", "é ünï"])
                     .to_string(),
-            ),
-            _ => Node::Name(rng.pick(NAMES).to_string()),
+            )),
+            _ => Node(Repr::Name(rng.pick(NAMES).to_string())),
         }
     } else {
         match rng.below(8) {
-            0 => Node::Unary {
+            0 => Node(Repr::Unary {
                 op: *rng.pick(&[UnaryOp::Neg, UnaryOp::Not]),
                 operand: kids(rng, b, 1)[0],
-            },
+            }),
             1 | 2 => {
                 let k = kids(rng, b, 2);
-                Node::Binary {
+                Node(Repr::Binary {
                     op: *rng.pick(&BinaryOp::ALL),
                     left: k[0],
                     right: k[1],
-                }
+                })
             }
             3 => {
                 let n = rng.below(3);
-                Node::Call {
+                Node(Repr::Call {
                     function: rng.pick(FUNCTIONS).to_string(),
                     args: kids(rng, b, n),
-                }
+                })
             }
             4 => {
                 let n = rng.below(3) + 1;
                 let k = kids(rng, b, n);
-                Node::Method {
+                Node(Repr::Method {
                     receiver: k[0],
                     name: (rng.below(5) != 0).then(|| rng.pick(MEMBERS).to_string()),
                     args: k[1..].to_vec(),
-                }
+                })
             }
-            5 => Node::Field {
+            5 => Node(Repr::Field {
                 receiver: kids(rng, b, 1)[0],
                 name: (rng.below(5) != 0).then(|| rng.pick(MEMBERS).to_string()),
-            },
+            }),
             6 => {
                 let k = kids(rng, b, 2);
-                Node::Index {
+                Node(Repr::Index {
                     receiver: k[0],
                     index: k[1],
-                }
+                })
             }
             _ => {
                 let n = rng.below(4);
-                Node::List {
+                Node(Repr::List {
                     entries: kids(rng, b, n),
-                }
+                })
             }
         }
     };
@@ -804,4 +807,29 @@ fn random_structures_round_trip() {
 
     // Enough of them are well typed to test compiling too.
     assert!(compiled > 100, "{compiled}");
+}
+
+/// Every kind of node, stored. The bytes are pinned so the stored form
+/// stays readable as `Node`'s API changes.
+const GOLDEN: &str = r#"-wits + count(health, _) * m.athletics - [1, 2][0] + bonus.unwrap_or(0) + m._ + bonus._(1) + lookup("s", [1]) * (!dead && true)"#;
+
+#[test]
+fn stored_form_is_stable() {
+    let structure = s(GOLDEN);
+    let bytes = structure.to_bytes().unwrap();
+    let golden: &[u8] = &[
+        3, 0, 1, 1, 36, 4, 1, 0, 4, 119, 105, 116, 115, 5, 2, 0, 0, 1, 0, 4, 1, 0, 6, 104, 101, 97,
+        108, 116, 104, 0, 0, 7, 2, 0, 5, 99, 111, 117, 110, 116, 1, 2, 2, 3, 4, 1, 0, 1, 109, 9, 2,
+        0, 5, 1, 1, 9, 97, 116, 104, 108, 101, 116, 105, 99, 115, 6, 3, 0, 2, 1, 4, 2, 6, 6, 3, 0,
+        0, 1, 1, 2, 7, 1, 1, 0, 2, 1, 1, 0, 4, 11, 1, 0, 2, 9, 10, 1, 1, 0, 0, 10, 2, 0, 11, 1, 12,
+        6, 3, 0, 1, 1, 8, 2, 13, 4, 1, 0, 5, 98, 111, 110, 117, 115, 1, 1, 0, 0, 8, 3, 0, 15, 1, 1,
+        9, 117, 110, 119, 114, 97, 112, 95, 111, 114, 2, 1, 16, 6, 3, 0, 0, 1, 14, 2, 17, 4, 1, 0,
+        1, 109, 9, 2, 0, 19, 1, 0, 6, 3, 0, 0, 1, 18, 2, 20, 4, 1, 0, 5, 98, 111, 110, 117, 115, 1,
+        1, 0, 2, 8, 3, 0, 22, 1, 0, 2, 1, 23, 6, 3, 0, 0, 1, 21, 2, 24, 3, 1, 0, 1, 115, 1, 1, 0,
+        2, 11, 1, 0, 1, 27, 7, 2, 0, 6, 108, 111, 111, 107, 117, 112, 1, 2, 26, 28, 4, 1, 0, 4,
+        100, 101, 97, 100, 5, 2, 0, 1, 1, 30, 2, 1, 0, 1, 6, 3, 0, 11, 1, 31, 2, 32, 6, 3, 0, 2, 1,
+        29, 2, 33, 6, 3, 0, 0, 1, 25, 2, 34, 2, 35,
+    ];
+    assert_eq!(bytes, golden);
+    assert_eq!(Structure::from_bytes(golden).unwrap(), structure);
 }
