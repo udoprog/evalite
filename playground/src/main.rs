@@ -22,7 +22,7 @@ const INSTALL: &str = "cargo add evalite";
 use std::rc::Rc;
 
 use evalite::{Environment, Type, Value};
-use evalite_sockel::{ErrorView, ExpressionEditor};
+use evalite_sockel::{ErrorView, ExpressionEditor, NamesReference};
 use gloo_timers::callback::Timeout;
 use yew::prelude::*;
 
@@ -448,6 +448,7 @@ fn Playground(props: &PlaygroundProps) -> Html {
     let outcome = use_state(|| Computed::of(&input));
     let linked = use_state(|| false);
     let limits_open = use_state(|| false);
+    let names_open = use_state(|| false);
 
     {
         let (outcome, linked) = (outcome.clone(), linked.clone());
@@ -472,6 +473,15 @@ fn Playground(props: &PlaygroundProps) -> Html {
     };
 
     let on_source = edit(Rc::new(|input, text| input.source = text));
+
+    let on_pick = {
+        let input = input.clone();
+        Callback::from(move |name: String| {
+            let mut next = (*input).clone();
+            next.source.push_str(&name);
+            input.set(next);
+        })
+    };
 
     let examples = EXAMPLES.iter().map(|example| {
         let (input, vars_open) = (input.clone(), vars_open.clone());
@@ -584,7 +594,7 @@ fn Playground(props: &PlaygroundProps) -> Html {
                     { for examples }
                 </Cluster>
                 <ExpressionEditor source={AttrValue::from(input.source.clone())} on_input={on_source}
-                    {environment} options={bounds.options()} />
+                    environment={environment.clone()} options={bounds.options()} />
                 <Card class={class::OUTCOME} gap={Gap::Tight}>
                     <OutcomeView computed={(*outcome).clone()} />
                 </Card>
@@ -596,6 +606,10 @@ fn Playground(props: &PlaygroundProps) -> Html {
                         </Button>
                     }}>
                     <Stack tag="ul" gap={Gap::Hair} class={sockel::class::PLAIN_LIST}>{ for rows }</Stack>
+                </Disclosure>
+                <Disclosure title={html! { "Names" }} id="playground-names" open={*names_open}
+                    on_toggle={toggle(&names_open)}>
+                    <NamesReference environment={environment.clone()} {on_pick} />
                 </Disclosure>
                 <Disclosure title={html! { "Limits" }} summary={html! { limits_summary }}
                     id="playground-limits" open={*limits_open} on_toggle={toggle(&limits_open)}>

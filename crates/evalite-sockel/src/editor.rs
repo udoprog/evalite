@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use evalite::highlight::{Class, highlight};
+use evalite::highlight::highlight;
 use evalite::{CompletionKind, Diagnostics, Environment, Options, Program};
 use gloo_timers::callback::Timeout;
 use phrasebook::Phrases;
@@ -13,6 +13,7 @@ use yew::prelude::*;
 
 use crate::L10N;
 use crate::complete;
+use crate::highlight::token_class;
 
 /// What compiling the editor's source gives.
 pub type Compiled = Result<Rc<Program>, Rc<Diagnostics>>;
@@ -168,18 +169,8 @@ fn compile(
 fn spans_of(source: &str) -> Rc<[CodeSpan]> {
     highlight(source)
         .filter_map(|token| {
-            let token_class = match token.class {
-                Class::Keyword => CodeToken::Keyword,
-                Class::Ident => CodeToken::Name,
-                Class::Member => CodeToken::Member,
-                Class::Number => CodeToken::Number,
-                Class::String => CodeToken::String,
-                Class::Punctuation | Class::Operator => CodeToken::Punctuation,
-                Class::Error => CodeToken::Error,
-                _ => return None,
-            };
-
-            Some(CodeSpan::new(token.span, token_class))
+            let class = token_class(token.class)?;
+            Some(CodeSpan::new(token.span, CodeToken::Class(class)))
         })
         .collect()
 }
@@ -284,7 +275,11 @@ mod tests {
         let classes = spans.iter().map(|s| s.token).collect::<Vec<_>>();
         assert_eq!(
             classes,
-            [CodeToken::Name, CodeToken::Punctuation, CodeToken::Number]
+            [
+                CodeToken::Class(sockel::class::CODE_TOKEN_NAME),
+                CodeToken::Class(sockel::class::CODE_TOKEN_PUNCTUATION),
+                CodeToken::Class(sockel::class::CODE_TOKEN_NUMBER),
+            ]
         );
     }
 

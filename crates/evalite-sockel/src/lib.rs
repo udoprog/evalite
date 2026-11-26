@@ -19,12 +19,18 @@
 //! - **Errors people can read.** [`ErrorView`] lists each diagnostic with the
 //!   source line it is about and the span marked, under the editor or on its
 //!   own, such as for a stored formula that no longer compiles.
+//! - **Small pieces.** [`TypeBadge`], [`ExpressionPreview`] and
+//!   [`NamesReference`], for tables of formulas, their types and the names an
+//!   expression may use.
 //! - **Styled by sockel.** Nothing to style: the components use sockel's
 //!   components and tokens, so they look like the rest of a sockel app.
 //! - **Translated.** Every word comes from a catalog, [`L10N`].
 //!
 //! [`ExpressionEditor`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionEditor.html
 //! [`ErrorView`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ErrorView.html
+//! [`TypeBadge`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.TypeBadge.html
+//! [`ExpressionPreview`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionPreview.html
+//! [`NamesReference`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.NamesReference.html
 //! [`L10N`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/static.L10N.html
 //!
 //! <br>
@@ -84,6 +90,49 @@
 //!
 //! <br>
 //!
+//! ## Smaller pieces
+//!
+//! [`TypeBadge`] shows a [`Type`](https://docs.rs/evalite/latest/evalite/struct.Type.html)
+//! such as `Option<Int>` as a sockel badge. [`ExpressionPreview`] shows an
+//! expression highlighted like the editor's, read-only and inline, for a
+//! table of stored formulas:
+//!
+//! ```
+//! use evalite::Type;
+//! use evalite_sockel::{ExpressionPreview, TypeBadge};
+//! use yew::prelude::*;
+//!
+//! # fn rows() -> Html {
+//! html! {
+//!     <tr>
+//!         <td><ExpressionPreview source="min(wits, 3) + bonus" /></td>
+//!         <td><TypeBadge ty={Type::option(Type::int())} /></td>
+//!     </tr>
+//! }
+//! # }
+//! ```
+//!
+//! [`NamesReference`] lists the values and functions of an environment, with
+//! a filter; `on_pick` gets the name clicked, to put into the editor's source:
+//!
+//! ```
+//! use std::rc::Rc;
+//!
+//! use evalite::Environment;
+//! use evalite_sockel::NamesReference;
+//! use yew::prelude::*;
+//!
+//! # fn names(environment: Rc<Environment>, source: UseStateHandle<AttrValue>) -> Html {
+//! let on_pick = Callback::from(move |name: String| {
+//!     source.set(format!("{}{name}", &**source).into());
+//! });
+//!
+//! html! { <NamesReference {environment} {on_pick} /> }
+//! # }
+//! ```
+//!
+//! <br>
+//!
 //! ## Styles and pruning
 //!
 //! The components write sockel's classes only, so sockel's stylesheet covers
@@ -131,9 +180,16 @@
 mod complete;
 mod editor;
 mod error_view;
+mod highlight;
+mod names;
+mod preview;
+mod type_badge;
 
 pub use self::editor::{Compiled, ExpressionEditor, ExpressionEditorProps};
 pub use self::error_view::{ErrorView, ErrorViewProps};
+pub use self::names::{NamesReference, NamesReferenceProps};
+pub use self::preview::{ExpressionPreview, ExpressionPreviewProps};
+pub use self::type_badge::{TypeBadge, TypeBadgeProps};
 
 use phrasebook::{Catalog, Lang, Source};
 

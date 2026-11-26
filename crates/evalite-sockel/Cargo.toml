@@ -19,7 +19,7 @@ workspace = true
 evalite = { version = "0.1.1", path = "../evalite" }
 gloo-timers = "0.4.1"
 phrasebook = { version = "0.2", features = ["yew023"] }
-sockel = { version = "0.3.7", default-features = false, features = ["code-editor", "notice"] }
+sockel = { version = "0.3.7", default-features = false, features = ["badge", "button", "code-editor", "input", "notice"] }
 yew = "0.23"
 
 [dev-dependencies]

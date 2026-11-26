@@ -269,6 +269,49 @@ impl Environment {
         Ok(())
     }
 
+    /// Every declared value with its type, in name order.
+    ///
+    /// ```
+    /// use evalite::{Environment, Type};
+    ///
+    /// let mut env = Environment::new();
+    /// env.value("wits", Type::int())?;
+    /// env.value("bonus", Type::option(Type::int()))?;
+    ///
+    /// let values = env.values().map(|(name, ty)| format!("{name}: {ty}")).collect::<Vec<_>>();
+    /// assert_eq!(values, ["bonus: Option<Int>", "wits: Int"]);
+    /// # Ok::<_, evalite::DeclareError>(())
+    /// ```
+    pub fn values(&self) -> impl Iterator<Item = (&str, &Type)> {
+        self.values.iter().map(|(name, ty)| (name.as_str(), ty))
+    }
+
+    /// Every declared function with each of its overloads written out, such
+    /// as `lookup<T>(Int, List<T>) -> Option<T>`, in name order, and in
+    /// declaration order among a name's overloads.
+    ///
+    /// ```
+    /// use evalite::{Environment, Type};
+    ///
+    /// let mut env = Environment::with_builtins();
+    /// env.function("rating", [Type::string()], Type::int())?;
+    ///
+    /// let (name, signatures) = env.functions().next().unwrap();
+    /// assert_eq!(name, "lookup");
+    /// assert_eq!(signatures, ["lookup<T>(Int, List<T>) -> Option<T>"]);
+    ///
+    /// let (name, signatures) = env.functions().last().unwrap();
+    /// assert_eq!(name, "rating");
+    /// assert_eq!(signatures, ["rating(String) -> Int"]);
+    /// # Ok::<_, evalite::DeclareError>(())
+    /// ```
+    pub fn functions(&self) -> impl Iterator<Item = (&str, Vec<String>)> {
+        self.functions.iter().map(|(name, overloads)| {
+            let signatures = overloads.iter().map(|o| o.signature(name)).collect();
+            (name.as_str(), signatures)
+        })
+    }
+
     /// The type of the value `name`.
     pub fn value_type(&self, name: &str) -> Option<&Type> {
         self.values.get(name)
