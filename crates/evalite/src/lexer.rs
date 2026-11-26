@@ -40,6 +40,45 @@ impl<'a> Lexer<'a> {
         self.source.len()
     }
 
+    /// The byte offset the next token starts at.
+    pub(crate) fn position(&self) -> usize {
+        self.at
+    }
+
+    /// Skip past text the lexer rejected: the whole string literal if one
+    /// starts here, leniently, otherwise one character. Returns the new
+    /// position.
+    pub(crate) fn recover(&mut self) -> usize {
+        let rest = self.source.get(self.at..).unwrap_or_default();
+        let mut chars = rest.char_indices();
+
+        let len = match chars.next() {
+            Some((_, '"')) => {
+                let mut end = rest.len();
+
+                while let Some((at, c)) = chars.next() {
+                    match c {
+                        '"' => {
+                            end = at.saturating_add(1);
+                            break;
+                        }
+                        '\\' => {
+                            chars.next();
+                        }
+                        _ => {}
+                    }
+                }
+
+                end
+            }
+            Some((_, c)) => c.len_utf8(),
+            None => 0,
+        };
+
+        self.at = self.at.saturating_add(len);
+        self.at
+    }
+
     pub(crate) fn text(&self, start: usize, end: usize) -> &'a str {
         self.source.get(start..end).unwrap_or_default()
     }

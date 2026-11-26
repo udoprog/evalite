@@ -406,6 +406,7 @@ mod complete;
 mod debug;
 mod env;
 mod error;
+pub mod highlight;
 mod lexer;
 mod message;
 mod methods;
@@ -435,6 +436,9 @@ mod complete_tests;
 
 #[cfg(test)]
 mod message_tests;
+
+#[cfg(test)]
+mod highlight_tests;
 
 pub use self::check::{compile, compile_debug, compile_with};
 pub use self::complete::{CompleteError, Completion, CompletionKind};
