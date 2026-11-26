@@ -129,3 +129,24 @@ pub fn unescape(literal: &str) -> Option<String> {
 
     Some(out)
 }
+
+/// Whether `kind` is a unary or binary operator's token.
+pub(crate) fn is_operator(kind: Syntax) -> bool {
+    matches!(
+        kind,
+        Syntax::Plus
+            | Syntax::Minus
+            | Syntax::Star
+            | Syntax::Slash
+            | Syntax::Percent
+            | Syntax::EqEq
+            | Syntax::NotEq
+            | Syntax::Lt
+            | Syntax::Le
+            | Syntax::Gt
+            | Syntax::Ge
+            | Syntax::AndAnd
+            | Syntax::OrOr
+            | Syntax::Bang
+    )
+}

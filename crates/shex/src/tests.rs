@@ -840,7 +840,7 @@ fn error_kinds() {
     );
     assert_eq!(
         Error::new(span(0, 0), ErrorKind::Internal("x".to_owned())).to_string(),
-        "internal parser error: x"
+        "internal error in shex: x"
     );
 
     let error: Box<dyn std::error::Error> = Box::new(parse("").unwrap_err());
@@ -879,10 +879,10 @@ fn options() {
 }
 
 /// splitmix64.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -890,11 +890,11 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    fn below(&mut self, n: usize) -> usize {
+    pub(crate) fn below(&mut self, n: usize) -> usize {
         (self.next() % n as u64) as usize
     }
 
-    fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
+    pub(crate) fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
         items[self.below(items.len())]
     }
 }

@@ -32,15 +32,91 @@
 //! - `Bool`: `true` or `false`, from comparisons and `!`, `&&`, `||`.
 //! - `String`: a literal such as `"Essence (1e)"`, naming a library table.
 //!   `\"` and `\\` are its only escapes.
-//! - `List<T>`: `[10, 11, 12]`, entries of one type.
+//! - `List<T>`: `[10, 11, 12]`, one or more entries of one type. `[]` is
+//!   an error, since it has no entry type.
 //! - `Option<T>`: a value that may be absent. It is unwrapped explicitly,
-//!   `x.unwrap_or(0)`, never used as a `T`.
-//! - Records: values with fields, such as `specialties.athletics`; their
-//!   shape comes from the names the caller declares.
+//!   `x.unwrap_or(0)`, never used as a `T`. `Option<Option<T>>` is not a
+//!   type.
+//! - Records, written `{athletics: Int, "Brawl (bar)": Int}`: fields read
+//!   with `.athletics` or `["Brawl (bar)"]`, the latter only with a string
+//!   literal.
+//! - Opaque types such as `Track`: the caller's values, which only the
+//!   caller's functions take.
 //!
-//! The caller declares every name an expression may use, values and
-//! functions alike, with its type. Today's sheet functions are `min`,
-//! `max`, `lookup`, `count` and `boxes`.
+//! The rules:
+//!
+//! - `+ - * / %` and unary `-` take `Int`s; `< <= > >=` take two `Int`s and
+//!   give a `Bool`; `==` and `!=` take two `Int`s or two `Bool`s.
+//! - `&&`, `||` and `!` take `Bool`s; `&&` and `||` skip their right operand
+//!   when the left decides.
+//! - `list[i]` takes a `List<T>` and an `Int` and gives a `T`.
+//! - A call matches its function's declared parameters exactly.
+//!
+//! ## Environment
+//!
+//! An [`Environment`] declares every name an expression may use, with its
+//! type, and every function. Values and functions are named apart, so a
+//! value `min` and the function `min(...)` can both exist. Names are
+//! lowercase, so `Strength` is unknown, with a hint when `strength` is
+//! declared.
+//!
+//! The [`Builtin`] functions are `min(Int, ...)` and `max(Int, ...)`, of
+//! one or more `Int`s, and `lookup(Int, List<T>)`, a list's entry at an
+//! index clamped to its ends. The caller declares the rest, such as
+//! `count(Track)`, `count(Track, Int)` and `lookup(Int, String)` for a
+//! named table; a name declared several ways calls the first whose
+//! parameters the arguments match.
+//!
+//! ```
+//! use shex::{Environment, Type};
+//!
+//! let mut env = Environment::with_builtins();
+//! env.value("health", Type::opaque("Track"))?;
+//! env.value("specialties", Type::record([("brawl", Type::option(Type::Int))]))?;
+//! env.function("count", [Type::opaque("Track")], Type::Int)?;
+//!
+//! let program = shex::compile("count(health) + specialties.brawl.unwrap_or(0)", &env)?;
+//! assert_eq!(program.result_type(), Type::Int);
+//!
+//! let error = shex::compile("count(1)", &env).unwrap_err();
+//! assert_eq!(error.to_string(), "argument 1 of `count` must be Track, found Int");
+//! assert_eq!(error.span().range(), 6..7);
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! ## Programs
+//!
+//! [`compile`] gives a [`Program`]: code for a stack machine, with the
+//! values it reads and the caller's functions it calls, each with its
+//! type, so it runs without the environment.
+//!
+//! Every value takes one slot: an `Int`, a `Bool`, an absent option, or a
+//! reference to a string, list or record held elsewhere. A program's
+//! [`Memory`] is the deepest its stack gets, the entries of the lists it
+//! builds as it runs, and its constants (a slot per entry of a constant
+//! list, a slot per 8 bytes of a string). There are no loops, so each
+//! instruction runs at most once.
+//!
+//! [`Program::to_bytes`] stores a program with `musli`, and
+//! [`Program::from_bytes`] reads it back. Stored bytes are not trusted: a
+//! loaded program is checked by running its code over types instead of
+//! values, and is refused unless it is well typed and uses exactly the
+//! memory it declares.
+//!
+//! ```
+//! use shex::{Environment, Program, Type};
+//!
+//! let mut env = Environment::with_builtins();
+//! env.value("blood_potency", Type::Int)?;
+//!
+//! let program = shex::compile("lookup(blood_potency, [10, 11, 12, 13])", &env)?;
+//! assert_eq!(program.memory().stack, 2);
+//! assert_eq!(program.memory().constants, 4);
+//!
+//! let loaded = Program::from_bytes(&program.to_bytes()?)?;
+//! assert_eq!(loaded.globals(), [("blood_potency", Type::Int)]);
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! ```
 //!
 //! ## Grammar
 //!
@@ -71,10 +147,12 @@
 //! ## Methods
 //!
 //! Methods are called Rust-style on a value, `value.method(args)`, and
-//! chain: `some.field.unwrap_or(0).max(1)`. Which methods a value has
-//! depends on its type, such as `unwrap_or` on an `Option<T>` and `min`,
-//! `max`, `abs` and `clamp` on an `Int`. A name followed by `(` is a call
-//! of a function; `.name` without `(` is a field.
+//! chain: `some.field.unwrap_or(0).max(1)`. A name followed by `(` is a
+//! call of a function; `.name` without `(` is a field.
+//!
+//! - `Int`: `abs()`, `min(Int)`, `max(Int)`, `clamp(Int, Int)`.
+//! - `Option<T>`: `unwrap_or(T)`, `is_some()`, `is_none()`.
+//! - `List<T>`: `len()`.
 //!
 //! ## Nesting
 //!
@@ -83,15 +161,26 @@
 //! set with `Options::max_depth`) is an error at the construct that went
 //! too deep. Chains of operators, fields and methods do not nest.
 
+mod check;
+mod env;
 mod error;
 mod lexer;
 mod parser;
+mod program;
 mod syntax;
+mod types;
 
 #[cfg(test)]
 mod tests;
 
-pub use self::error::{Delimiter, Error, ErrorKind, Found, Nesting};
+#[cfg(test)]
+mod check_tests;
+
+pub use self::check::{compile, compile_with};
+pub use self::env::{Builtin, DeclareError, Environment};
+pub use self::error::{Arity, Callee, Delimiter, Error, ErrorKind, Found, Nesting};
 pub use self::parser::{DEFAULT_MAX_DEPTH, Options, Tree, parse, parse_with};
+pub use self::program::{Memory, Program, StoreError};
 pub use self::syntax::{Syntax, unescape};
+pub use self::types::{MAX_TYPE_DEPTH, Type};
 pub use syntree::Span;
