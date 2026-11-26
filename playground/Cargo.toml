@@ -14,7 +14,7 @@ gloo-timers = { version = "0.4.1", features = ["futures"] }
 sockel = "0.3.6"
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
-web-sys = { version = "0.3.107", features = ["Window", "Document", "Element", "HtmlElement", "HtmlTextAreaElement", "Location", "History", "Navigator", "Clipboard"] }
+web-sys = { version = "0.3.107", features = ["Window", "Document", "Element", "HtmlElement", "HtmlTextAreaElement", "HtmlDocument", "InputEvent", "DomRect", "Location", "History", "Navigator", "Clipboard"] }
 yew = { version = "0.23", features = ["csr"] }
 
 [build-dependencies]

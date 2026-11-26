@@ -1,6 +1,7 @@
 //! The evalite playground: the project's page, with an editor that runs
 //! evalite in the browser.
 
+mod code_editor;
 mod complete;
 mod editor;
 mod eval;
