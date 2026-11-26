@@ -8,8 +8,8 @@ use crate::Type;
 use crate::env::{Builtin, Environment, Overload};
 use crate::methods::{self, Receiver};
 use crate::structure::{
-    BinaryOp, EditError, HOLE, Node, NodeId, Repr, Structure, StructureError, UnaryOp, escape,
-    is_reserved,
+    BinaryOp, EditError, EditKind, HOLE, Node, NodeId, Repr, Structure, StructureError, UnaryOp,
+    escape, is_reserved,
 };
 use crate::types::Kind;
 use crate::types::is_field_name;
@@ -153,25 +153,71 @@ impl Completion {
 }
 
 /// Why a structure cannot be completed at a node.
+///
+/// ```
+/// use evalite::{Environment, Structure};
+///
+/// let s = Structure::from_text("_._")?;
+/// let error = s.complete(&Environment::new(), s.holes()[0], None).unwrap_err();
+/// assert_eq!(error.to_string(), "the receiver's type is not known");
+/// assert_eq!(
+///     format!("{error:#}"),
+///     "the receiver's type is not known: the expression is unfinished, fill in the `_`"
+/// );
+///
+/// // The receiver's own error is the source.
+/// let source = std::error::Error::source(&error).unwrap();
+/// assert_eq!(source.to_string(), "the expression is unfinished, fill in the `_`");
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum CompleteError {
+pub struct CompleteError {
+    kind: CompleteKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompleteKind {
     UnknownNode(NodeId),
     /// The receiver of a member hole does not compile, so its members are
     /// not known.
     Receiver(StructureError),
 }
 
+impl CompleteError {
+    #[cfg(test)]
+    pub(crate) fn kind(&self) -> &CompleteKind {
+        &self.kind
+    }
+}
+
+impl From<CompleteKind> for CompleteError {
+    #[inline]
+    fn from(kind: CompleteKind) -> Self {
+        Self { kind }
+    }
+}
+
 impl fmt::Display for CompleteError {
+    /// `{:#}` adds the receiver's error.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownNode(id) => write!(f, "there is no node {id}"),
-            Self::Receiver(e) => write!(f, "the receiver's type is not known: {e}"),
+        match &self.kind {
+            CompleteKind::UnknownNode(id) => write!(f, "there is no node {id}"),
+            CompleteKind::Receiver(e) if f.alternate() => {
+                write!(f, "the receiver's type is not known: {e}")
+            }
+            CompleteKind::Receiver(_) => f.write_str("the receiver's type is not known"),
         }
     }
 }
 
-impl std::error::Error for CompleteError {}
+impl std::error::Error for CompleteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.kind {
+            CompleteKind::Receiver(e) => Some(e),
+            CompleteKind::UnknownNode(_) => None,
+        }
+    }
+}
 
 /// A type a place takes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,7 +394,7 @@ impl Structure {
         at: NodeId,
         root: Option<&Type>,
     ) -> Result<Vec<Completion>, CompleteError> {
-        let node = self.get(at).ok_or(CompleteError::UnknownNode(at))?;
+        let node = self.get(at).ok_or(CompleteKind::UnknownNode(at))?;
         let want = self.want(env, at, root);
 
         let mut out = match node {
@@ -363,7 +409,7 @@ impl Structure {
             }) => {
                 let program = self
                     .compile_at(*receiver, env)
-                    .map_err(CompleteError::Receiver)?;
+                    .map_err(CompleteKind::Receiver)?;
                 members(&program.result_type(), &want)
             }
             _ => self.values(env, at, &want),
@@ -381,13 +427,13 @@ impl Structure {
             Some(Node(Repr::Field { receiver, .. })) => (Some(*receiver), Vec::new()),
             Some(Node(Repr::Method { receiver, args, .. })) => (Some(*receiver), args.clone()),
             Some(_) => (None, Vec::new()),
-            None => return Err(EditError::UnknownNode(at)),
+            None => return Err(EditKind::UnknownNode(at).into()),
         };
 
         match &completion.insert {
             Insert::Expr(expr) => self.graft(at, expr),
             Insert::Field(name) => {
-                let receiver = receiver.ok_or(EditError::NotAMember(at))?;
+                let receiver = receiver.ok_or(EditKind::NotAMember(at))?;
 
                 if is_field_name(name) && !is_reserved(name) {
                     self.replace(
@@ -403,7 +449,7 @@ impl Structure {
                 }
             }
             Insert::Method { name, args } => {
-                let receiver = receiver.ok_or(EditError::NotAMember(at))?;
+                let receiver = receiver.ok_or(EditKind::NotAMember(at))?;
 
                 let args = if old_args.len() == *args {
                     old_args

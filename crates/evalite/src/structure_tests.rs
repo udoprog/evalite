@@ -2,7 +2,7 @@
 
 use crate::error::ErrorKind;
 use crate::message::Message;
-use crate::structure::Repr;
+use crate::structure::{EditKind, Repr, StructureKind};
 use crate::*;
 
 fn env() -> Environment {
@@ -212,7 +212,7 @@ fn negative_integer_receivers_and_operands() {
     assert_eq!(error.node(), min.root());
     assert!(matches!(
         error.kind(),
-        StructureErrorKind::Compile(e) if *e.kind() == ErrorKind::IntegerTooLarge
+        StructureKind::Compile(e) if *e.kind() == ErrorKind::IntegerTooLarge
     ));
 }
 
@@ -225,9 +225,9 @@ fn same_as_text(structure: &Structure, env: &Environment) {
     match (from_text, from_structure) {
         (Ok(a), Ok(b)) => assert_eq!(a.to_bytes().unwrap(), b.to_bytes().unwrap(), "{text}"),
         (Err(a), Err(b)) => match b.kind() {
-            StructureErrorKind::Compile(b) => assert_eq!(&a, b, "{text}"),
+            StructureKind::Compile(b) => assert_eq!(&a, b, "{text}"),
             // Checked before the text is.
-            StructureErrorKind::Hole | StructureErrorKind::InvalidName(_) => {}
+            StructureKind::Hole | StructureKind::InvalidName(_) => {}
         },
         (a, b) => panic!("{text}: text gives {a:?}, structure {b:?}"),
     }
@@ -290,7 +290,7 @@ fn holes_are_refused_when_compiling() {
     for text in ["_", "wits + _", "min(_, 1)", "m._", "bonus._(0)", "[1, _]"] {
         let structure = s(text);
         let error = structure.compile(&env).unwrap_err();
-        assert_eq!(error.kind(), &StructureErrorKind::Hole, "{text}");
+        assert_eq!(error.kind(), &StructureKind::Hole, "{text}");
         assert_eq!(
             error.to_string(),
             "the expression is unfinished, fill in the `_`"
@@ -327,7 +327,7 @@ fn names_that_are_no_names_are_refused() {
         let error = b.compile(&env).unwrap_err();
         assert_eq!(
             error.kind(),
-            &StructureErrorKind::InvalidName(name.into()),
+            &StructureKind::InvalidName(name.into()),
             "{name}"
         );
     }
@@ -374,7 +374,7 @@ fn parse_depth_limits_apply() {
     let error = b.compile(&env()).unwrap_err();
     assert!(matches!(
         error.kind(),
-        StructureErrorKind::Compile(e) if matches!(e.kind(), ErrorKind::TooDeep { .. })
+        StructureKind::Compile(e) if matches!(e.kind(), ErrorKind::TooDeep { .. })
     ));
     assert!(matches!(b.get(error.node()), Some(Node(Repr::List { .. }))));
     assert!(
@@ -553,7 +553,7 @@ fn edits_keep_the_structure_a_tree() {
     // `one` is part of `neg` now.
     assert_eq!(
         b.add(Node(Repr::List { entries: vec![one] })),
-        Err(EditError::Attached(one))
+        Err(EditKind::Attached(one).into())
     );
     // A node twice in one node.
     let two = b.add(Node(Repr::Int(2))).unwrap();
@@ -561,14 +561,14 @@ fn edits_keep_the_structure_a_tree() {
         b.add(Node(Repr::List {
             entries: vec![two, two]
         })),
-        Err(EditError::Attached(two))
+        Err(EditKind::Attached(two).into())
     );
     // The root.
     assert_eq!(
         b.add(Node(Repr::List {
             entries: vec![b.root()]
         })),
-        Err(EditError::Attached(b.root()))
+        Err(EditKind::Attached(b.root()).into())
     );
     // Unknown nodes.
     let unknown = id(99);
@@ -576,11 +576,11 @@ fn edits_keep_the_structure_a_tree() {
         b.add(Node(Repr::List {
             entries: vec![unknown]
         })),
-        Err(EditError::UnknownNode(unknown))
+        Err(EditKind::UnknownNode(unknown).into())
     );
     assert_eq!(
         b.replace(unknown, Node(Repr::Hole)),
-        Err(EditError::UnknownNode(unknown))
+        Err(EditKind::UnknownNode(unknown).into())
     );
 
     b.replace(
@@ -596,7 +596,7 @@ fn edits_keep_the_structure_a_tree() {
     // Making `neg` part of what it holds.
     assert_eq!(
         b.replace(one, Node(Repr::List { entries: vec![neg] })),
-        Err(EditError::Attached(neg))
+        Err(EditKind::Attached(neg).into())
     );
 
     // A free subtree holding the node it would replace.
@@ -615,7 +615,7 @@ fn edits_keep_the_structure_a_tree() {
                 entries: vec![free]
             })
         ),
-        Err(EditError::Cycle(free))
+        Err(EditKind::Cycle(free).into())
     );
 
     // Replacing a node frees its parts for reuse.
@@ -636,7 +636,7 @@ fn edits_keep_the_structure_a_tree() {
     let top = b.add(Node(Repr::Name("wits".into()))).unwrap();
     b.set_root(top).unwrap();
     assert_eq!(b.to_text(), "wits");
-    assert_eq!(b.set_root(two), Err(EditError::Attached(two)));
+    assert_eq!(b.set_root(two), Err(EditKind::Attached(two).into()));
     b.set_root(old).unwrap();
     assert_eq!(b.to_text(), "[2, -(1)]");
 }

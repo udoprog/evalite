@@ -11,7 +11,7 @@ use crate::check::compile_tree_debug;
 use crate::debug::DebugInfo;
 use crate::env::Environment;
 use crate::error::{ErrorKind, ParseError};
-use crate::message::{Invalid, Message, StoreError};
+use crate::message::{Invalid, Labels, Message, StoreError};
 use crate::parser::{Options, Tree, parse_with};
 use crate::program::Program;
 use crate::syntax::{Syntax, unescape};
@@ -760,9 +760,25 @@ impl Repr {
 }
 
 /// Why a structure could not be edited as asked.
+///
+/// ```
+/// use evalite::Structure;
+///
+/// let mut s = Structure::from_text("1 + 2")?;
+/// let one = s.get(s.root()).unwrap().children()[0];
+///
+/// // `1` is already part of `1 + 2`.
+/// let error = s.set_root(one).unwrap_err();
+/// assert_eq!(error.to_string(), format!("node {one} is already part of another node"));
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum EditError {
+pub struct EditError {
+    kind: EditKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditKind {
     /// A node the structure does not have.
     UnknownNode(NodeId),
     /// A node already part of the expression, or of another node, which
@@ -777,14 +793,21 @@ pub enum EditError {
     TooLarge,
 }
 
+impl From<EditKind> for EditError {
+    #[inline]
+    fn from(kind: EditKind) -> Self {
+        Self { kind }
+    }
+}
+
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownNode(id) => write!(f, "there is no node {id}"),
-            Self::Attached(id) => write!(f, "node {id} is already part of another node"),
-            Self::Cycle(id) => write!(f, "node {id} would be part of itself"),
-            Self::NotAMember(id) => write!(f, "node {id} is not a field or a method"),
-            Self::TooLarge => write!(f, "the structure has too many nodes"),
+        match self.kind {
+            EditKind::UnknownNode(id) => write!(f, "there is no node {id}"),
+            EditKind::Attached(id) => write!(f, "node {id} is already part of another node"),
+            EditKind::Cycle(id) => write!(f, "node {id} would be part of itself"),
+            EditKind::NotAMember(id) => write!(f, "node {id} is not a field or a method"),
+            EditKind::TooLarge => write!(f, "the structure has too many nodes"),
         }
     }
 }
@@ -792,22 +815,29 @@ impl fmt::Display for EditError {
 impl std::error::Error for EditError {}
 
 /// Why a structure does not compile, and at which node.
+///
+/// ```
+/// use evalite::{Environment, Structure};
+///
+/// let s = Structure::new();
+/// let error = s.compile(&Environment::new()).unwrap_err();
+/// assert_eq!(error.node(), s.root());
+/// assert_eq!(error.to_string(), "the expression is unfinished, fill in the `_`");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructureError {
     node: NodeId,
-    kind: StructureErrorKind,
+    kind: StructureKind,
 }
 
-/// What is wrong with a structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum StructureErrorKind {
+pub(crate) enum StructureKind {
     /// A hole, which must be filled before the expression compiles.
     Hole,
     /// A name that cannot be written as one, such as `"Strength"` for a
     /// value or `"true"`. A record field of any name is read with
     /// [`Node::index`] by a [`Node::string`].
-    InvalidName(String),
+    InvalidName(Box<str>),
     /// The error compiling [`Structure::to_text`]'s text gives: its span
     /// is in that text.
     Compile(ParseError),
@@ -815,24 +845,64 @@ pub enum StructureErrorKind {
 
 impl StructureError {
     /// The node the error is about.
+    ///
+    /// ```
+    /// use evalite::{Environment, Structure};
+    ///
+    /// let s = Structure::from_text("1 + _")?;
+    /// let error = s.compile(&Environment::new()).unwrap_err();
+    /// assert_eq!(error.node(), s.holes()[0]);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
     pub fn node(&self) -> NodeId {
         self.node
     }
 
-    pub fn kind(&self) -> &StructureErrorKind {
+    #[cfg(test)]
+    pub(crate) fn kind(&self) -> &StructureKind {
         &self.kind
+    }
+
+    /// What is wrong, as [`Label`](crate::Label)s. An error from compiling
+    /// has the labels of its [`ParseError`], with spans in
+    /// [`Structure::to_text`]'s text; a hole or a name that cannot be
+    /// written has one label and no span, since [`node`](Self::node) says
+    /// where it is.
+    ///
+    /// ```
+    /// use evalite::{Environment, Structure};
+    ///
+    /// let env = Environment::new();
+    ///
+    /// let error = Structure::new().compile(&env).unwrap_err();
+    /// let labels: Vec<_> = error.labels().collect();
+    /// assert_eq!(labels.len(), 1);
+    /// assert!(labels[0].is_primary());
+    /// assert_eq!(labels[0].span(), None);
+    ///
+    /// let error = Structure::from_text("nothing")?.compile(&env).unwrap_err();
+    /// let label = error.labels().next().unwrap();
+    /// assert_eq!(label.message().to_string(), "unknown name `nothing`");
+    /// assert_eq!(label.span().map(|s| s.range()), Some(0..7));
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn labels(&self) -> Labels<'_> {
+        match &self.kind {
+            StructureKind::Compile(error) => error.labels(),
+            _ => Labels::one(self),
+        }
     }
 }
 
 impl fmt::Display for StructureError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            StructureErrorKind::Hole => write!(f, "the expression is unfinished, fill in the `_`"),
-            StructureErrorKind::InvalidName(name) => write!(
+            StructureKind::Hole => write!(f, "the expression is unfinished, fill in the `_`"),
+            StructureKind::InvalidName(name) => write!(
                 f,
                 "`{name}` cannot be written as a name, names are letters, digits and `_`, starting with a letter or `_`"
             ),
-            StructureErrorKind::Compile(error) => error.fmt(f),
+            StructureKind::Compile(error) => error.fmt(f),
         }
     }
 }
@@ -936,7 +1006,7 @@ impl Structure {
     /// Add `node`, which is not yet part of anything. Its parts must be
     /// nodes that are not part of anything either.
     pub fn add(&mut self, node: Node) -> Result<NodeId, EditError> {
-        let id = NodeId(u32::try_from(self.nodes.len()).map_err(|_| EditError::TooLarge)?);
+        let id = NodeId(u32::try_from(self.nodes.len()).map_err(|_| EditKind::TooLarge)?);
         self.check_free(&node, None)?;
         self.attach(&node, id);
         self.nodes.push(node);
@@ -947,7 +1017,7 @@ impl Structure {
     /// Replace node `at` with `node`. `at`'s old parts are no longer part
     /// of it, and so may be used again, such as by `node`.
     pub fn replace(&mut self, at: NodeId, node: Node) -> Result<(), EditError> {
-        let old = self.get(at).ok_or(EditError::UnknownNode(at))?;
+        let old = self.get(at).ok_or(EditKind::UnknownNode(at))?;
         let old_children = old.children();
         self.check_free(&node, Some((at, &old_children)))?;
 
@@ -967,11 +1037,11 @@ impl Structure {
     /// Make `id`, which is not part of anything, the whole expression.
     pub fn set_root(&mut self, id: NodeId) -> Result<(), EditError> {
         if self.get(id).is_none() {
-            return Err(EditError::UnknownNode(id));
+            return Err(EditKind::UnknownNode(id).into());
         }
 
         if id != self.root && self.parent(id).is_some() {
-            return Err(EditError::Attached(id));
+            return Err(EditKind::Attached(id).into());
         }
 
         self.root = id;
@@ -981,7 +1051,7 @@ impl Structure {
     /// Copy the expression of `other` in place of node `at`.
     pub fn graft(&mut self, at: NodeId, other: &Structure) -> Result<(), EditError> {
         if self.get(at).is_none() {
-            return Err(EditError::UnknownNode(at));
+            return Err(EditKind::UnknownNode(at).into());
         }
 
         let mut ids = vec![None; other.nodes.len()];
@@ -989,12 +1059,12 @@ impl Structure {
         for id in other.post_order() {
             let node = other
                 .get(id)
-                .ok_or(EditError::UnknownNode(id))?
+                .ok_or(EditKind::UnknownNode(id))?
                 .0
                 .clone()
                 .renumber(|child| ids.get(child.index()).copied().flatten())
                 .map(Node)
-                .ok_or(EditError::UnknownNode(id))?;
+                .ok_or(EditKind::UnknownNode(id))?;
 
             let new = if id == other.root {
                 self.replace(at, node)?;
@@ -1031,7 +1101,7 @@ impl Structure {
 
         for (n, child) in children.iter().enumerate() {
             if self.get(*child).is_none() {
-                return Err(EditError::UnknownNode(*child));
+                return Err(EditKind::UnknownNode(*child).into());
             }
 
             let reused = at.is_some_and(|(_, old)| old.contains(child));
@@ -1040,7 +1110,7 @@ impl Structure {
                 || (self.parent(*child).is_some() && !reused)
                 || children.iter().take(n).any(|c| c == child)
             {
-                return Err(EditError::Attached(*child));
+                return Err(EditKind::Attached(*child).into());
             }
         }
 
@@ -1052,13 +1122,13 @@ impl Structure {
 
             while let Some(id) = up {
                 if children.contains(&id) {
-                    return Err(EditError::Cycle(id));
+                    return Err(EditKind::Cycle(id).into());
                 }
 
                 steps = steps.saturating_add(1);
 
                 if steps > self.nodes.len() {
-                    return Err(EditError::Cycle(id));
+                    return Err(EditKind::Cycle(id).into());
                 }
 
                 up = self.parent(id);
@@ -1413,7 +1483,7 @@ fn compile_node_debug(
         let error = |kind| Err(StructureError { node: id, kind });
 
         if node.is_hole() {
-            return error(StructureErrorKind::Hole);
+            return error(StructureKind::Hole);
         }
 
         let name = match node {
@@ -1430,7 +1500,7 @@ fn compile_node_debug(
         };
 
         if let Some(name) = name {
-            return error(StructureErrorKind::InvalidName(name.clone()));
+            return error(StructureKind::InvalidName(name.as_str().into()));
         }
     }
 
@@ -1440,7 +1510,7 @@ fn compile_node_debug(
         let node = locate(&spans, error.span()).unwrap_or(root);
         StructureError {
             node,
-            kind: StructureErrorKind::Compile(error),
+            kind: StructureKind::Compile(error),
         }
     };
 

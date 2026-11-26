@@ -8,6 +8,7 @@
 
 use std::ops::Range;
 
+use crate::env::DeclareKind;
 use crate::error::ErrorKind;
 use crate::message::Message;
 use crate::program::{Constant, FORMAT, Global, HostFunction, Instr, Scalar, Stored};
@@ -802,19 +803,19 @@ fn declarations() {
     for name in ["", "A", "Wits", "9a", "a-b", "a b", "é", "a.b"] {
         assert_eq!(
             env.value(name, Type::int()),
-            Err(DeclareError::InvalidName(name.to_owned())),
+            Err(DeclareError::new(DeclareKind::InvalidName, name)),
             "{name}"
         );
         assert_eq!(
             env.function(name, [], Type::int()),
-            Err(DeclareError::InvalidName(name.to_owned())),
+            Err(DeclareError::new(DeclareKind::InvalidName, name)),
             "{name}"
         );
     }
 
     assert_eq!(
         env.value("x", Type::option(Type::option(Type::int()))),
-        Err(DeclareError::NestedOption("x".to_owned()))
+        Err(DeclareError::new(DeclareKind::NestedOption, "x"))
     );
     assert_eq!(
         env.value(
@@ -824,15 +825,15 @@ fn declarations() {
                 Type::option(Type::option(Type::int()))
             )]))
         ),
-        Err(DeclareError::NestedOption("x".to_owned()))
+        Err(DeclareError::new(DeclareKind::NestedOption, "x"))
     );
     assert_eq!(
         env.function("f", [Type::option(Type::option(Type::int()))], Type::int()),
-        Err(DeclareError::NestedOption("f".to_owned()))
+        Err(DeclareError::new(DeclareKind::NestedOption, "f"))
     );
     assert_eq!(
         env.function("f", [], Type::option(Type::option(Type::int()))),
-        Err(DeclareError::NestedOption("f".to_owned()))
+        Err(DeclareError::new(DeclareKind::NestedOption, "f"))
     );
 
     let mut deep = Type::int();
@@ -844,20 +845,20 @@ fn declarations() {
     assert_eq!(env.value("ok", deep.clone()), Ok(()));
     assert_eq!(
         env.value("x", Type::list(deep)),
-        Err(DeclareError::TypeTooDeep("x".to_owned()))
+        Err(DeclareError::new(DeclareKind::TypeTooDeep, "x"))
     );
 
     let messages = [
         (
-            DeclareError::InvalidName("A".into()),
+            DeclareError::new(DeclareKind::InvalidName, "A"),
             "`A` is not a valid name, names are lowercase letters, digits and `_`, starting with a letter or `_`",
         ),
         (
-            DeclareError::NestedOption("x".into()),
+            DeclareError::new(DeclareKind::NestedOption, "x"),
             "the type of `x` has an option of an option, which is not a type",
         ),
         (
-            DeclareError::TypeTooDeep("x".into()),
+            DeclareError::new(DeclareKind::TypeTooDeep, "x"),
             "the type of `x` nests more than 64 levels",
         ),
     ];

@@ -1016,6 +1016,8 @@ enum LabelsInner<'a> {
         /// The index of the next label.
         next: usize,
     },
+    /// One label without a span, the error's own text.
+    One(Option<&'a (dyn fmt::Display + 'a)>),
 }
 
 impl<'a> Labels<'a> {
@@ -1023,6 +1025,13 @@ impl<'a> Labels<'a> {
     pub(crate) fn parse(error: &'a ParseError) -> Self {
         Self {
             inner: LabelsInner::Parse { error, next: 0 },
+        }
+    }
+
+    /// One primary label of `error`'s own text, without a span.
+    pub(crate) fn one(error: &'a (dyn fmt::Display + 'a)) -> Self {
+        Self {
+            inner: LabelsInner::One(Some(error)),
         }
     }
 }
@@ -1067,6 +1076,11 @@ impl<'a> Iterator for Labels<'a> {
                     primary,
                 })
             }
+            LabelsInner::One(error) => Some(Label {
+                message: Text::Other(error.take()?),
+                span: None,
+                primary: true,
+            }),
         }
     }
 
@@ -1075,6 +1089,10 @@ impl<'a> Iterator for Labels<'a> {
             LabelsInner::Run { frames, .. } => frames.size_hint(),
             LabelsInner::Parse { error, next } => {
                 let n = error.label_count().saturating_sub(*next);
+                (n, Some(n))
+            }
+            LabelsInner::One(error) => {
+                let n = usize::from(error.is_some());
                 (n, Some(n))
             }
         }
@@ -1166,6 +1184,7 @@ impl fmt::Debug for Label<'_> {
 enum Text<'a> {
     Run(Shown<'a>),
     Parse(ParseText<'a>),
+    Other(&'a (dyn fmt::Display + 'a)),
 }
 
 impl fmt::Display for Text<'_> {
@@ -1173,6 +1192,7 @@ impl fmt::Display for Text<'_> {
         match self {
             Self::Run(shown) => shown.fmt(f),
             Self::Parse(text) => text.fmt(f),
+            Self::Other(error) => error.fmt(f),
         }
     }
 }

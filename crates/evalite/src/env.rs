@@ -63,31 +63,62 @@ impl Overload {
 }
 
 /// Why a name or function cannot be declared.
+///
+/// ```
+/// use evalite::{Environment, Type};
+///
+/// let mut env = Environment::new();
+/// let error = env.value("Strength", Type::int()).unwrap_err();
+/// assert_eq!(
+///     error.to_string(),
+///     "`Strength` is not a valid name, names are lowercase letters, digits and `_`, starting with a letter or `_`"
+/// );
+///
+/// let error = env.value("x", Type::option(Type::option(Type::int()))).unwrap_err();
+/// assert_eq!(error.to_string(), "the type of `x` has an option of an option, which is not a type");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum DeclareError {
+pub struct DeclareError {
+    name: Box<str>,
+    kind: DeclareKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeclareKind {
     /// A name other than a lowercase letter or `_` followed by lowercase
     /// letters, digits and `_`.
-    InvalidName(String),
+    InvalidName,
     /// `Option<Option<T>>`, which is not a type.
-    NestedOption(String),
+    NestedOption,
     /// A type nesting more than [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH)
     /// levels.
-    TypeTooDeep(String),
+    TypeTooDeep,
+}
+
+impl DeclareError {
+    #[cold]
+    pub(crate) fn new(kind: DeclareKind, name: &str) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+        }
+    }
 }
 
 impl fmt::Display for DeclareError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidName(name) => write!(
+        let name = &self.name;
+
+        match self.kind {
+            DeclareKind::InvalidName => write!(
                 f,
                 "`{name}` is not a valid name, names are lowercase letters, digits and `_`, starting with a letter or `_`"
             ),
-            Self::NestedOption(name) => write!(
+            DeclareKind::NestedOption => write!(
                 f,
                 "the type of `{name}` has an option of an option, which is not a type"
             ),
-            Self::TypeTooDeep(name) => write!(
+            DeclareKind::TypeTooDeep => write!(
                 f,
                 "the type of `{name}` nests more than {} levels",
                 crate::MAX_TYPE_DEPTH
@@ -195,13 +226,13 @@ fn check_name(name: &str) -> Result<(), DeclareError> {
     if is_value_name(name) {
         Ok(())
     } else {
-        Err(DeclareError::InvalidName(name.to_owned()))
+        Err(DeclareError::new(DeclareKind::InvalidName, name))
     }
 }
 
 fn check(name: &str, ty: &Type) -> Result<(), DeclareError> {
     check_type(ty).map_err(|fault| match fault {
-        TypeFault::NestedOption => DeclareError::NestedOption(name.to_owned()),
-        TypeFault::TooDeep => DeclareError::TypeTooDeep(name.to_owned()),
+        TypeFault::NestedOption => DeclareError::new(DeclareKind::NestedOption, name),
+        TypeFault::TooDeep => DeclareError::new(DeclareKind::TypeTooDeep, name),
     })
 }

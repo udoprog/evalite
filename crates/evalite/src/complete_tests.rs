@@ -1,8 +1,8 @@
 #![allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
-use crate::complete::Insert;
+use crate::complete::{CompleteKind, Insert};
 use crate::error::ErrorKind;
-use crate::structure::Repr;
+use crate::structure::{EditKind, Repr, StructureKind};
 use crate::types::Kind;
 use crate::*;
 
@@ -548,10 +548,13 @@ fn applying_members() {
     // Members only name members.
     let mut s = self::s("_ + 1");
     let hole = s.holes()[0];
-    assert_eq!(s.apply(hole, &field("x")), Err(EditError::NotAMember(hole)));
+    assert_eq!(
+        s.apply(hole, &field("x")),
+        Err(EditKind::NotAMember(hole).into())
+    );
     assert_eq!(
         s.apply(hole, &method("abs", 0)),
-        Err(EditError::NotAMember(hole))
+        Err(EditKind::NotAMember(hole).into())
     );
     assert_eq!(s.to_text(), "_ + 1");
 
@@ -631,22 +634,35 @@ fn completion_errors() {
     let s = s("_._");
     let member = s.holes()[0];
 
-    let Err(CompleteError::Receiver(error)) = s.complete(&env, member, None) else {
+    let Err(error) = s.complete(&env, member, None) else {
         panic!("a receiver with a hole has no known members");
     };
-    assert_eq!(error.kind(), &StructureErrorKind::Hole);
+    let CompleteKind::Receiver(error) = error.kind() else {
+        panic!("{error:?}");
+    };
+    assert_eq!(error.kind(), &StructureKind::Hole);
     assert_eq!(error.node(), s.holes()[1]);
 
     let s = self::s("nothing._");
-    let Err(CompleteError::Receiver(error)) = s.complete(&env, s.holes()[0], None) else {
+    let Err(error) = s.complete(&env, s.holes()[0], None) else {
         panic!("an unknown receiver has no known members");
     };
+    assert_eq!(error.to_string(), "the receiver's type is not known");
+    assert_eq!(
+        format!("{error:#}"),
+        "the receiver's type is not known: unknown name `nothing`"
+    );
+    let CompleteKind::Receiver(error) = error.kind() else {
+        panic!("{error:?}");
+    };
     assert_eq!(error.to_string(), "unknown name `nothing`");
+    let labels: Vec<_> = error.labels().map(|l| l.message().to_string()).collect();
+    assert_eq!(labels, ["unknown name `nothing`"]);
 
     let unknown = crate::structure::test_id(99);
     assert_eq!(
         s.complete(&env, unknown, None),
-        Err(CompleteError::UnknownNode(unknown))
+        Err(CompleteKind::UnknownNode(unknown).into())
     );
 }
 

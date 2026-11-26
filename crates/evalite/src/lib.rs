@@ -282,7 +282,7 @@ pub use self::parser::{DEFAULT_MAX_DEPTH, Options};
 pub(crate) use self::parser::{Tree, parse, parse_with};
 pub use self::program::{Memory, Program};
 pub use self::structure::{
-    BinaryOp, EditError, HOLE, Node, NodeId, Structure, StructureError, StructureErrorKind, UnaryOp,
+    BinaryOp, EditError, HOLE, Node, NodeId, Structure, StructureError, UnaryOp,
 };
 pub(crate) use self::syntax::Syntax;
 pub use self::types::{FieldTypes, MAX_TYPE_DEPTH, Type};
