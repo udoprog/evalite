@@ -633,8 +633,8 @@ fn completion_errors() {
     let CompleteKind::Receiver(error) = error.kind() else {
         panic!("{error:?}");
     };
-    assert_eq!(error.kind(), &StructureKind::Hole);
-    assert_eq!(error.node(), s.holes()[1]);
+    assert_eq!(error.first().unwrap().kind(), &StructureKind::Hole);
+    assert_eq!(error.first().unwrap().node(), s.holes()[1]);
 
     let s = self::s("nothing._");
     let Err(error) = s.complete(&env, s.holes()[0], None) else {
@@ -649,7 +649,12 @@ fn completion_errors() {
         panic!("{error:?}");
     };
     assert_eq!(error.to_string(), "unknown name `nothing`");
-    let labels: Vec<_> = error.labels().map(|l| l.message().to_string()).collect();
+    let labels: Vec<_> = error
+        .first()
+        .unwrap()
+        .labels()
+        .map(|l| l.message().to_string())
+        .collect();
     assert_eq!(labels, ["unknown name `nothing`"]);
 
     let unknown = crate::structure::test_id(99);

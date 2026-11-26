@@ -116,6 +116,18 @@ fn unclosed_group_points_at_its_opener() {
 }
 
 #[test]
+fn several_errors_are_all_reported_in_source_order() {
+    let out = run(&["eval", "min(1, true) + foo * bar"], "");
+    assert!(!out.ok);
+    assert_eq!(
+        out.stderr,
+        "error: argument 2 of `min` must be Int, found Bool\n  | min(1, true) + foo * bar\n  |        ^^^^\n\
+         error: unknown name `foo`\n  | min(1, true) + foo * bar\n  |                ^^^\n\
+         error: unknown name `bar`\n  | min(1, true) + foo * bar\n  |                      ^^^\n"
+    );
+}
+
+#[test]
 fn depth_limit() {
     let out = run(&["eval", "((((1))))", "--max-depth", "2"], "");
     assert!(!out.ok);

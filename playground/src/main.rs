@@ -364,6 +364,9 @@ fn Claims(props: &ClaimsProps) -> Html {
             let gives = match &case.gives {
                 Gives::Value(value) => html! { <span class={class::GIVES_VALUE}>{ format!("→ {value}") }</span> },
                 Gives::Error(message) => html! { <span class={class::GIVES_ERROR}>{ format!("error: {message}") }</span> },
+                Gives::Errors(messages) => html! {
+                    <span class={class::GIVES_ERROR}>{ messages.iter().map(|m| format!("error: {m}")).collect::<Vec<_>>().join("; ") }</span>
+                },
                 Gives::Offers { some, not, more } => html! {
                     <>
                         <span class={class::GIVES_VALUE}>
@@ -496,12 +499,13 @@ fn Playground(props: &PlaygroundProps) -> Html {
         Callback::from(move |next: bool| open.set(next))
     };
 
-    let primary = match &**outcome {
+    let errors: Vec<_> = match &**outcome {
         Err(marks) => marks
             .iter()
-            .find(|m| m.primary)
-            .and_then(|m| Some((m.span.clone()?, AttrValue::from(m.message.clone())))),
-        Ok(_) => None,
+            .filter(|m| m.primary)
+            .filter_map(|m| Some((m.span.clone()?, AttrValue::from(m.message.clone()))))
+            .collect(),
+        Ok(_) => Vec::new(),
     };
 
     let bindings = Rc::new(input.bindings());
@@ -572,7 +576,7 @@ fn Playground(props: &PlaygroundProps) -> Html {
                     <span class={class::MUTED}>{ "Examples:" }</span>
                     { for examples }
                 </Cluster>
-                <Editor source={input.source.clone()} on_change={on_source} {primary} {bindings} />
+                <Editor source={input.source.clone()} on_change={on_source} {errors} {bindings} />
                 <Card class={class::OUTCOME} gap={Gap::Tight}>
                     <OutcomeView outcome={(*outcome).clone()} />
                 </Card>
@@ -702,20 +706,25 @@ fn OutcomeView(props: &OutcomeProps) -> Html {
             </PropertyList>
         },
         Err(marks) => {
-            let (primary, context): (Vec<_>, Vec<_>) = marks.iter().partition(|m| m.primary);
-            let message = primary
-                .iter()
-                .map(|m| m.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ");
-            let causes = context
-                .iter()
-                .map(|m| AttrValue::from(m.message.clone()))
-                .collect::<Vec<_>>();
+            // Each primary mark starts an error, which the marks after it explain.
+            let mut groups: Vec<(&Mark, Vec<AttrValue>)> = Vec::new();
 
-            html! {
-                <ErrorBox title="Error" {causes}>{ message }</ErrorBox>
+            for mark in marks {
+                match groups.last_mut() {
+                    Some((_, causes)) if !mark.primary => {
+                        causes.push(AttrValue::from(mark.message.clone()));
+                    }
+                    _ => groups.push((mark, Vec::new())),
+                }
             }
+
+            let boxes = groups.into_iter().map(|(mark, causes)| {
+                html! {
+                    <ErrorBox title="Error" {causes}>{ mark.message.clone() }</ErrorBox>
+                }
+            });
+
+            html! { <>{ for boxes }</> }
         }
     }
 }

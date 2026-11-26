@@ -10,7 +10,7 @@ use crate::error::Arity;
 use crate::methods;
 use crate::sig::Shape;
 use crate::structure::{
-    BinaryOp, EditError, EditKind, HOLE, Node, NodeId, Repr, Structure, StructureError, UnaryOp,
+    BinaryOp, EditError, EditKind, HOLE, Node, NodeId, Repr, Structure, StructureErrors, UnaryOp,
     escape, is_reserved,
 };
 use crate::types::Kind;
@@ -222,7 +222,7 @@ pub(crate) enum CompleteKind {
     UnknownNode(NodeId),
     /// The receiver of a member hole does not compile, so its members are
     /// not known.
-    Receiver(StructureError),
+    Receiver(StructureErrors),
 }
 
 impl CompleteError {
@@ -482,7 +482,7 @@ impl Structure {
     ///
     /// Returns a [`CompleteError`] when `at` is not a node of the structure, or
     /// `at` is a member hole whose receiver does not compile, so its members
-    /// are not known; the receiver's [`StructureError`] is then its
+    /// are not known; the receiver's [`StructureErrors`] is then its
     /// [`source`](std::error::Error::source).
     ///
     /// # Examples

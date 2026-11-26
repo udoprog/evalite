@@ -217,9 +217,9 @@ fn negative_integer_receivers_and_operands() {
     let mut min = Structure::new();
     min.replace(min.root(), Node(Repr::Int(i64::MIN))).unwrap();
     let error = min.compile(&env()).unwrap_err();
-    assert_eq!(error.node(), min.root());
+    assert_eq!(error.first().unwrap().node(), min.root());
     assert!(matches!(
-        error.kind(),
+        error.first().unwrap().kind(),
         StructureKind::Compile(e) if e.first().map(Diagnostic::kind) == Some(&ErrorKind::IntegerTooLarge)
     ));
 }
@@ -232,8 +232,18 @@ fn same_as_text(structure: &Structure, env: &Environment) {
 
     match (from_text, from_structure) {
         (Ok(a), Ok(b)) => assert_eq!(a.to_bytes().unwrap(), b.to_bytes().unwrap(), "{text}"),
-        (Err(a), Err(b)) => match b.kind() {
-            StructureKind::Compile(b) => assert_eq!(&a, b, "{text}"),
+        (Err(a), Err(b)) => match b.first().unwrap().kind() {
+            StructureKind::Compile(_) => {
+                let b: Vec<_> = b
+                    .iter()
+                    .flat_map(|e| match e.kind() {
+                        StructureKind::Compile(d) => d.iter().cloned().collect(),
+                        _ => Vec::new(),
+                    })
+                    .collect();
+                let a: Vec<_> = a.iter().cloned().collect();
+                assert_eq!(a, b, "{text}");
+            }
             // Checked before the text is.
             StructureKind::Hole | StructureKind::InvalidName(_) => {}
         },
@@ -279,16 +289,59 @@ fn errors_name_the_node_they_are_about() {
         error.to_string(),
         "argument 1 of `lookup` must be Int, found Bool"
     );
-    assert_eq!(structure.text_of(error.node()), "true");
+    assert_eq!(structure.text_of(error.first().unwrap().node()), "true");
 
     let structure = s("min(wits, 1) + m.nope");
     let error = structure.compile(&env).unwrap_err();
     // `nope` is part of the field node.
-    assert_eq!(structure.text_of(error.node()), "m.nope");
+    assert_eq!(structure.text_of(error.first().unwrap().node()), "m.nope");
 
     let structure = s("(wits + bonus) * 2");
     let error = structure.compile(&env).unwrap_err();
-    assert_eq!(structure.text_of(error.node()), "wits + bonus");
+    assert_eq!(
+        structure.text_of(error.first().unwrap().node()),
+        "wits + bonus"
+    );
+}
+
+#[test]
+fn every_error_names_its_node() {
+    let env = env();
+
+    let structure = s("wits + foo * (m.nope + bar)");
+    let error = structure.compile(&env).unwrap_err();
+    let nodes: Vec<_> = error.iter().map(|e| structure.text_of(e.node())).collect();
+    assert_eq!(error.len(), nodes.len());
+    assert_eq!(nodes, ["foo", "m.nope", "bar"]);
+    assert_eq!(structure.text_of(error.first().unwrap().node()), nodes[0]);
+
+    // Every hole, as written.
+    let structure = s("_ + min(_, _)");
+    let error = structure.compile(&env).unwrap_err();
+    let found: Vec<_> = error.iter().map(|e| e.node()).collect();
+    assert_eq!(found, structure.holes());
+    assert_eq!(
+        error.to_string().lines().count(),
+        3,
+        "one line for each hole"
+    );
+
+    // Every name that cannot be written.
+    let mut b = Structure::new();
+    let x = b.add(Node(Repr::Name("Strength".into()))).unwrap();
+    let y = b.add(Node(Repr::Name("true".into()))).unwrap();
+    b.replace(
+        b.root(),
+        Node(Repr::Binary {
+            op: BinaryOp::Add,
+            left: x,
+            right: y,
+        }),
+    )
+    .unwrap();
+    let error = b.compile(&env).unwrap_err();
+    let found: Vec<_> = error.iter().map(|e| e.node()).collect();
+    assert_eq!(found, [x, y]);
 }
 
 #[test]
@@ -298,18 +351,25 @@ fn holes_are_refused_when_compiling() {
     for text in ["_", "wits + _", "min(_, 1)", "m._", "bonus._(0)", "[1, _]"] {
         let structure = s(text);
         let error = structure.compile(&env).unwrap_err();
-        assert_eq!(error.kind(), &StructureKind::Hole, "{text}");
+        assert_eq!(
+            error.first().unwrap().kind(),
+            &StructureKind::Hole,
+            "{text}"
+        );
         assert_eq!(
             error.to_string(),
             "the expression is unfinished, fill in the `_`"
         );
-        assert!(structure.holes().contains(&error.node()), "{text}");
+        assert!(
+            structure.holes().contains(&error.first().unwrap().node()),
+            "{text}"
+        );
     }
 
     // The first hole as written.
     let structure = s("_ + min(_)");
     let error = structure.compile(&env).unwrap_err();
-    assert_eq!(error.node(), structure.holes()[0]);
+    assert_eq!(error.first().unwrap().node(), structure.holes()[0]);
 }
 
 #[test]
@@ -334,7 +394,7 @@ fn names_that_are_no_names_are_refused() {
         b.replace(b.root(), node).unwrap();
         let error = b.compile(&env).unwrap_err();
         assert_eq!(
-            error.kind(),
+            error.first().unwrap().kind(),
             &StructureKind::InvalidName(name.into()),
             "{name}"
         );
@@ -351,7 +411,7 @@ fn names_that_are_no_names_are_refused() {
     )
     .unwrap();
     let error = b.compile(&env).unwrap_err();
-    assert_eq!(error.node(), b.root());
+    assert_eq!(error.first().unwrap().node(), b.root());
     assert_eq!(
         error.to_string(),
         "`Brawl (bar)` cannot be written as a name, names are letters, digits and `_`, starting with a letter or `_`"
@@ -410,10 +470,13 @@ fn parse_depth_limits_apply() {
     b.set_root(inner).unwrap();
     let error = b.compile(&env()).unwrap_err();
     assert!(matches!(
-        error.kind(),
+        error.first().unwrap().kind(),
         StructureKind::Compile(e) if matches!(e.first().map(Diagnostic::kind), Some(ErrorKind::TooDeep { .. }))
     ));
-    assert!(matches!(b.get(error.node()), Some(Node(Repr::List { .. }))));
+    assert!(matches!(
+        b.get(error.first().unwrap().node()),
+        Some(Node(Repr::List { .. }))
+    ));
     assert!(
         b.compile_with(&env(), &Options::new().max_depth(64))
             .is_ok()

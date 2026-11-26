@@ -30,6 +30,8 @@ pub enum Gives {
     Value(&'static str),
     /// An error's message.
     Error(&'static str),
+    /// Every error's message, in source order.
+    Errors(&'static [&'static str]),
     /// What completing at the end of the expression offers: some of what it
     /// lists, and what it leaves out.
     Offers {
@@ -184,6 +186,14 @@ pub const CLAIMS: &[Claim] = &[
                 ),
             ),
             case(
+                "min(rank, true) + bonus",
+                &[("rank", "Int", "3")],
+                Gives::Errors(&[
+                    "argument 2 of `min` must be Int, found Bool",
+                    "unknown name `bonus`",
+                ]),
+            ),
+            case(
                 "10 / rank",
                 &[("rank", "Int", "0")],
                 Gives::Error("`10 / 0` divides by zero"),
@@ -244,6 +254,17 @@ mod tests {
                             .unwrap_or_else(|| panic!("{source} ran"));
                         let primary = marks.iter().find(|m| m.primary).map(|m| m.message.as_str());
                         assert_eq!(primary, Some(*shown), "{source}");
+                    }
+                    Gives::Errors(shown) => {
+                        let marks = compute(&input)
+                            .err()
+                            .unwrap_or_else(|| panic!("{source} ran"));
+                        let primary: Vec<_> = marks
+                            .iter()
+                            .filter(|m| m.primary)
+                            .map(|m| m.message.as_str())
+                            .collect();
+                        assert_eq!(primary, *shown, "{source}");
                     }
                     Gives::Offers { some, not, more } => {
                         let env = crate::eval::environment(&input.bindings()).unwrap();

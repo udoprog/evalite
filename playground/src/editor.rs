@@ -18,8 +18,8 @@ use crate::eval::{self, Binding};
 pub struct EditorProps {
     pub source: AttrValue,
     pub on_change: Callback<String>,
-    /// The characters the error points at, and its message.
-    pub primary: Option<(Range<usize>, AttrValue)>,
+    /// The characters each error points at, and its message.
+    pub errors: Vec<(Range<usize>, AttrValue)>,
     /// The variables the completions offer.
     pub bindings: Rc<Vec<Binding>>,
 }
@@ -29,7 +29,7 @@ pub fn Editor(props: &EditorProps) -> Html {
     let spans = use_memo(props.source.clone(), |source| spans_of(source));
 
     let diagnostics: Rc<[Diagnostic]> = props
-        .primary
+        .errors
         .iter()
         .map(|(span, message)| {
             let range = byte_of(&props.source, span.start)..byte_of(&props.source, span.end);

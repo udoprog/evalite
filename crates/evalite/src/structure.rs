@@ -852,13 +852,17 @@ impl fmt::Display for EditError {
 
 impl std::error::Error for EditError {}
 
-/// Why a structure does not compile, and at which node.
+/// Why a structure does not compile at one node.
+///
+/// A [`Structure::compile`] reports every one of them, as
+/// [`StructureErrors`].
 ///
 /// ```
 /// use evalite::{Environment, Structure};
 ///
 /// let s = Structure::new();
-/// let error = s.compile(&Environment::new()).unwrap_err();
+/// let errors = s.compile(&Environment::new()).unwrap_err();
+/// let error = errors.iter().next().unwrap();
 /// assert_eq!(error.node(), s.root());
 /// assert_eq!(error.to_string(), "the expression is unfinished, fill in the `_`");
 /// ```
@@ -876,8 +880,8 @@ pub(crate) enum StructureKind {
     /// value or `"true"`. A record field of any name is read with
     /// [`Node::index`] by a [`Node::string`].
     InvalidName(Box<str>),
-    /// The errors compiling [`Structure::to_text`]'s text gives: their
-    /// spans are in that text.
+    /// An error compiling [`Structure::to_text`]'s text: its span is in
+    /// that text.
     Compile(Diagnostics),
 }
 
@@ -888,8 +892,8 @@ impl StructureError {
     /// use evalite::{Environment, Structure};
     ///
     /// let s = Structure::from_text("1 + _")?;
-    /// let error = s.compile(&Environment::new()).unwrap_err();
-    /// assert_eq!(error.node(), s.holes()[0]);
+    /// let errors = s.compile(&Environment::new()).unwrap_err();
+    /// assert_eq!(errors.iter().next().unwrap().node(), s.holes()[0]);
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn node(&self) -> NodeId {
@@ -902,7 +906,7 @@ impl StructureError {
     }
 
     /// What is wrong, as [`Label`](crate::Label)s. An error from compiling
-    /// has the labels of its first [`Diagnostic`], with spans in
+    /// has the labels of its [`Diagnostic`], with spans in
     /// [`Structure::to_text`]'s text; a hole or a name that cannot be
     /// written has one label and no span, since [`node`](Self::node) says
     /// where it is.
@@ -912,14 +916,14 @@ impl StructureError {
     ///
     /// let env = Environment::new();
     ///
-    /// let error = Structure::new().compile(&env).unwrap_err();
-    /// let labels: Vec<_> = error.labels().collect();
+    /// let errors = Structure::new().compile(&env).unwrap_err();
+    /// let labels: Vec<_> = errors.iter().next().unwrap().labels().collect();
     /// assert_eq!(labels.len(), 1);
     /// assert!(labels[0].is_primary());
     /// assert_eq!(labels[0].span(), None);
     ///
-    /// let error = Structure::from_text("nothing")?.compile(&env).unwrap_err();
-    /// let label = error.labels().next().unwrap();
+    /// let errors = Structure::from_text("nothing")?.compile(&env).unwrap_err();
+    /// let label = errors.iter().next().unwrap().labels().next().unwrap();
     /// assert_eq!(label.message().to_string(), "unknown name `nothing`");
     /// assert_eq!(label.span().map(|s| s.range()), Some(0..7));
     /// # Ok::<_, Box<dyn std::error::Error>>(())
@@ -949,6 +953,79 @@ impl fmt::Display for StructureError {
 }
 
 impl std::error::Error for StructureError {}
+
+/// Every reason a structure does not compile, each a [`StructureError`]
+/// naming its node.
+///
+/// There is at least one: every hole, every name that cannot be written
+/// and every error of the text are reported, in the order of
+/// [`Structure::to_text`]'s text.
+///
+/// ```
+/// use evalite::{Environment, Structure};
+///
+/// let s = Structure::from_text("a + b")?;
+/// let errors = s.compile(&Environment::new()).unwrap_err();
+/// let texts: Vec<_> = errors.iter().map(|e| s.text_of(e.node())).collect();
+/// assert_eq!(texts, ["a", "b"]);
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructureErrors {
+    list: Vec<StructureError>,
+}
+
+impl StructureErrors {
+    /// How many errors there are, at least one.
+    #[allow(clippy::len_without_is_empty, reason = "it is never empty")]
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+
+    /// Each error, in the order of [`Structure::to_text`]'s text.
+    pub fn iter(&self) -> std::slice::Iter<'_, StructureError> {
+        self.list.iter()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn first(&self) -> Option<&StructureError> {
+        self.list.first()
+    }
+}
+
+impl<'a> IntoIterator for &'a StructureErrors {
+    type Item = &'a StructureError;
+    type IntoIter = std::slice::Iter<'a, StructureError>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.list.iter()
+    }
+}
+
+impl IntoIterator for StructureErrors {
+    type Item = StructureError;
+    type IntoIter = std::vec::IntoIter<StructureError>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.list.into_iter()
+    }
+}
+
+impl fmt::Display for StructureErrors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (n, error) in self.list.iter().enumerate() {
+            if n > 0 {
+                f.write_str("\n")?;
+            }
+
+            error.fmt(f)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl std::error::Error for StructureErrors {}
 
 #[derive(Encode, Decode)]
 struct Stored {
@@ -1253,10 +1330,10 @@ impl Structure {
     ///
     /// # Errors
     ///
-    /// Returns a [`StructureError`] when the structure has a hole, a name that
-    /// cannot be written, or does not compile against `env`; its
-    /// [`node`](StructureError::node) says where.
-    pub fn compile(&self, env: &Environment) -> Result<Program, StructureError> {
+    /// Returns a [`StructureErrors`] when the structure has a hole, a name that
+    /// cannot be written, or does not compile against `env`, with every one of
+    /// them in the [`StructureErrors`], each naming its node.
+    pub fn compile(&self, env: &Environment) -> Result<Program, StructureErrors> {
         self.compile_with(env, &Options::new())
     }
 
@@ -1265,14 +1342,14 @@ impl Structure {
     ///
     /// # Errors
     ///
-    /// Returns a [`StructureError`] when the structure has a hole, a name that
+    /// Returns a [`StructureErrors`] when the structure has a hole, a name that
     /// cannot be written, or its text does not compile against `env` with
-    /// `options`; its [`node`](StructureError::node) says where.
+    /// `options`, with every one of them in the [`StructureErrors`].
     pub fn compile_with(
         &self,
         env: &Environment,
         options: &Options,
-    ) -> Result<Program, StructureError> {
+    ) -> Result<Program, StructureErrors> {
         compile_node(&self.nodes, self.root, env, options)
     }
 
@@ -1306,7 +1383,7 @@ impl Structure {
         &self,
         env: &Environment,
         options: &Options,
-    ) -> Result<(Program, DebugInfo), StructureError> {
+    ) -> Result<(Program, DebugInfo), StructureErrors> {
         compile_node_debug(&self.nodes, self.root, env, options)
     }
 
@@ -1315,7 +1392,7 @@ impl Structure {
         &self,
         id: NodeId,
         env: &Environment,
-    ) -> Result<Program, StructureError> {
+    ) -> Result<Program, StructureErrors> {
         compile_node(&self.nodes, id, env, &Options::new())
     }
 
@@ -1579,7 +1656,7 @@ pub(crate) fn compile_node(
     root: NodeId,
     env: &Environment,
     options: &Options,
-) -> Result<Program, StructureError> {
+) -> Result<Program, StructureErrors> {
     Ok(compile_node_debug(nodes, root, env, options)?.0)
 }
 
@@ -1589,48 +1666,60 @@ fn compile_node_debug(
     root: NodeId,
     env: &Environment,
     options: &Options,
-) -> Result<(Program, DebugInfo), StructureError> {
+) -> Result<(Program, DebugInfo), StructureErrors> {
+    let (text, spans) = render(nodes, root);
+    let mut list = Vec::new();
+
     for id in post_order(nodes, root) {
         let Some(node) = nodes.get(id.index()) else {
             continue;
         };
 
-        let error = |kind| Err(StructureError { node: id, kind });
+        let kind = if node.is_hole() {
+            StructureKind::Hole
+        } else {
+            let name = match node {
+                Node(Repr::Name(name)) | Node(Repr::Call { function: name, .. }) => {
+                    Some(name).filter(|n| !is_value_name(n) || is_reserved(n))
+                }
+                Node(Repr::Method {
+                    name: Some(name), ..
+                })
+                | Node(Repr::Field {
+                    name: Some(name), ..
+                }) => Some(name).filter(|n| !is_field_name(n) || is_reserved(n)),
+                _ => None,
+            };
 
-        if node.is_hole() {
-            return error(StructureKind::Hole);
-        }
-
-        let name = match node {
-            Node(Repr::Name(name)) | Node(Repr::Call { function: name, .. }) => {
-                Some(name).filter(|n| !is_value_name(n) || is_reserved(n))
+            match name {
+                Some(name) => StructureKind::InvalidName(name.as_str().into()),
+                None => continue,
             }
-            Node(Repr::Method {
-                name: Some(name), ..
-            })
-            | Node(Repr::Field {
-                name: Some(name), ..
-            }) => Some(name).filter(|n| !is_field_name(n) || is_reserved(n)),
-            _ => None,
         };
 
-        if let Some(name) = name {
-            return error(StructureKind::InvalidName(name.as_str().into()));
-        }
+        list.push(StructureError { node: id, kind });
     }
 
-    let (text, spans) = render(nodes, root);
+    if !list.is_empty() {
+        // In the order they are written.
+        list.sort_by_key(|entry| {
+            spans
+                .iter()
+                .find(|(id, _)| *id == entry.node)
+                .map_or(u32::MAX, |(_, s)| s.start)
+        });
 
-    let error = |errors: Diagnostics| {
-        let node = errors
-            .first()
-            .and_then(|error| locate(&spans, error.span()))
-            .unwrap_or(root);
+        return Err(StructureErrors { list });
+    }
 
-        StructureError {
-            node,
-            kind: StructureKind::Compile(errors),
-        }
+    let error = |errors: Diagnostics| StructureErrors {
+        list: errors
+            .into_iter()
+            .map(|diagnostic| StructureError {
+                node: locate(&spans, diagnostic.span()).unwrap_or(root),
+                kind: StructureKind::Compile(Diagnostics::one(diagnostic)),
+            })
+            .collect(),
     };
 
     let parsed = parse_with(&text, options).map_err(error)?;
