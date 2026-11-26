@@ -795,18 +795,16 @@ impl Parser<'_> {
         let (left, _) = self.reduce(0)?;
         let (found, at) = self.found(Some(token));
 
-        let diagnostic = match self.innermost() {
-            Some(group) if group.delimiter.separated() => {
-                self.bump()?;
-                self.start = None;
-                self.primary = None;
-                return Ok(State::Operand);
-            }
-            Some(group) => group.unclosed(at, found),
-            None => Diagnostic::new(at, ErrorKind::ExpectedOperator { found, open: None }),
-        };
+        let open = self.innermost().map(|group| group.delimiter);
 
-        self.report_about(at, diagnostic);
+        if open.is_some_and(Delimiter::separated) {
+            self.bump()?;
+            self.start = None;
+            self.primary = None;
+            return Ok(State::Operand);
+        }
+
+        self.report(at, ErrorKind::ExpectedOperator { found, open });
         self.bump()?;
         self.skip()?;
         self.recovered(left)?;

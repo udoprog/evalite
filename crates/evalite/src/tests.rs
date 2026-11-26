@@ -631,6 +631,8 @@ fn error_expected_operator() {
             "expected an operator, `,` or `)`, found a name",
             6..7,
         ),
+        ("(a, b)", "expected an operator or `)`, found `,`", 2..3),
+        ("x[1, 2]", "expected an operator or `]`, found `,`", 3..4),
     ]);
 }
 
@@ -767,18 +769,6 @@ fn error_unclosed() {
         (
             "x[1)",
             "expected `]` to close the `[` at byte 1, found `)`",
-            1..2,
-            3..4,
-        ),
-        (
-            "(a, b)",
-            "expected `)` to close the `(` at byte 0, found `,`",
-            0..1,
-            2..3,
-        ),
-        (
-            "x[1, 2]",
-            "expected `]` to close the `[` at byte 1, found `,`",
             1..2,
             3..4,
         ),
@@ -1181,11 +1171,23 @@ fn recover_groups() {
                     "expected `)` to close the `(` at byte 1, found the end of the expression",
                     1..2,
                 ),
-                ("expected `)` to close the `(` at byte 2, found `,`", 2..3),
                 (
                     "expected `)` to close the `(` at byte 2, found the end of the expression",
                     2..3,
                 ),
+                ("expected an operator or `)`, found `,`", 4..5),
+            ],
+        ),
+        // A comma in a group that takes none, and the group unclosed.
+        (
+            "(a, b",
+            "(paren (error a , b))",
+            &[
+                (
+                    "expected `)` to close the `(` at byte 0, found the end of the expression",
+                    0..1,
+                ),
+                ("expected an operator or `)`, found `,`", 2..3),
             ],
         ),
         // A closer closes the group it matches, and those inside it.
@@ -1212,11 +1214,8 @@ fn recover_groups() {
             "(a, b) + x[1, 2]",
             "(+ (paren (error a , b)) (index x (error 1 , 2)))",
             &[
-                ("expected `)` to close the `(` at byte 0, found `,`", 0..1),
-                (
-                    "expected `]` to close the `[` at byte 10, found `,`",
-                    10..11,
-                ),
+                ("expected an operator or `)`, found `,`", 2..3),
+                ("expected an operator or `]`, found `,`", 12..13),
             ],
         ),
     ]);
