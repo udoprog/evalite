@@ -1,6 +1,7 @@
 //! The evalite playground: the project's page, with an editor that runs
 //! evalite in the browser.
 
+mod bench;
 mod claims;
 mod eval;
 mod examples;
@@ -33,9 +34,10 @@ use yew::prelude::*;
 
 use sockel::{
     Align, Button, ButtonSize, ButtonVariant, Card, Cluster, Disclosure, Field, Gap, OverlayHost,
-    SectionHead, Stack, Stepper,
+    SectionHead, Stack, Stepper, TabItem, Table, TableCell, TableRow, Tabs,
 };
 
+use crate::bench::Stage;
 use crate::claims::{CLAIMS, Gives};
 use crate::eval::{Binding, Bounds, Done, Failed, evaluate};
 use crate::examples::{EXAMPLES, Example};
@@ -273,6 +275,7 @@ fn App() -> Html {
                 <Hero />
                 <Playground input={input.clone()} vars_open={vars_open.clone()} />
                 <Claims {on_load} />
+                <Benchmarks />
                 <footer>
                     <Cluster gap={Gap::Loose}>
                         <span class={class::MUTED}>{ "evalite is MIT or Apache-2.0" }</span>
@@ -391,6 +394,133 @@ fn Claims(props: &ClaimsProps) -> Html {
                 <SectionHead title={html! { "What you get" }} />
                 <p class={class::MUTED}>{ "Click an example to load it into the playground above." }</p>
                 <ul class={classes!(sockel::class::PLAIN_LIST, class::CLAIMS)}>{ for claims }</ul>
+            </Stack>
+        </section>
+    }
+}
+
+/// The engine's colour, as a modifier on a bar or a legend swatch.
+fn engine_class(engine: &str) -> Option<&'static str> {
+    match engine {
+        "evalite" => Some(class::EVALITE),
+        "evalexpr" => Some(class::EVALEXPR),
+        "fasteval" => Some(class::FASTEVAL),
+        _ => None,
+    }
+}
+
+/// How evalite compares with its peers, from `crates/evalite-compare`'s
+/// snapshot: compile and evaluate times as separate views.
+#[function_component]
+fn Benchmarks() -> Html {
+    let results = use_memo((), |_| bench::results());
+    let stage = use_state(|| Stage::Evaluate);
+
+    let Some(results) = results.as_ref() else {
+        return Html::default();
+    };
+
+    let tabs = vec![
+        TabItem::new("evaluate", "Evaluate"),
+        TabItem::new("compile", "Compile"),
+    ];
+
+    let on_stage = {
+        let stage = stage.clone();
+        Callback::from(move |value: AttrValue| {
+            stage.set(if value == "compile" {
+                Stage::Compile
+            } else {
+                Stage::Evaluate
+            });
+        })
+    };
+
+    let (value, verb) = match *stage {
+        Stage::Compile => ("compile", "to compile"),
+        Stage::Evaluate => ("evaluate", "to evaluate"),
+    };
+
+    let legend = results.engines.iter().map(|engine| {
+        html! {
+            <Cluster gap={Gap::Tight} nowrap=true>
+                <span class={classes!(class::SWATCH, engine_class(&engine.name))} aria-hidden="true"></span>
+                <span>{ &engine.name }</span>
+                <span class={class::MUTED}>{ &engine.version }</span>
+            </Cluster>
+        }
+    });
+
+    let rows = results.expressions.iter().map(|expression| {
+        let stage = *stage;
+        let longest = expression
+            .results
+            .iter()
+            .map(|m| stage.of(m))
+            .fold(0.0, f64::max);
+
+        let bars = expression.results.iter().map(|measured| {
+            let ns = stage.of(measured);
+            let share = if longest > 0.0 { ns / longest * 100.0 } else { 0.0 };
+            let time = bench::duration(ns);
+
+            html! {
+                <div class={class::BAR_ROW} title={format!("{}: {time} {verb}\n{}", measured.engine, measured.source)}>
+                    <span>{ &measured.engine }</span>
+                    <span class={class::BAR_TRACK}>
+                        <span class={classes!(class::BAR, engine_class(&measured.engine))}
+                            style={format!("inline-size: {share:.1}%")}></span>
+                    </span>
+                    <span class={class::BAR_VALUE}>{ time }</span>
+                </div>
+            }
+        });
+
+        html! {
+            <TableRow value={expression.name.clone()}>
+                <TableCell title=true wrap=true scope="row">
+                    <Stack gap={Gap::Hair}>
+                        <span>{ &expression.name }</span>
+                        <span class={class::MUTED}>{ &expression.description }</span>
+                    </Stack>
+                </TableCell>
+                <TableCell class={class::FULL_LINE}>
+                    <div class={class::BARS}>{ for bars }</div>
+                </TableCell>
+            </TableRow>
+        }
+    });
+
+    let head = html! {
+        <>
+            <TableCell head=true>{ "Expression" }</TableCell>
+            <TableCell head=true>{ format!("Time {verb}, shorter is faster") }</TableCell>
+        </>
+    };
+
+    html! {
+        <section aria-label="Benchmarks">
+            <Stack gap={Gap::Loose}>
+                <SectionHead title={html! { "How fast it is" }} />
+                <p class={class::PROSE}>
+                    { "evalite is the slowest of the three to compile, because it type-checks an expression and verifies the program it generates before anything runs. \
+                       It is built to compile once and evaluate many times: there it is faster than evalexpr on every expression measured here, \
+                       while fasteval, which only has floating point numbers, is faster still on all but the longest formula." }
+                </p>
+                <Cluster gap={Gap::Loose}>
+                    <Tabs {tabs} value={AttrValue::from(value)} on_change={on_stage}
+                        label="Stage" segmented=true />
+                    <Cluster gap={Gap::Loose}>{ for legend }</Cluster>
+                </Cluster>
+                <Table {head} columns={2} framed=true cards=true top=true
+                    label={format!("Time {verb} each expression, by engine")}>
+                    { for rows }
+                </Table>
+                <p class={class::MUTED}>
+                    { format!("Medians measured {} on {}, {}. Bars are scaled within each expression; differences under about 15% are noise. ",
+                        bench::date(&results.measured_at), results.machine.cpu, results.machine.os) }
+                    <a href={bench::README}>{ "How it is measured" }</a>
+                </p>
             </Stack>
         </section>
     }

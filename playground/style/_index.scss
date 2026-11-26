@@ -23,6 +23,9 @@
     --syntax-number: #0b5cad;
     --syntax-string: #2f7d4f;
     --syntax-punctuation: #5f625a;
+    --series-evalite: var(--accent);
+    --series-evalexpr: #257de0;
+    --series-fasteval: #f47230;
     --code-keyword: var(--syntax-keyword);
     --code-name: var(--syntax-ident);
     --code-member: var(--syntax-member);
@@ -49,6 +52,11 @@
     --syntax-number: #79b8ff;
     --syntax-string: #7cc999;
     --syntax-punctuation: #a2a69b;
+    // A step darker than the accent: the accent is too light for a mark
+    // beside the other two.
+    --series-evalite: #4caf78;
+    --series-evalexpr: #338ced;
+    --series-fasteval: #e76624;
     --code-keyword: var(--syntax-keyword);
     --code-name: var(--syntax-ident);
     --code-member: var(--syntax-member);
@@ -256,4 +264,78 @@ a {
     font-size: var(--text-sm);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+}
+
+// Running text at reading width, in the body's ink.
+.playground-prose {
+    margin: 0;
+    max-width: var(--page-reading);
+}
+
+// A table cell that takes its card's whole line when sockel lays a table's
+// rows out as cards on a phone; sockel's cells there are only as wide as
+// their text, which leaves a chart no room.
+.playground-full-line {
+    flex: 1 1 100%;
+}
+
+// A bar chart's rows: the series' name, its bar and its value, with the
+// names and values in columns of their own so the bars share one baseline.
+.playground-bars {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr) max-content;
+    gap: var(--space-1) var(--space-3);
+    align-items: center;
+}
+
+.playground-bar-row {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: center;
+}
+
+.playground-bar-track {
+    display: block;
+    min-width: 0;
+}
+
+// A bar from the baseline, its data end rounded. Its colour is its series'.
+.playground-bar {
+    display: block;
+    block-size: var(--space-3);
+    min-inline-size: var(--space-px);
+    border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+    background: var(--muted);
+}
+
+.playground-bar-value {
+    font-variant-numeric: tabular-nums;
+    text-align: end;
+}
+
+// A series' key in a legend.
+.playground-swatch {
+    display: block;
+    flex: none;
+    inline-size: var(--space-3);
+    block-size: var(--space-3);
+    border-radius: var(--radius-xs);
+    background: var(--muted);
+}
+
+// The engines' series colours, on a bar or a swatch.
+.playground-bar,
+.playground-swatch {
+    &.playground-evalite {
+        background: var(--series-evalite);
+    }
+
+    &.playground-evalexpr {
+        background: var(--series-evalexpr);
+    }
+
+    &.playground-fasteval {
+        background: var(--series-fasteval);
+    }
 }
