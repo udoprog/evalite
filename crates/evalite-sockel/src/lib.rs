@@ -22,6 +22,11 @@
 //! - **Small pieces.** [`TypeBadge`], [`ExpressionPreview`] and
 //!   [`NamesReference`], for tables of formulas, their types and the names an
 //!   expression may use.
+//! - **A formula field.** [`ExpressionField`] is the editor in a sockel
+//!   `Field`: a label, a hint and the first diagnostic in the error line,
+//!   for a formula in an ordinary form.
+//! - **Results that stay put.** [`ResultView`] shows a run's value read by its
+//!   type, or its error, in room that does not change with the value.
 //! - **Styled by sockel.** Nothing to style: the components use sockel's
 //!   components and tokens, so they look like the rest of a sockel app.
 //! - **Translated.** Every word comes from a catalog, [`L10N`].
@@ -31,6 +36,8 @@
 //! [`TypeBadge`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.TypeBadge.html
 //! [`ExpressionPreview`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionPreview.html
 //! [`NamesReference`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.NamesReference.html
+//! [`ExpressionField`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionField.html
+//! [`ResultView`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ResultView.html
 //! [`L10N`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/static.L10N.html
 //!
 //! <br>
@@ -133,6 +140,57 @@
 //!
 //! <br>
 //!
+//! ## A formula field and its result
+//!
+//! A field in a form compiles once the text settles and hands over the
+//! program; run it, then show what it gave:
+//!
+//! ```
+//! use std::rc::Rc;
+//!
+//! use evalite::{Environment, Limits, Machine, Type};
+//! use evalite_sockel::{Compiled, ExpressionField, Ran, ResultView};
+//! use yew::prelude::*;
+//!
+//! #[function_component]
+//! fn Damage() -> Html {
+//!     let source = use_state(|| AttrValue::from("1 + 2"));
+//!     let ran = use_state(|| None::<Rc<Ran>>);
+//!     let environment = use_memo((), |_| Environment::with_builtins());
+//!
+//!     let on_input = {
+//!         let source = source.clone();
+//!         Callback::from(move |text: String| source.set(text.into()))
+//!     };
+//!
+//!     let on_compile = {
+//!         let ran = ran.clone();
+//!         Callback::from(move |compiled: Compiled| {
+//!             let shown = compiled.ok().and_then(|program| {
+//!                 let mut machine = Machine::new(Limits::new());
+//!                 let outcome = machine.load(&program).ok()?.run().ok()?;
+//!                 Some(Rc::new(Ran::of(&outcome, &program)))
+//!             });
+//!
+//!             ran.set(shown);
+//!         })
+//!     };
+//!
+//!     html! {
+//!         <>
+//!             <ExpressionField id="damage" label={html! { "Damage" }} source={(*source).clone()}
+//!                 {on_input} {environment} {on_compile} />
+//!             if let Some(ran) = &*ran {
+//!                 <ResultView ran={ran.clone()} />
+//!             }
+//!         </>
+//!     }
+//! }
+//! # let _ = Type::int();
+//! ```
+//!
+//! <br>
+//!
 //! ## Styles and pruning
 //!
 //! The components write sockel's classes only, so sockel's stylesheet covers
@@ -180,15 +238,19 @@
 mod complete;
 mod editor;
 mod error_view;
+mod field;
 mod highlight;
 mod names;
 mod preview;
+mod result_view;
 mod type_badge;
 
 pub use self::editor::{Compiled, ExpressionEditor, ExpressionEditorProps};
 pub use self::error_view::{ErrorView, ErrorViewProps};
+pub use self::field::{ExpressionField, ExpressionFieldProps};
 pub use self::names::{NamesReference, NamesReferenceProps};
 pub use self::preview::{ExpressionPreview, ExpressionPreviewProps};
+pub use self::result_view::{Ran, ResultView, ResultViewProps};
 pub use self::type_badge::{TypeBadge, TypeBadgeProps};
 
 use phrasebook::{Catalog, Lang, Source};
@@ -337,6 +399,11 @@ pub const CLASSES: &[&str] = &[
     "sockel-icon",
     "sockel-info",
     "sockel-inline",
+    "sockel-inline-edit",
+    "sockel-inline-edit-actions",
+    "sockel-inline-edit-editor",
+    "sockel-inline-edit-field",
+    "sockel-inline-edit-text",
     "sockel-input",
     "sockel-input-box",
     "sockel-input-clear",
@@ -380,6 +447,7 @@ pub const CLASSES: &[&str] = &[
     "sockel-menu-point",
     "sockel-menu-scrim",
     "sockel-menu-separator",
+    "sockel-multiline",
     "sockel-native-select",
     "sockel-none",
     "sockel-notice",
@@ -388,6 +456,7 @@ pub const CLASSES: &[&str] = &[
     "sockel-notice-close",
     "sockel-notice-icon",
     "sockel-nowrap",
+    "sockel-numeric",
     "sockel-off",
     "sockel-on",
     "sockel-overlay",
@@ -429,6 +498,11 @@ pub const CLASSES: &[&str] = &[
     "sockel-popover-scrim",
     "sockel-popover-title",
     "sockel-primary",
+    "sockel-property-hint",
+    "sockel-property-label",
+    "sockel-property-list",
+    "sockel-property-row",
+    "sockel-property-value",
     "sockel-quiet",
     "sockel-raised",
     "sockel-ranged",

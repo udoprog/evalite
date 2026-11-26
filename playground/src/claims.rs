@@ -242,11 +242,7 @@ mod tests {
     fn primaries(failed: &Failed) -> Vec<String> {
         match failed {
             Failed::Compile(diagnostics) => diagnostics.iter().map(|d| d.to_string()).collect(),
-            Failed::Run(marks) => marks
-                .iter()
-                .filter(|m| m.primary)
-                .map(|m| m.message.clone())
-                .collect(),
+            Failed::Run(ran) => ran.errors().into_iter().map(String::from).collect(),
         }
     }
 

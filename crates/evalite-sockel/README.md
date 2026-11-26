@@ -21,12 +21,19 @@ which is built with it.
 - **Errors people can read.** [`ErrorView`] lists each diagnostic with the
   source line it is about and the span marked, under the editor or on its
   own, such as for a stored formula that no longer compiles.
+- **A formula field.** [`ExpressionField`] is the editor in a sockel
+  `Field`: a label, a hint and the first diagnostic in the error line,
+  for a formula in an ordinary form.
+- **Results that stay put.** [`ResultView`] shows a run's value read by its
+  type, or its error, in room that does not change with the value.
 - **Styled by sockel.** Nothing to style: the components use sockel's
   components and tokens, so they look like the rest of a sockel app.
 - **Translated.** Every word comes from a catalog, [`L10N`].
 
 [`ExpressionEditor`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionEditor.html
 [`ErrorView`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ErrorView.html
+[`ExpressionField`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionField.html
+[`ResultView`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ResultView.html
 [`L10N`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/static.L10N.html
 
 <br>

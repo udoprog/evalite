@@ -131,9 +131,8 @@ a {
     min-height: 6rem;
 }
 
-// A value as the outcome shows it: large, wrapping anywhere.
+// The outcome's result: a long value wraps anywhere.
 .playground-value {
-    font-size: var(--text-xl);
     overflow-wrap: anywhere;
 }
 

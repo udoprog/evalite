@@ -4,8 +4,9 @@ use std::rc::Rc;
 
 use evalite::{
     DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, DEFAULT_MEMORY, Diagnostics, Environment,
-    Labels, Limits, Machine, Options, RunError, Type, Value,
+    Limits, Machine, Options, RunError, Type, Value,
 };
+use evalite_sockel::Ran;
 
 /// The machine's bounds, as the page sets them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,17 +39,10 @@ pub struct Binding {
 /// What a successful run gives.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Done {
-    pub value: String,
-    pub ty: String,
+    pub value: Value,
+    pub ty: Type,
     pub steps: u64,
     pub memory: u64,
-}
-
-/// One label of a run error.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Mark {
-    pub message: String,
-    pub primary: bool,
 }
 
 /// Why an expression gave no value.
@@ -57,7 +51,7 @@ pub enum Failed {
     /// It does not compile.
     Compile(Rc<Diagnostics>),
     /// A variable could not be declared, or the run failed.
-    Run(Vec<Mark>),
+    Run(Rc<Ran>),
 }
 
 impl Bounds {
@@ -74,7 +68,8 @@ pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Do
         .map_err(|errors| Failed::Compile(Rc::new(errors)))?;
 
     let mut machine = Machine::new(Limits::new().memory(bounds.memory).fuel(bounds.fuel));
-    let failed = |error: RunError| Failed::Run(marks(error.labels(&program, Some(&debug))));
+    let failed =
+        |error: RunError| Failed::Run(Rc::new(Ran::failed(error.labels(&program, Some(&debug)))));
     let mut run = machine.load(&program).map_err(failed)?;
 
     let read = run
@@ -93,37 +88,23 @@ pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Do
     let outcome = run.run().map_err(failed)?;
 
     Ok(Done {
-        value: outcome.value().to_string(),
-        ty: program.result_type().to_string(),
+        value: outcome.value().clone(),
+        ty: program.result_type(),
         steps: outcome.steps(),
         memory: outcome.memory(),
     })
 }
 
 /// The builtins, with `bindings` declared.
-pub fn environment(bindings: &[Binding]) -> Result<Environment, Vec<Mark>> {
+pub fn environment(bindings: &[Binding]) -> Result<Environment, Rc<Ran>> {
     let mut env = Environment::with_builtins();
 
     for binding in bindings {
         env.value(&binding.name, binding.ty.clone())
-            .map_err(|error| {
-                vec![Mark {
-                    message: format!("`{}`: {error}", binding.name),
-                    primary: true,
-                }]
-            })?;
+            .map_err(|error| Rc::new(Ran::failure(format!("`{}`: {error}", binding.name))))?;
     }
 
     Ok(env)
-}
-
-fn marks(labels: Labels<'_>) -> Vec<Mark> {
-    labels
-        .map(|label| Mark {
-            message: label.message().to_string(),
-            primary: label.is_primary(),
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -141,8 +122,8 @@ mod tests {
     #[test]
     fn runs() {
         let done = evaluate("a + b * 2", &[int("a", 1), int("b", 3)], Bounds::default()).unwrap();
-        assert_eq!(done.value, "7");
-        assert_eq!(done.ty, "Int");
+        assert_eq!(done.value.to_string(), "7");
+        assert_eq!(done.ty.to_string(), "Int");
         assert!(done.steps > 0);
     }
 
@@ -159,9 +140,9 @@ mod tests {
             ..Bounds::default()
         };
         let failed = evaluate("1 + 2 + 3 + 4 + 5", &[], bounds).unwrap_err();
-        let Failed::Run(marks) = failed else {
+        let Failed::Run(causes) = failed else {
             panic!("{failed:?}");
         };
-        assert!(marks.iter().any(|m| m.primary));
+        assert!(!causes.errors().is_empty());
     }
 }

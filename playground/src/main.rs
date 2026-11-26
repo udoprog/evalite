@@ -22,17 +22,17 @@ const INSTALL: &str = "cargo add evalite";
 use std::rc::Rc;
 
 use evalite::{Environment, Type, Value};
-use evalite_sockel::{ErrorView, ExpressionEditor, NamesReference};
+use evalite_sockel::{ErrorView, ExpressionEditor, NamesReference, Ran, ResultView};
 use gloo_timers::callback::Timeout;
 use yew::prelude::*;
 
 use sockel::{
-    Align, Button, ButtonSize, ButtonVariant, Card, Cluster, Disclosure, ErrorBox, Field, Gap,
-    InputSize, OverlayHost, PropertyList, PropertyRow, SectionHead, Stack, Stepper, TextInput,
+    Align, Button, ButtonSize, ButtonVariant, Card, Cluster, Disclosure, Field, Gap, InputSize,
+    OverlayHost, SectionHead, Stack, Stepper, TextInput,
 };
 
 use crate::claims::{CLAIMS, Gives};
-use crate::eval::{Binding, Bounds, Done, Failed, Mark, evaluate};
+use crate::eval::{Binding, Bounds, Done, Failed, evaluate};
 use crate::examples::{EXAMPLES, Example};
 use crate::share::Shared;
 
@@ -717,40 +717,15 @@ struct OutcomeProps {
 #[function_component]
 fn OutcomeView(props: &OutcomeProps) -> Html {
     match &props.computed.outcome {
-        Ok(done) => html! {
-            <PropertyList label="Outcome">
-                <PropertyRow label="Value">
-                    <span class={classes!(class::CODE, class::VALUE)}>{ &done.value }</span>
-                </PropertyRow>
-                <PropertyRow label="Type">
-                    <span class={class::CODE}>{ &done.ty }</span>
-                </PropertyRow>
-            </PropertyList>
-        },
+        Ok(done) => {
+            let ran = Rc::new(Ran::value(done.value.clone(), done.ty.clone()));
+
+            html! { <ResultView {ran} class={class::VALUE} /> }
+        }
         Err(Failed::Compile(diagnostics)) => html! {
             <ErrorView diagnostics={diagnostics.clone()} source={props.computed.source.clone()} />
         },
-        Err(Failed::Run(marks)) => {
-            // Each primary mark starts an error, which the marks after it explain.
-            let mut groups: Vec<(&Mark, Vec<AttrValue>)> = Vec::new();
-
-            for mark in marks {
-                match groups.last_mut() {
-                    Some((_, causes)) if !mark.primary => {
-                        causes.push(AttrValue::from(mark.message.clone()));
-                    }
-                    _ => groups.push((mark, Vec::new())),
-                }
-            }
-
-            let boxes = groups.into_iter().map(|(mark, causes)| {
-                html! {
-                    <ErrorBox title="Error" {causes}>{ mark.message.clone() }</ErrorBox>
-                }
-            });
-
-            html! { <>{ for boxes }</> }
-        }
+        Err(Failed::Run(ran)) => html! { <ResultView ran={ran.clone()} class={class::VALUE} /> },
     }
 }
 
