@@ -21,14 +21,17 @@ const INSTALL: &str = "cargo add evalite";
 
 use std::rc::Rc;
 
-use evalite::{Environment, Type, Value};
-use evalite_sockel::{ErrorView, ExpressionEditor, Mark, NamesReference, Ran, ResultView};
+use evalite::{Environment, Program};
+use evalite_sockel::{
+    Compiled, ErrorView, ExpressionEditor, Mark, NamesReference, Ran, ResultView, Variable,
+    VariablesEditor,
+};
 use gloo_timers::callback::Timeout;
 use yew::prelude::*;
 
 use sockel::{
-    Align, Button, ButtonSize, ButtonVariant, Card, Cluster, Disclosure, Field, Gap, InputSize,
-    OverlayHost, SectionHead, Stack, Stepper, TextInput,
+    Align, Button, ButtonSize, ButtonVariant, Card, Cluster, Disclosure, Field, Gap, OverlayHost,
+    SectionHead, Stack, Stepper,
 };
 
 use crate::claims::{CLAIMS, Gives};
@@ -61,56 +64,11 @@ fn apply_theme(theme: Theme) {
     };
 }
 
-/// One row of the variables table, as typed.
-#[derive(Clone, PartialEq)]
-struct Row {
-    id: u32,
-    name: String,
-    ty: String,
-    value: String,
-}
-
-impl Row {
-    fn new(id: u32, name: &str, ty: &str, value: &str) -> Self {
-        Self {
-            id,
-            name: name.into(),
-            ty: ty.into(),
-            value: value.into(),
-        }
-    }
-}
-
-/// What is wrong with a row, by the column it is in.
-#[derive(Clone, PartialEq)]
-enum RowError {
-    Name(String),
-    Type(String),
-    Value(String),
-}
-
-fn row_binding(row: &Row) -> Result<Binding, RowError> {
-    let name = row.name.trim();
-
-    if name.is_empty() {
-        return Err(RowError::Name("the variable has no name".into()));
-    }
-
-    let ty = Type::parse(&row.ty).map_err(|e| RowError::Type(e.to_string()))?;
-    let value = Value::parse(&row.value, &ty).map_err(|e| RowError::Value(e.to_string()))?;
-
-    Ok(Binding {
-        name: name.to_owned(),
-        ty,
-        value,
-    })
-}
-
 /// The page's state: what the outcome is computed from.
 #[derive(Clone, PartialEq)]
 struct Input {
     source: String,
-    rows: Vec<Row>,
+    rows: Rc<Vec<Variable>>,
     bounds: Bounds,
 }
 
@@ -120,8 +78,8 @@ impl Input {
             .vars
             .iter()
             .zip(0u32..)
-            .map(|(&(name, ty, value), id)| Row::new(id, name, ty, value))
-            .collect();
+            .map(|(&(name, ty, value), id)| Variable::new(id, name, ty, value))
+            .collect::<Vec<_>>();
 
         let mut bounds = Bounds::default();
 
@@ -131,7 +89,7 @@ impl Input {
 
         Self {
             source: example.source.into(),
-            rows,
+            rows: Rc::new(rows),
             bounds,
         }
     }
@@ -143,7 +101,7 @@ impl Input {
             .map(Input::example)
             .unwrap_or_else(|| Input {
                 source: String::new(),
-                rows: Vec::new(),
+                rows: Rc::new(Vec::new()),
                 bounds: Bounds::default(),
             })
     }
@@ -153,12 +111,14 @@ impl Input {
 
         Self {
             source: shared.source,
-            rows: shared
-                .vars
-                .iter()
-                .zip(0u32..)
-                .map(|((name, ty, value), id)| Row::new(id, name, ty, value))
-                .collect(),
+            rows: Rc::new(
+                shared
+                    .vars
+                    .iter()
+                    .zip(0u32..)
+                    .map(|((name, ty, value), id)| Variable::new(id, name, ty, value))
+                    .collect(),
+            ),
             bounds: Bounds {
                 fuel: shared.fuel.unwrap_or(defaults.fuel),
                 memory: shared.memory.unwrap_or(defaults.memory),
@@ -185,18 +145,14 @@ impl Input {
         }
     }
 
-    fn next_id(&self) -> u32 {
-        self.rows
-            .iter()
-            .map(|r| r.id)
-            .max()
-            .map_or(0, |id| id.saturating_add(1))
-    }
-
     fn bindings(&self) -> Vec<Binding> {
-        self.rows
-            .iter()
-            .filter_map(|row| row_binding(row).ok())
+        evalite_sockel::bindings(&self.rows)
+            .into_iter()
+            .map(|b| Binding {
+                name: b.name,
+                ty: b.ty,
+                value: b.value,
+            })
             .collect()
     }
 }
@@ -507,15 +463,19 @@ fn Playground(props: &PlaygroundProps) -> Html {
         })
     };
 
-    let on_add = {
-        let (input, vars_open) = (input.clone(), vars_open.clone());
-        Callback::from(move |_: MouseEvent| {
+    let on_rows = {
+        let input = input.clone();
+        Callback::from(move |rows: Rc<Vec<Variable>>| {
             let mut next = (*input).clone();
-            let id = next.next_id();
-            next.rows.push(Row::new(id, &format!("v{id}"), "Int", "0"));
+            next.rows = rows;
             input.set(next);
-            vars_open.set(true);
         })
+    };
+
+    let program = use_state(|| None::<Rc<Program>>);
+    let on_compile = {
+        let program = program.clone();
+        Callback::from(move |compiled: Compiled| program.set(compiled.ok()))
     };
 
     let toggle = |open: &UseStateHandle<bool>| {
@@ -526,21 +486,6 @@ fn Playground(props: &PlaygroundProps) -> Html {
     let environment = use_memo(input.bindings(), |bindings| {
         eval::environment(bindings).unwrap_or_else(|_| Environment::with_builtins())
     });
-
-    let rows = input.rows.iter().map(|row| {
-        html! { <VarRow key={row.id} row={row.clone()} input={input.clone()} /> }
-    });
-
-    let vars_summary = if input.rows.is_empty() {
-        String::from("None")
-    } else {
-        input
-            .rows
-            .iter()
-            .map(|r| r.name.trim())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
 
     let limit = |label: &'static str,
                  id: &'static str,
@@ -599,19 +544,14 @@ fn Playground(props: &PlaygroundProps) -> Html {
                     { for examples }
                 </Cluster>
                 <ExpressionEditor source={AttrValue::from(input.source.clone())} on_input={on_source}
-                    environment={environment.clone()} options={bounds.options()} marks={editor_marks} />
+                    environment={environment.clone()} options={bounds.options()} marks={editor_marks}
+                    {on_compile} />
                 <Card class={class::OUTCOME} gap={Gap::Tight}>
                     <OutcomeView computed={(*outcome).clone()} />
                 </Card>
-                <Disclosure title={html! { "Variables" }} summary={html! { vars_summary }}
-                    id="playground-variables" open={*vars_open} on_toggle={toggle(&vars_open)}
-                    actions={html! {
-                        <Button variant={ButtonVariant::Quiet} size={ButtonSize::Small} onclick={on_add}>
-                            { "Add a variable" }
-                        </Button>
-                    }}>
-                    <Stack tag="ul" gap={Gap::Hair} class={sockel::class::PLAIN_LIST}>{ for rows }</Stack>
-                </Disclosure>
+                <VariablesEditor variables={input.rows.clone()} on_change={on_rows}
+                    program={(*program).clone()} id="playground-variables"
+                    open={*vars_open} on_toggle={toggle(&vars_open)} input_class={class::CODE} />
                 <Disclosure title={html! { "Names" }} id="playground-names" open={*names_open}
                     on_toggle={toggle(&names_open)}>
                     <NamesReference environment={environment.clone()} {on_pick} />
@@ -637,81 +577,6 @@ fn Playground(props: &PlaygroundProps) -> Html {
 /// `n` and its noun, singular for one.
 fn plural(n: u64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
-}
-
-#[derive(Properties, PartialEq)]
-struct VarRowProps {
-    row: Row,
-    input: UseStateHandle<Input>,
-}
-
-/// One variable: its name, its type written out, its value,
-/// and its error in a line kept for it.
-#[function_component]
-fn VarRow(props: &VarRowProps) -> Html {
-    let id = props.row.id;
-    let row = &props.row;
-
-    let update = {
-        let input = props.input.clone();
-        move |f: Rc<dyn Fn(&mut Row)>| {
-            let mut next = (*input).clone();
-
-            if let Some(row) = next.rows.iter_mut().find(|r| r.id == id) {
-                f(row);
-            }
-
-            input.set(next);
-        }
-    };
-
-    let set = |f: fn(&mut Row, String)| {
-        let update = update.clone();
-        Callback::from(move |text: String| {
-            update(Rc::new(move |row: &mut Row| f(row, text.clone())))
-        })
-    };
-
-    let on_remove = {
-        let input = props.input.clone();
-        Callback::from(move |_: MouseEvent| {
-            let mut next = (*input).clone();
-            next.rows.retain(|r| r.id != id);
-            input.set(next);
-        })
-    };
-
-    let error = row_binding(row).err();
-    let (name_bad, ty_bad, value_bad) = match &error {
-        Some(RowError::Name(_)) => (true, false, false),
-        Some(RowError::Type(_)) => (false, true, false),
-        Some(RowError::Value(_)) => (false, false, true),
-        None => (false, false, false),
-    };
-    let message = match &error {
-        Some(RowError::Name(m) | RowError::Type(m) | RowError::Value(m)) => m.clone(),
-        None => String::new(),
-    };
-
-    html! {
-        <li>
-            <Stack gap={Gap::Hair}>
-                <Cluster gap={Gap::Tight}>
-                    <TextInput class={classes!(class::CODE, sockel::class::GROW, sockel::class::BASIS_SM)}
-                        label="Name" size={InputSize::Small} value={row.name.clone()} invalid={name_bad}
-                        on_input={set(|r, t| r.name = t)} />
-                    <TextInput class={classes!(class::CODE, sockel::class::GROW, sockel::class::BASIS_SM)}
-                        label="Type" size={InputSize::Small} placeholder="Int" value={row.ty.clone()} invalid={ty_bad}
-                        on_input={set(|r, t| r.ty = t)} />
-                    <TextInput class={classes!(class::CODE, sockel::class::GROW, sockel::class::BASIS_SM)}
-                        label="Value" size={InputSize::Small} value={row.value.clone()} invalid={value_bad}
-                        on_input={set(|r, t| r.value = t)} />
-                    <Button variant={ButtonVariant::Quiet} size={ButtonSize::Small} onclick={on_remove}>{ "Remove" }</Button>
-                </Cluster>
-                <p class={sockel::field_error(true)} role="status">{ message }</p>
-            </Stack>
-        </li>
-    }
 }
 
 #[derive(Properties, PartialEq)]
@@ -747,9 +612,9 @@ mod tests {
         for example in EXAMPLES {
             let input = Input::example(example);
 
-            for row in &input.rows {
+            for row in input.rows.iter() {
                 assert!(
-                    row_binding(row).is_ok(),
+                    row.binding().is_ok(),
                     "{}: row `{}`",
                     example.title,
                     row.name

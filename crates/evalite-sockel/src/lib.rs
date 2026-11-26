@@ -27,6 +27,8 @@
 //!   for a formula in an ordinary form.
 //! - **Results that stay put.** [`ResultView`] shows a run's value read by its
 //!   type, or its error, in room that does not change with the value.
+//! - **Sample inputs.** [`VariablesEditor`] is rows of name, type and value,
+//!   parsed by evalite, that say which variables the expression reads.
 //! - **Styled by sockel.** Nothing to style: the components use sockel's
 //!   components and tokens, so they look like the rest of a sockel app.
 //! - **Translated.** Every word comes from a catalog, [`L10N`].
@@ -38,6 +40,7 @@
 //! [`NamesReference`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.NamesReference.html
 //! [`ExpressionField`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionField.html
 //! [`ResultView`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ResultView.html
+//! [`VariablesEditor`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.VariablesEditor.html
 //! [`L10N`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/static.L10N.html
 //!
 //! <br>
@@ -45,7 +48,8 @@
 //! ## Getting started
 //!
 //! Add evalite-sockel beside evalite, yew and sockel. It enables sockel's
-//! `code-editor` and `notice` features; mount sockel's stylesheet as for any
+//! `badge`, `button`, `code-editor`, `disclosure`, `field`, `input`, `layout` and
+//! `notice` and `property-list` features; mount sockel's stylesheet as for any
 //! sockel app.
 //!
 //! ```sh
@@ -244,6 +248,7 @@ mod names;
 mod preview;
 mod result_view;
 mod type_badge;
+mod variables;
 
 pub use self::editor::{Compiled, ExpressionEditor, ExpressionEditorProps, Mark};
 pub use self::error_view::{ErrorView, ErrorViewProps};
@@ -252,6 +257,9 @@ pub use self::names::{NamesReference, NamesReferenceProps};
 pub use self::preview::{ExpressionPreview, ExpressionPreviewProps};
 pub use self::result_view::{Ran, ResultView, ResultViewProps};
 pub use self::type_badge::{TypeBadge, TypeBadgeProps};
+pub use self::variables::{
+    Binding, Column, Variable, VariableError, VariablesEditor, VariablesEditorProps, bindings,
+};
 
 use phrasebook::{Catalog, Lang, Source};
 
@@ -277,6 +285,7 @@ pub const CLASSES: &[&str] = &[
     "sockel-band",
     "sockel-bare",
     "sockel-baseline",
+    "sockel-basis-sm",
     "sockel-between",
     "sockel-bottom",
     "sockel-boxed",
@@ -342,6 +351,15 @@ pub const CLASSES: &[&str] = &[
     "sockel-dialog-head",
     "sockel-dialog-layer",
     "sockel-disabled",
+    "sockel-disclosure",
+    "sockel-disclosure-actions",
+    "sockel-disclosure-body",
+    "sockel-disclosure-detail",
+    "sockel-disclosure-head",
+    "sockel-disclosure-heading",
+    "sockel-disclosure-mark",
+    "sockel-disclosure-summary",
+    "sockel-disclosure-title",
     "sockel-divided",
     "sockel-dot",
     "sockel-drag-handle",
@@ -386,6 +404,7 @@ pub const CLASSES: &[&str] = &[
     "sockel-group-first",
     "sockel-group-last",
     "sockel-group-middle",
+    "sockel-grow",
     "sockel-gutter-kept",
     "sockel-hair",
     "sockel-head-heading",
@@ -394,6 +413,7 @@ pub const CLASSES: &[&str] = &[
     "sockel-head-trail",
     "sockel-head-trail-item",
     "sockel-head-trail-list",
+    "sockel-heading",
     "sockel-hidden",
     "sockel-hover-card",
     "sockel-icon",
@@ -459,6 +479,7 @@ pub const CLASSES: &[&str] = &[
     "sockel-numeric",
     "sockel-off",
     "sockel-on",
+    "sockel-open",
     "sockel-overlay",
     "sockel-overlay-host",
     "sockel-page-head",
