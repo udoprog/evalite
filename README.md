@@ -38,8 +38,8 @@ caught before it runs, and no input can crash, hang or exhaust the host.
 - **Errors that point.** Every mistake is reported, not only the first,
   and each says what it expected and what it found, while its [labels]
   mark where, so you can underline it in your own UI. `min(1, (2 + 3)` gives "expected `)` to close the `(` at byte 3, found the
-  end of the expression", pointing at the end and noting where the `(` was
-  opened. See [Errors](#errors).
+  end of the expression", pointing at the `(` and noting where the `)` was
+  expected. See [Errors](#errors).
 - **Autocomplete that only offers what fits.** Leave a hole in a
   [`Structure`] and [completions] list only what would type-check there. In
   `rank + _` you are offered `rank`, `bonus.unwrap_or(_)` and `min(_, _)`,
@@ -286,11 +286,15 @@ Compiling reports every mistake it finds as [`Diagnostics`], in source
 order, at most [`MAX_DIAGNOSTICS`] of them. Each mistake is reported once:
 an expression in error is not reported again by what uses it, so
 `rank + true + bonus` reports `rank + true`, not `+ bonus` as well.
+A syntax error is recovered from: the parser skips to where the
+expression can go on, and what it could parse is still checked, so
+`min(rank, , true) + bonus` reports the missing argument and the
+unknown `bonus`.
 
 Those that point into the input, each [`Diagnostic`], [`StructureError`]
 and [`RunError`], give [`Label`]s: a message and the span it is about, the
 primary label first and then what explains it, such as where an unclosed
-bracket was opened or what was being done when a run failed. This is
+bracket had to close or what was being done when a run failed. This is
 enough to draw them under the input, as the CLI does:
 
 ```rust
@@ -336,10 +340,10 @@ let error = errors.iter().next().unwrap();
 assert_eq!(render(source, error.labels()), "\
 error: expected `)` to close the `(` at byte 3, found the end of the expression
   min(1, (2 + 3)
-                ^
-note: the `(` opened here
-  min(1, (2 + 3)
      ^
+note: expected `)` here
+  min(1, (2 + 3)
+                ^
 ");
 ```
 

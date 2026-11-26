@@ -1,7 +1,9 @@
 //! Split source text into classified spans for syntax highlighting.
 //!
 //! The spans cover the whole source and the highlighter copes with text that
-//! does not compile: what the lexer rejects becomes [`Class::Error`].
+//! does not compile: what the lexer rejects becomes [`Class::Error`], the
+//! same text that compiling reports and recovers from as a token that is
+//! not one.
 //!
 //! ```
 //! use evalite::highlight::{Class, highlight};
@@ -106,9 +108,9 @@ pub fn highlight(source: &str) -> impl Iterator<Item = Token> + '_ {
                 (class, token.end)
             }
             Ok(None) => return None,
-            Err(..) => {
+            Err(rejected) => {
                 after_dot = false;
-                (Class::Error, lexer.recover())
+                (Class::Error, rejected.token.end)
             }
         };
 

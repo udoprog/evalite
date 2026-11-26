@@ -10,7 +10,7 @@ use crate::debug::DebugInfo;
 use crate::env::{Builtin, Environment, Overload};
 use crate::error::{Arity, Callee, Diagnostic, Diagnostics, ErrorKind, Reporter};
 use crate::methods::{self, MethodSig};
-use crate::parser::{Options, Tree, parse_with};
+use crate::parser::{Options, Parsed, parse_with};
 use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
 use crate::sig::Mismatch;
 use crate::syntax::{Syntax, unescape};
@@ -25,8 +25,9 @@ type N<'a> = Node<'a, Syntax, FlavorDefault>;
 ///
 /// Returns [`Diagnostics`] when `source` does not parse, nests deeper than
 /// `max_depth`, uses a name `env` does not declare, or does not type check:
-/// every name and type error, in source order, each reported once. The
-/// [`labels`](crate::Diagnostic::labels) of each point into `source`.
+/// every syntax, name and type error, in source order, each reported once.
+/// A syntax error is recovered from, and what is around it still checked.
+/// The [`labels`](crate::Diagnostic::labels) of each point into `source`.
 ///
 /// # Examples
 ///
@@ -68,8 +69,7 @@ pub fn compile_with(
     env: &Environment,
     options: &Options,
 ) -> Result<Program, Diagnostics> {
-    let tree = parse_with(source, options).map_err(Diagnostics::one)?;
-    compile_tree(source, &tree, env)
+    Ok(compile_parsed(source, parse_with(source, options)?, env)?.0)
 }
 
 /// Parse `source` with `options` and compile it against `env`, also giving
@@ -106,27 +106,19 @@ pub fn compile_debug(
     env: &Environment,
     options: &Options,
 ) -> Result<(Program, DebugInfo), Diagnostics> {
-    let tree = parse_with(source, options).map_err(Diagnostics::one)?;
-    compile_tree_debug(source, &tree, env)
+    compile_parsed(source, parse_with(source, options)?, env)
 }
 
-/// Compile a tree [`parse`](crate::parse) made of `source`.
-pub(crate) fn compile_tree(
+/// Compile what [`parse_with`] made of `source`, with its debug
+/// information. Its syntax errors are reported with the type errors, in
+/// source order, and its `Error` nodes check as anything.
+pub(crate) fn compile_parsed(
     source: &str,
-    tree: &Tree,
-    env: &Environment,
-) -> Result<Program, Diagnostics> {
-    Ok(compile_tree_debug(source, tree, env)?.0)
-}
-
-/// Compile a tree [`parse`](crate::parse) made of `source`, with its debug
-/// information.
-pub(crate) fn compile_tree_debug(
-    source: &str,
-    tree: &Tree,
+    parsed: Parsed,
     env: &Environment,
 ) -> Result<(Program, DebugInfo), Diagnostics> {
-    let mut compiler = Compiler::new(source, env).map_err(Diagnostics::one)?;
+    let Parsed { tree, reporter } = parsed;
+    let mut compiler = Compiler::new(source, env, reporter).map_err(Diagnostics::one)?;
 
     let root = tree
         .first()
@@ -234,7 +226,7 @@ struct Compiler<'a> {
 }
 
 impl<'a> Compiler<'a> {
-    fn new(source: &'a str, env: &'a Environment) -> Result<Self, Diagnostic> {
+    fn new(source: &'a str, env: &'a Environment, reporter: Reporter) -> Result<Self, Diagnostic> {
         let mut types = Types::new();
         let int = types.add(TypeNode::Int).ok_or_else(|| internal("no Int"))?;
         let bool = types
@@ -260,7 +252,7 @@ impl<'a> Compiler<'a> {
             values: Vec::new(),
             jumps: Vec::new(),
             error: TypeId(u32::MAX),
-            reporter: Reporter::default(),
+            reporter,
         })
     }
 
@@ -482,6 +474,13 @@ impl<'a> Compiler<'a> {
                 let operand = parts.next().ok_or_else(|| internal("no operand"))?;
                 work.push(Work::Unwrap(node));
                 work.push(Work::Enter(operand));
+            }
+            Syntax::Error => {
+                // Its error is reported; what it holds is checked, but
+                // nothing about it.
+                let parts = parts.collect::<Vec<_>>();
+                work.push(Work::Discard(node, parts.len()));
+                work.extend(parts.into_iter().rev().map(Work::Enter));
             }
             Syntax::List => {
                 work.push(Work::List {
@@ -1200,6 +1199,7 @@ fn is_expr(kind: Syntax) -> bool {
             | Syntax::Index
             | Syntax::Unwrap
             | Syntax::List
+            | Syntax::Error
     )
 }
 

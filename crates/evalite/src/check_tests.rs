@@ -791,11 +791,18 @@ fn parse_errors_pass_through() {
             "",
         ),
         (
-            "a < b < c",
+            "wits < strength < dexterity",
             "comparisons do not chain, combine them with `&&` or add parentheses",
             "<",
         ),
     ]);
+
+    // Checking goes on around a syntax error.
+    let (message, _) = error("a < b < c");
+    assert_eq!(
+        message,
+        "unknown name `a`\nunknown name `b`\ncomparisons do not chain, combine them with `&&` or add parentheses\nunknown name `c`"
+    );
 
     let deep = format!("{}1{}", "(".repeat(40), ")".repeat(40));
     let (message, _) = error(&deep);
@@ -2035,7 +2042,7 @@ fn one_error_is_reported_once() {
 
     for source in [
         "wits + true + bonus",
-        "-(wits + true) * 2 < 3 == flag",
+        "(-(wits + true) * 2 < 3) == flag",
         "!nothing && flag || flag",
         "nothing == 1",
         "nothing.abs().max(1)",

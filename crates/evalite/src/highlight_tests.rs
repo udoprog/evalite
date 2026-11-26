@@ -109,3 +109,39 @@ fn covers_source() {
 fn empty() {
     assert_eq!(highlight("").count(), 0);
 }
+
+/// What the parser recovers from as text that is no token is what the
+/// highlighter classes as an error, and the rest is classified as usual.
+#[test]
+fn recovered_errors() {
+    use crate::{Options, Parsed, Syntax};
+
+    for source in [
+        "f(\"a\\qb\", 1 # 2)",
+        "a = b && c | d",
+        "x + \"abc",
+        "1 + é + 2",
+        "min(1, , 2) ; [1, 2",
+    ] {
+        covers(source);
+
+        let errors = highlight(source)
+            .filter(|t| t.class == Class::Error)
+            .map(|t| t.span)
+            .collect::<Vec<_>>();
+
+        let Parsed { tree, .. } = crate::parse_with(source, &Options::new()).unwrap();
+        let rejected = tree
+            .walk()
+            .filter(|n| n.first().is_none())
+            .filter(|n| {
+                // `=`, `&` and `|` alone stand for the operator doubling them.
+                n.value() == Syntax::Invalid || matches!(&source[n.range()], "=" | "&" | "|")
+            })
+            .map(|n| n.range())
+            .collect::<Vec<_>>();
+
+        assert!(!errors.is_empty(), "{source:?}");
+        assert_eq!(errors, rejected, "{source:?}");
+    }
+}

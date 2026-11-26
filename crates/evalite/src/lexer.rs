@@ -26,6 +26,16 @@ pub(crate) fn span(start: usize, end: usize) -> Span<u32> {
     Span::new(index(start), index(end))
 }
 
+/// Text the lexer rejected, which it has skipped past.
+pub(crate) struct Rejected {
+    /// Why it is no token.
+    pub(crate) diagnostic: Diagnostic,
+    /// The text skipped, as a token of the kind it most likely stands for:
+    /// for `=`, `&` or `|` alone the operator doubling it, otherwise
+    /// `Invalid`.
+    pub(crate) token: Token,
+}
+
 pub(crate) struct Lexer<'a> {
     source: &'a str,
     at: usize,
@@ -48,7 +58,7 @@ impl<'a> Lexer<'a> {
     /// Skip past text the lexer rejected: the whole string literal if one
     /// starts here, leniently, otherwise one character. Returns the new
     /// position.
-    pub(crate) fn recover(&mut self) -> usize {
+    fn recover(&mut self) -> usize {
         let rest = self.source.get(self.at..).unwrap_or_default();
         let mut chars = rest.char_indices();
 
@@ -84,7 +94,35 @@ impl<'a> Lexer<'a> {
     }
 
     /// The next token, whitespace included; `None` at the end.
-    pub(crate) fn next(&mut self) -> Result<Option<Token>, Diagnostic> {
+    ///
+    /// # Errors
+    ///
+    /// Text that is no token is [`Rejected`], and skipped past.
+    pub(crate) fn next(&mut self) -> Result<Option<Token>, Rejected> {
+        let start = self.at;
+
+        let (kind, len) = match self.lex() {
+            Ok(Some(token)) => token,
+            Ok(None) => return Ok(None),
+            Err((diagnostic, kind)) => {
+                let end = self.recover();
+                let token = Token { kind, start, end };
+                return Err(Rejected { diagnostic, token });
+            }
+        };
+
+        self.at = start.saturating_add(len);
+
+        Ok(Some(Token {
+            kind,
+            start,
+            end: self.at,
+        }))
+    }
+
+    /// The kind and length of the token at the position, or why there is
+    /// none and the kind it stands for.
+    fn lex(&self) -> Result<Option<(Syntax, usize)>, (Diagnostic, Syntax)> {
         let rest = self.source.get(self.at..).unwrap_or_default();
         let mut chars = rest.chars();
 
@@ -92,7 +130,7 @@ impl<'a> Lexer<'a> {
             return Ok(None);
         };
 
-        let (kind, len) = match c {
+        let token = match c {
             c if c.is_whitespace() => (Syntax::Whitespace, prefix(rest, char::is_whitespace)),
             '0'..='9' => (Syntax::IntegerToken, prefix(rest, |c| c.is_ascii_digit())),
             'a'..='z' | 'A'..='Z' | '_' => {
@@ -106,7 +144,10 @@ impl<'a> Lexer<'a> {
 
                 (kind, len)
             }
-            '"' => (Syntax::StringToken, self.string(rest)?),
+            '"' => match self.string(rest) {
+                Ok(len) => (Syntax::StringToken, len),
+                Err(error) => return Err((error, Syntax::Invalid)),
+            },
             c => match (c, chars.next()) {
                 ('=', Some('=')) => (Syntax::EqEq, 2),
                 ('!', Some('=')) => (Syntax::NotEq, 2),
@@ -115,7 +156,13 @@ impl<'a> Lexer<'a> {
                 ('&', Some('&')) => (Syntax::AndAnd, 2),
                 ('|', Some('|')) => (Syntax::OrOr, 2),
                 ('=' | '&' | '|', _) => {
-                    return Err(self.error(1, ErrorKind::SingleOperator(c)));
+                    let kind = match c {
+                        '=' => Syntax::EqEq,
+                        '&' => Syntax::AndAnd,
+                        _ => Syntax::OrOr,
+                    };
+
+                    return Err((self.error(1, ErrorKind::SingleOperator(c)), kind));
                 }
                 ('+', _) => (Syntax::Plus, 1),
                 ('-', _) => (Syntax::Minus, 1),
@@ -132,19 +179,13 @@ impl<'a> Lexer<'a> {
                 (',', _) => (Syntax::Comma, 1),
                 ('.', _) => (Syntax::Dot, 1),
                 _ => {
-                    return Err(self.error(c.len_utf8(), ErrorKind::UnexpectedCharacter(c)));
+                    let error = self.error(c.len_utf8(), ErrorKind::UnexpectedCharacter(c));
+                    return Err((error, Syntax::Invalid));
                 }
             },
         };
 
-        let start = self.at;
-        self.at = start.saturating_add(len);
-
-        Ok(Some(Token {
-            kind,
-            start,
-            end: self.at,
-        }))
+        Ok(Some(token))
     }
 
     fn error(&self, len: usize, kind: ErrorKind) -> Diagnostic {

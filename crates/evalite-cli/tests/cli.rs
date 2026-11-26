@@ -105,13 +105,13 @@ fn type_error_shows_caret() {
 }
 
 #[test]
-fn unclosed_group_shows_its_opener() {
+fn unclosed_group_points_at_its_opener() {
     let out = run(&["eval", "(1 + 2"], "");
     assert!(!out.ok);
     assert_eq!(
         out.stderr,
         "error: expected `)` to close the `(` at byte 0, found the end of the expression\n  \
-         | (1 + 2\n  |       ^\n  = the `(` opened here\n  | (1 + 2\n  | ^\n"
+         | (1 + 2\n  | ^\n  = expected `)` here\n  | (1 + 2\n  |       ^\n"
     );
 }
 

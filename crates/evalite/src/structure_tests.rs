@@ -358,6 +358,35 @@ fn names_that_are_no_names_are_refused() {
     );
 }
 
+/// Text with syntax errors is refused, with all of them.
+#[test]
+fn from_text_reports_every_syntax_error() {
+    let errors = Structure::from_text("f(a b, c d) + (1").unwrap_err();
+    let errors = errors
+        .iter()
+        .map(|e| (e.to_string(), e.span().range()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        errors,
+        [
+            (
+                "expected an operator, `,` or `)`, found a name".to_owned(),
+                4..5
+            ),
+            (
+                "expected an operator, `,` or `)`, found a name".to_owned(),
+                9..10
+            ),
+            (
+                "expected `)` to close the `(` at byte 14, found the end of the expression"
+                    .to_owned(),
+                14..15
+            ),
+        ]
+    );
+}
+
 #[test]
 fn parse_depth_limits_apply() {
     let deep = format!("{}1{}", "(".repeat(40), ")".repeat(40));

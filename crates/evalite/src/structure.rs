@@ -7,7 +7,7 @@ use std::fmt;
 use musli::{Decode, Encode};
 use syntree::{FlavorDefault, Node as TreeNode, Span};
 
-use crate::check::compile_tree_debug;
+use crate::check::compile_parsed;
 use crate::debug::DebugInfo;
 use crate::env::Environment;
 use crate::error::{Diagnostic, Diagnostics, ErrorKind};
@@ -1245,7 +1245,7 @@ impl Structure {
     /// Returns [`Diagnostics`] when `source` does not parse or nests deeper
     /// than `options` allows.
     pub fn from_text_with(source: &str, options: &Options) -> Result<Self, Diagnostics> {
-        let tree = parse_with(source, options).map_err(Diagnostics::one)?;
+        let tree = parse_with(source, options)?.complete()?;
         from_tree(source, &tree).map_err(Diagnostics::one)
     }
 
@@ -1633,10 +1633,8 @@ fn compile_node_debug(
         }
     };
 
-    let tree = parse_with(&text, options)
-        .map_err(Diagnostics::one)
-        .map_err(error)?;
-    compile_tree_debug(&text, &tree, env).map_err(error)
+    let parsed = parse_with(&text, options).map_err(error)?;
+    compile_parsed(&text, parsed, env).map_err(error)
 }
 
 /// Names that are written as other tokens, or as a hole.

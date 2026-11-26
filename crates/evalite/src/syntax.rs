@@ -36,6 +36,12 @@ pub(crate) enum Syntax {
     List,
     /// `(` arguments separated by `,` `)`.
     Args,
+    /// What the parser recovered from a syntax error in: the expressions
+    /// it could make sense of and the tokens it skipped. It may be empty,
+    /// where an expression is missing. Its diagnostic is already reported,
+    /// so it type checks as anything and nothing about it is reported
+    /// again.
+    Error,
 
     Whitespace,
     IntegerToken,
@@ -63,6 +69,8 @@ pub(crate) enum Syntax {
     CloseBracket,
     Comma,
     Dot,
+    /// Text the lexer rejected, already reported.
+    Invalid,
 }
 
 impl Syntax {
@@ -95,6 +103,7 @@ impl Syntax {
             Self::Comma => "`,`",
             Self::Dot => "`.`",
             Self::Whitespace => "whitespace",
+            Self::Invalid => "text that is no token",
             Self::Root
             | Self::Bool
             | Self::Paren
@@ -106,7 +115,8 @@ impl Syntax {
             | Self::Index
             | Self::Unwrap
             | Self::List
-            | Self::Args => "an expression",
+            | Self::Args
+            | Self::Error => "an expression",
         }
     }
 }

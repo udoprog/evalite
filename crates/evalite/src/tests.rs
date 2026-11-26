@@ -13,6 +13,30 @@ use crate::*;
 
 type N<'a> = Node<'a, Syntax, FlavorDefault>;
 
+type Range = std::ops::Range<usize>;
+
+/// `source` parsed with `options`, or its first diagnostic.
+fn parse_with(source: &str, options: &Options) -> Result<Tree, Diagnostic> {
+    crate::parse_with(source, options)
+        .and_then(Parsed::complete)
+        .map_err(|errors| errors.iter().next().unwrap().clone())
+}
+
+/// `source` parsed, or its first diagnostic.
+fn parse(source: &str) -> Result<Tree, Diagnostic> {
+    parse_with(source, &Options::new())
+}
+
+/// `source` parsed with recovery, and each diagnostic.
+fn recover_with(source: &str, options: &Options) -> (Tree, Vec<Diagnostic>) {
+    let Parsed { tree, reporter } = crate::parse_with(source, options).unwrap();
+    let errors = reporter
+        .finish()
+        .map(|errors| errors.into_iter().collect())
+        .unwrap_or_default();
+    (tree, errors)
+}
+
 fn text<'s>(source: &'s str, node: N<'_>) -> &'s str {
     &source[node.range()]
 }
@@ -69,6 +93,20 @@ fn nesting(node: N<'_>) -> usize {
 }
 
 fn render(source: &str, node: N<'_>) -> String {
+    if node.value() == Syntax::Error {
+        let parts = node
+            .children()
+            .filter(|n| n.value() != Syntax::Whitespace)
+            .map(|n| render(source, n))
+            .collect::<Vec<_>>();
+
+        return if parts.is_empty() {
+            "(error)".to_owned()
+        } else {
+            format!("(error {})", parts.join(" "))
+        };
+    }
+
     if node.first().is_none() {
         return text(source, node).to_owned();
     }
@@ -112,7 +150,11 @@ fn render(source: &str, node: N<'_>) -> String {
 /// `source` parsed and rendered as an s-expression.
 fn sexp(source: &str) -> String {
     let tree = parse(source).unwrap_or_else(|e| panic!("{source:?}: {e}"));
-    check_tree(source, &tree);
+    render_tree(source, &tree)
+}
+
+fn render_tree(source: &str, tree: &Tree) -> String {
+    check_tree(source, tree);
     let root = tree.first().unwrap();
     let expr = root
         .children()
@@ -419,11 +461,18 @@ fn error_with(source: &str, options: &Options) -> (String, std::ops::Range<usize
     (error.to_string(), error.span().range())
 }
 
-fn errors(cases: &[(&str, &str, std::ops::Range<usize>)]) {
+/// Each source has the one diagnostic given.
+fn errors(cases: &[(&str, &str, Range)]) {
     for (source, message, range) in cases {
+        let (_, errors) = recover_with(source, &Options::new());
+        let errors = errors
+            .iter()
+            .map(|e| (e.to_string(), e.span().range()))
+            .collect::<Vec<_>>();
+
         assert_eq!(
-            error(source),
-            ((*message).to_owned(), range.clone()),
+            errors,
+            [((*message).to_owned(), range.clone())],
             "{source:?}"
         );
     }
@@ -456,7 +505,6 @@ fn error_single_operator() {
         ("a = b", "`=` is not an operator, did you mean `==`?", 2..3),
         ("a & b", "`&` is not an operator, did you mean `&&`?", 2..3),
         ("a | b", "`|` is not an operator, did you mean `||`?", 2..3),
-        ("=", "`=` is not an operator, did you mean `==`?", 0..1),
     ]);
 }
 
@@ -467,11 +515,6 @@ fn error_strings() {
             "\"abc",
             "this string is never closed, expected a `\"` before the end",
             0..4,
-        ),
-        (
-            "lookup(a, \"x",
-            "this string is never closed, expected a `\"` before the end",
-            10..12,
         ),
         (
             "\"a\\",
@@ -535,7 +578,6 @@ fn error_expected_expression() {
         ("a * * b", "expected an expression, found `*`", 4..5),
         ("f(a,)", "expected an expression, found `)`", 4..5),
         ("[1,]", "expected an expression, found `]`", 3..4),
-        ("f(,)", "expected an expression, found `,`", 2..3),
         ("()", "expected an expression, found `)`", 1..2),
         ("( )", "expected an expression, found `)`", 2..3),
         ("a[]", "expected an expression, found `]`", 2..3),
@@ -628,82 +670,133 @@ fn error_expected_name() {
     ]);
 }
 
+/// Each source has one diagnostic, an unclosed group: its message, its
+/// primary span at the opener and its secondary one where it had to close.
+fn unclosed(cases: &[(&str, &str, Range, Range)]) {
+    for (source, message, open, close) in cases {
+        let (_, errors) = recover_with(source, &Options::new());
+        let errors = errors
+            .iter()
+            .map(|e| {
+                let labels = e
+                    .labels()
+                    .map(|l| (l.message().to_string(), l.span().map(|s| s.range())))
+                    .collect::<Vec<_>>();
+                (e.to_string(), e.span().range(), labels)
+            })
+            .collect::<Vec<_>>();
+
+        let closer = if message.starts_with("expected `)`") {
+            ')'
+        } else {
+            ']'
+        };
+
+        assert_eq!(
+            errors,
+            [(
+                (*message).to_owned(),
+                open.clone(),
+                vec![
+                    ((*message).to_owned(), Some(open.clone())),
+                    (format!("expected `{closer}` here"), Some(close.clone())),
+                ]
+            )],
+            "{source:?}"
+        );
+    }
+}
+
 #[test]
 fn error_unclosed() {
-    errors(&[
+    unclosed(&[
         (
             "(a",
             "expected `)` to close the `(` at byte 0, found the end of the expression",
+            0..1,
             2..2,
         ),
         (
             "((a)",
             "expected `)` to close the `(` at byte 0, found the end of the expression",
+            0..1,
             4..4,
         ),
         (
             "f(a",
             "expected `)` to close the `(` at byte 1, found the end of the expression",
+            1..2,
             3..3,
         ),
         (
             "x.m(a, 1",
             "expected `)` to close the `(` at byte 3, found the end of the expression",
+            3..4,
             8..8,
         ),
         (
             "[1, 2",
             "expected `]` to close the `[` at byte 0, found the end of the expression",
+            0..1,
             5..5,
         ),
         (
             "x[1",
             "expected `]` to close the `[` at byte 1, found the end of the expression",
+            1..2,
             3..3,
         ),
         (
             "(a]",
             "expected `)` to close the `(` at byte 0, found `]`",
+            0..1,
             2..3,
         ),
         (
             "[1)",
             "expected `]` to close the `[` at byte 0, found `)`",
+            0..1,
             2..3,
         ),
         (
             "f(a]",
             "expected `)` to close the `(` at byte 1, found `]`",
+            1..2,
             3..4,
         ),
         (
             "x[1)",
             "expected `]` to close the `[` at byte 1, found `)`",
+            1..2,
             3..4,
         ),
         (
             "(a, b)",
             "expected `)` to close the `(` at byte 0, found `,`",
+            0..1,
             2..3,
         ),
         (
             "x[1, 2]",
             "expected `]` to close the `[` at byte 1, found `,`",
+            1..2,
             3..4,
         ),
         (
             "f([1)",
             "expected `]` to close the `[` at byte 2, found `)`",
+            2..3,
             4..5,
         ),
     ]);
 
-    let error = parse("f(a, (b]").unwrap_err();
+    let (_, errors) = recover_with("f(a, (b]", &Options::new());
+    let error = errors.iter().find(|e| e.span() == Span::new(5, 6)).unwrap();
     assert_eq!(
         error.kind(),
         &ErrorKind::Unclosed {
             open: Delimiter::Paren,
-            open_span: Span::new(5, 6),
+            close_span: Span::new(7, 8),
             found: Found::Token(Syntax::CloseBracket),
         }
     );
@@ -818,9 +911,20 @@ fn very_deep() {
             32..33
         )
     );
-    assert_eq!(error_with(&"(".repeat(n), &roomy).1, 32..33);
+    // The groups left open are reported at their openers, before it, so
+    // this finds the one `TooDeep` among them.
+    let too_deep = |source: &str| {
+        let (_, errors) = recover_with(source, &roomy);
+        errors
+            .iter()
+            .filter(|e| matches!(e.kind(), ErrorKind::TooDeep { .. }))
+            .map(|e| e.span().range())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(too_deep(&"(".repeat(n)), vec![32..33]);
     assert_eq!(error_with(&"-".repeat(n), &roomy).1, 32..33);
-    assert_eq!(error_with(&"f(".repeat(n), &roomy).1, 65..66);
+    assert_eq!(too_deep(&"f(".repeat(n)), vec![65..66]);
 
     let unlimited = Options::new().max_depth(usize::MAX).max_len(usize::MAX);
     let tree = parse_with(&parens, &unlimited).unwrap();
@@ -829,7 +933,7 @@ fn very_deep() {
 
     assert!(parse_with(&format!("{}a", "-".repeat(n)), &unlimited).is_ok());
     assert!(parse_with(&format!("{}1{}", "[".repeat(n), "]".repeat(n)), &unlimited).is_ok());
-    assert_eq!(error_with(&"(".repeat(n), &unlimited).1, n..n);
+    assert_eq!(error_with(&"(".repeat(n), &unlimited).1, 0..1);
 
     // Chains do not nest, so the length limit aside, any length.
     let fields = format!("a{}", ".b".repeat(n));
@@ -868,6 +972,485 @@ fn error_kinds() {
 
     let error: Box<dyn std::error::Error> = Box::new(parse("").unwrap_err());
     assert!(!error.to_string().is_empty());
+}
+
+/// Each source parses with recovery to the s-expression given, with the
+/// diagnostics given, in order, and nothing more.
+/// A source, its s-expression, and each diagnostic's message and range.
+type Recovery<'a> = (&'a str, &'a str, &'a [(&'a str, Range)]);
+
+fn recovers(cases: &[Recovery<'_>]) {
+    recovers_with(&Options::new(), cases);
+}
+
+fn recovers_with(options: &Options, cases: &[Recovery<'_>]) {
+    for (source, expected, diagnostics) in cases {
+        let (tree, errors) = recover_with(source, options);
+        let errors = errors
+            .iter()
+            .map(|e| (e.to_string(), e.span().range()))
+            .collect::<Vec<_>>();
+        let diagnostics = diagnostics
+            .iter()
+            .map(|(m, r)| ((*m).to_owned(), r.clone()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(render_tree(source, &tree), *expected, "{source:?}");
+        assert_eq!(errors, diagnostics, "{source:?}");
+    }
+}
+
+#[test]
+fn recover_missing_operand() {
+    recovers(&[
+        (
+            "min(1, , 2)",
+            "(call min 1 (error) 2)",
+            &[("expected an expression, found `,`", 7..8)],
+        ),
+        (
+            "a + * b",
+            "(+ a (* (error) b))",
+            &[("expected an expression, found `*`", 4..5)],
+        ),
+        (
+            "a +",
+            "(+ a (error))",
+            &[(
+                "expected an expression, found the end of the expression",
+                3..3,
+            )],
+        ),
+        (
+            "a +  ",
+            "(+ a (error))",
+            &[(
+                "expected an expression, found the end of the expression",
+                5..5,
+            )],
+        ),
+        (
+            "",
+            "(error)",
+            &[(
+                "expected an expression, found the end of the expression",
+                0..0,
+            )],
+        ),
+        (
+            "f(a,) + 1",
+            "(+ (call f a (error)) 1)",
+            &[("expected an expression, found `)`", 4..5)],
+        ),
+        (
+            "() + x[]",
+            "(+ (paren (error)) (index x (error)))",
+            &[
+                ("expected an expression, found `)`", 1..2),
+                ("expected an expression, found `]`", 7..8),
+            ],
+        ),
+        (
+            ".a + b",
+            "(+ (error . a) b)",
+            &[("expected an expression, found `.`", 0..1)],
+        ),
+        (
+            "f(,)",
+            "(call f (error) (error))",
+            &[
+                ("expected an expression, found `,`", 2..3),
+                ("expected an expression, found `)`", 3..4),
+            ],
+        ),
+        (
+            "-",
+            "(- (error))",
+            &[(
+                "expected an expression, found the end of the expression",
+                1..1,
+            )],
+        ),
+    ]);
+}
+
+#[test]
+fn recover_unexpected_operand() {
+    let args = "expected an operator, `,` or `)`, found a name";
+
+    recovers(&[
+        (
+            "f(a b, c d)",
+            "(call f (error a b) (error c d))",
+            &[(args, 4..5), (args, 9..10)],
+        ),
+        (
+            "a !b",
+            "(error (unwrap a) b)",
+            &[(
+                "expected an operator or the end of the expression, found a name",
+                3..4,
+            )],
+        ),
+        (
+            "a b c + d",
+            "(+ (error a b c) d)",
+            &[(
+                "expected an operator or the end of the expression, found a name",
+                2..3,
+            )],
+        ),
+        // A group in what is skipped is skipped whole, `,` and all.
+        (
+            "f(a 1 (b, c), d)",
+            "(call f (error a 1 ( b , c )) d)",
+            &[("expected an operator, `,` or `)`, found an integer", 4..5)],
+        ),
+        (
+            "-a b * c",
+            "(* (- (error a b)) c)",
+            &[(
+                "expected an operator or the end of the expression, found a name",
+                3..4,
+            )],
+        ),
+        (
+            "a.1 + b",
+            "(+ (error a . 1) b)",
+            &[(
+                "expected a field or method name after `.`, found an integer",
+                2..3,
+            )],
+        ),
+        (
+            "a.(b).c",
+            "(error a . ( b ) . c)",
+            &[("expected a field or method name after `.`, found `(`", 2..3)],
+        ),
+        (
+            "x.",
+            "(error x .)",
+            &[(
+                "expected a field or method name after `.`, found the end of the expression",
+                2..2,
+            )],
+        ),
+    ]);
+}
+
+#[test]
+fn recover_groups() {
+    recovers(&[
+        (
+            "(a + b",
+            "(paren (+ a b))",
+            &[(
+                "expected `)` to close the `(` at byte 0, found the end of the expression",
+                0..1,
+            )],
+        ),
+        (
+            "[1, 2",
+            "[1 2]",
+            &[(
+                "expected `]` to close the `[` at byte 0, found the end of the expression",
+                0..1,
+            )],
+        ),
+        (
+            "a) + b",
+            "(+ (error a )) b)",
+            &[("unmatched `)`, there is no group open to close", 1..2)],
+        ),
+        (
+            "(a)) + b])",
+            "(error (error (+ (error (paren a) )) b) ]) ))",
+            &[
+                ("unmatched `)`, there is no group open to close", 3..4),
+                ("unmatched `]`, there is no group open to close", 8..9),
+                ("unmatched `)`, there is no group open to close", 9..10),
+            ],
+        ),
+        // Each group still open at the end is reported once, at its
+        // opener.
+        (
+            "f((a, [b",
+            "(call f (paren (error a , [ b)))",
+            &[
+                (
+                    "expected `)` to close the `(` at byte 1, found the end of the expression",
+                    1..2,
+                ),
+                ("expected `)` to close the `(` at byte 2, found `,`", 2..3),
+                (
+                    "expected `)` to close the `(` at byte 2, found the end of the expression",
+                    2..3,
+                ),
+            ],
+        ),
+        // A closer closes the group it matches, and those inside it.
+        (
+            "[f(a] + 1",
+            "(+ [(call f a)] 1)",
+            &[("expected `)` to close the `(` at byte 2, found `]`", 2..3)],
+        ),
+        // Matching none, it closes the innermost.
+        (
+            "(a] + 1",
+            "(+ (paren a) 1)",
+            &[("expected `)` to close the `(` at byte 0, found `]`", 0..1)],
+        ),
+        (
+            "a, b",
+            "(error a , b)",
+            &[(
+                "expected an operator or the end of the expression, found `,`",
+                1..2,
+            )],
+        ),
+        (
+            "(a, b) + x[1, 2]",
+            "(+ (paren (error a , b)) (index x (error 1 , 2)))",
+            &[
+                ("expected `)` to close the `(` at byte 0, found `,`", 0..1),
+                (
+                    "expected `]` to close the `[` at byte 10, found `,`",
+                    10..11,
+                ),
+            ],
+        ),
+    ]);
+}
+
+#[test]
+fn recover_tokens() {
+    recovers(&[
+        (
+            "a = b && c",
+            "(&& (error a = b) c)",
+            &[("`=` is not an operator, did you mean `==`?", 2..3)],
+        ),
+        (
+            "= a",
+            "(error (error) = a)",
+            &[("`=` is not an operator, did you mean `==`?", 0..1)],
+        ),
+        (
+            "1 + é + 2",
+            "(+ (+ 1 (error é)) 2)",
+            &[("unexpected character 'é'", 4..6)],
+        ),
+        (
+            "a ; b + c",
+            "(+ (error a ; b) c)",
+            &[("unexpected character ';'", 2..3)],
+        ),
+        (
+            "=",
+            "(error (error) = (error))",
+            &[
+                ("`=` is not an operator, did you mean `==`?", 0..1),
+                (
+                    "expected an expression, found the end of the expression",
+                    1..1,
+                ),
+            ],
+        ),
+        (
+            "lookup(a, \"x",
+            "(call lookup a (error \"x))",
+            &[
+                (
+                    "expected `)` to close the `(` at byte 6, found the end of the expression",
+                    6..7,
+                ),
+                (
+                    "this string is never closed, expected a `\"` before the end",
+                    10..12,
+                ),
+            ],
+        ),
+        ("a @", "(error a @)", &[("unexpected character '@'", 2..3)]),
+        (
+            "f(\"a\\qb\", 1)",
+            "(call f (error \"a\\qb\") 1)",
+            &[(
+                "unknown escape `\\q` in a string, only `\\\"` and `\\\\` are allowed",
+                4..6,
+            )],
+        ),
+        (
+            "x + \"abc",
+            "(+ x (error \"abc))",
+            &[(
+                "this string is never closed, expected a `\"` before the end",
+                4..8,
+            )],
+        ),
+        (
+            "99999999999999999999 + a",
+            "(+ (error 99999999999999999999) a)",
+            &[(
+                "this integer is too large, the largest is 9223372036854775807",
+                0..20,
+            )],
+        ),
+        (
+            "a < b < c && d",
+            "(&& (error (< a b) < c) d)",
+            &[(
+                "comparisons do not chain, combine them with `&&` or add parentheses",
+                6..7,
+            )],
+        ),
+        (
+            "a < b < c < d",
+            "(< (error (< a b) < c) d)",
+            &[(
+                "comparisons do not chain, combine them with `&&` or add parentheses",
+                6..7,
+            )],
+        ),
+    ]);
+}
+
+#[test]
+fn recover_too_deep() {
+    let message =
+        |what: &str| format!("this {what} nests too deeply, the limit is 2 levels of nesting");
+    let paren = message("parenthesis");
+    let call = message("call");
+
+    recovers_with(
+        &Options::new().max_depth(2),
+        &[
+            (
+                "((((a, b)))) + 1",
+                "(+ (paren (paren (paren (error ( a , b ))))) 1)",
+                &[(&paren, 2..3)],
+            ),
+            // Reported once, however many groups are too deep.
+            (
+                "f(g(h(1)), g(h(2)))",
+                "(call f (call g (call h (error 1))) (call g (call h (error 2))))",
+                &[(&call, 5..6)],
+            ),
+            (
+                "!!!!a.b && c",
+                "(&& (! (! (! (error ! a . b)))) c)",
+                &[(&message("`!`"), 2..3)],
+            ),
+            (
+                "(((a",
+                "(paren (paren (paren (error a))))",
+                &[
+                    (
+                        "expected `)` to close the `(` at byte 0, found the end of the expression",
+                        0..1,
+                    ),
+                    (
+                        "expected `)` to close the `(` at byte 1, found the end of the expression",
+                        1..2,
+                    ),
+                    (&paren, 2..3),
+                ],
+            ),
+        ],
+    );
+}
+
+/// A syntax error is checked around: what parses is still type checked, but
+/// nothing about the error is reported again.
+#[test]
+fn recover_checks_around() {
+    let mut env = Environment::with_builtins();
+    env.value("rank", Type::int()).unwrap();
+
+    let messages = |source: &str| {
+        compile(source, &env)
+            .unwrap_err()
+            .iter()
+            .map(|e| (e.to_string(), e.span().range()))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        messages("min(rank, , true) + nothing"),
+        [
+            ("expected an expression, found `,`".to_owned(), 10..11),
+            ("unknown name `nothing`".to_owned(), 20..27),
+        ]
+    );
+    assert_eq!(
+        messages("(rank + true) + (rank"),
+        [
+            (
+                "`+` takes Int and Int, found Int and Bool".to_owned(),
+                1..12
+            ),
+            (
+                "expected `)` to close the `(` at byte 16, found the end of the expression"
+                    .to_owned(),
+                16..17
+            ),
+        ]
+    );
+    assert_eq!(
+        messages("bonus b + rank = 1"),
+        [
+            ("unknown name `bonus`".to_owned(), 0..5),
+            (
+                "expected an operator or the end of the expression, found a name".to_owned(),
+                6..7
+            ),
+            (
+                "`=` is not an operator, did you mean `==`?".to_owned(),
+                15..16
+            ),
+        ]
+    );
+    assert_eq!(
+        messages("f(rank b)"),
+        [
+            ("unknown function `f`".to_owned(), 0..1),
+            (
+                "expected an operator, `,` or `)`, found a name".to_owned(),
+                7..8
+            ),
+        ]
+    );
+}
+
+/// Recovery consumes each token once, so even with no limits, input made of
+/// nothing but errors parses in linear time, and its diagnostics are capped.
+#[test]
+fn recovery_is_linear() {
+    let n = 50_000;
+    let unlimited = Options::new().max_depth(usize::MAX).max_len(usize::MAX);
+    let env = Environment::new();
+
+    for source in [
+        format!("{}{}", "(".repeat(n), "]".repeat(n)),
+        format!("{}{}", "[(".repeat(n), "]".repeat(n)),
+        format!("{}{}", "f(".repeat(n), "]".repeat(n)),
+        "a b ".repeat(n),
+        ") ".repeat(n),
+        ", ".repeat(n),
+        ". ".repeat(n),
+        "a < ".repeat(n),
+        "a.".repeat(n),
+        "# ".repeat(n),
+        "(".repeat(n),
+    ] {
+        let (tree, errors) = recover_with(&source, &unlimited);
+        check_tree(&source, &tree);
+        assert!(!errors.is_empty());
+        assert!(errors.len() <= MAX_DIAGNOSTICS + 1);
+
+        let parsed = crate::parse_with(&source, &unlimited).unwrap();
+        let all = crate::check::compile_parsed(&source, parsed, &env).unwrap_err();
+        assert!(all.len() <= MAX_DIAGNOSTICS + 1);
+    }
 }
 
 #[test]
@@ -932,30 +1515,69 @@ impl Rng {
     }
 }
 
-/// Whatever the parse gives, it holds together: a tree covers the input
-/// within the depth limit, an error points into the input.
+/// Whatever the parse gives, it holds together: the tree covers the input
+/// within one level past the depth limit, each diagnostic points into the
+/// input, the tree has an `Error` node only when there is a diagnostic, and
+/// checking it never fails inside evalite.
 fn check_any(source: &str, options: &Options, max_depth: usize) {
-    match parse_with(source, options) {
-        Ok(tree) => {
-            check_tree(source, &tree);
-            assert!(nesting(tree.first().unwrap()) <= max_depth, "{source:?}");
-        }
-        Err(error) => {
-            let range = error.span().range();
-            assert!(
-                range.start <= range.end && range.end <= source.len(),
-                "{source:?}"
-            );
-            assert!(source.is_char_boundary(range.start), "{source:?}");
-            assert!(source.is_char_boundary(range.end), "{source:?}");
-            assert!(
-                !matches!(error.kind(), ErrorKind::Internal(..)),
-                "{source:?}: {error}"
-            );
-            assert!(!error.to_string().is_empty());
+    let (tree, errors) = recover_with(source, options);
+    check_tree(source, &tree);
+    let root = tree.first().unwrap();
+    assert!(nesting(root) <= max_depth.saturating_add(1), "{source:?}");
 
-            if let ErrorKind::TooDeep { max, .. } = error.kind() {
-                assert_eq!(*max, max_depth);
+    // A group left open is closed as a group, but anything else in error
+    // is an `Error` node.
+    let has_error = tree.walk().any(|n| n.value() == Syntax::Error);
+    assert!(!has_error || !errors.is_empty(), "{source:?}");
+    assert!(errors.len() <= MAX_DIAGNOSTICS + 1, "{source:?}");
+
+    let mut deep = 0;
+
+    for error in &errors {
+        let range = error.span().range();
+        assert!(
+            range.start <= range.end && range.end <= source.len(),
+            "{source:?}"
+        );
+        assert!(source.is_char_boundary(range.start), "{source:?}");
+        assert!(source.is_char_boundary(range.end), "{source:?}");
+        assert!(
+            !matches!(error.kind(), ErrorKind::Internal(..)),
+            "{source:?}: {error}"
+        );
+        assert!(!error.to_string().is_empty());
+
+        if let ErrorKind::TooDeep { max, .. } = error.kind() {
+            assert_eq!(*max, max_depth);
+            deep += 1;
+        }
+    }
+
+    assert!(deep <= 1, "{source:?}: {errors:?}");
+
+    let mut env = Environment::with_builtins();
+    env.value("a", Type::int()).unwrap();
+    env.value("b1", Type::list(Type::int())).unwrap();
+    env.value("_x", Type::option(Type::bool())).unwrap();
+
+    let parsed = crate::parse_with(source, options).unwrap();
+
+    match crate::check::compile_parsed(source, parsed, &env) {
+        Ok(..) => assert!(errors.is_empty(), "{source:?}: {errors:?}"),
+        Err(all) => {
+            for error in &all {
+                assert!(
+                    !matches!(error.kind(), ErrorKind::Internal(..)),
+                    "{source:?}: {error}"
+                );
+            }
+
+            // The syntax errors are all reported with the type errors, as
+            // long as there is room for them.
+            if all.len() <= MAX_DIAGNOSTICS {
+                for error in &errors {
+                    assert!(all.iter().any(|e| e == error), "{source:?}: {error}");
+                }
             }
         }
     }
@@ -1140,6 +1762,12 @@ fn random_expressions() {
                     matches!(error.kind(), ErrorKind::TooDeep { max, .. } if *max == max_depth),
                     "{source:?}: {error}"
                 );
+
+                // Too deep is reported once, and the over-deep groups are
+                // skipped whole.
+                let (tree, errors) = recover_with(&source, &Options::new().max_depth(max_depth));
+                check_tree(&source, &tree);
+                assert_eq!(errors, [error], "{source:?}");
                 deep += 1;
             }
         }

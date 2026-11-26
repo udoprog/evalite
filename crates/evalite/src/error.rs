@@ -57,7 +57,7 @@ impl Diagnostic {
     }
 
     /// Each place in the input the error is about, primary first, then
-    /// secondary ones, such as where an unclosed group was opened. Every
+    /// secondary ones, such as where an unclosed group had to close. Every
     /// label of a parse error has a span.
     ///
     /// A syntax error has one label:
@@ -71,7 +71,8 @@ impl Diagnostic {
     /// assert_eq!(labels, [("unexpected character '$'".to_owned(), Some(2..3), true)]);
     /// ```
     ///
-    /// An unclosed group has two, the second where it was opened:
+    /// An unclosed group has two, the first at its opener and the second
+    /// where it had to close:
     ///
     /// ```
     /// let env = evalite::Environment::with_builtins();
@@ -80,8 +81,8 @@ impl Diagnostic {
     /// let error = errors.iter().next().unwrap();
     /// let labels: Vec<_> = error.labels().map(|l| (l.message().to_string(), l.span().map(|s| s.range()), l.is_primary())).collect();
     /// assert_eq!(labels, [
-    ///     ("expected `)` to close the `(` at byte 0, found the end of the expression".to_owned(), Some(6..6), true),
-    ///     ("the `(` opened here".to_owned(), Some(0..1), false),
+    ///     ("expected `)` to close the `(` at byte 0, found the end of the expression".to_owned(), Some(0..1), true),
+    ///     ("expected `)` here".to_owned(), Some(6..6), false),
     /// ]);
     /// ```
     ///
@@ -124,9 +125,9 @@ impl Diagnostic {
             (
                 1,
                 ErrorKind::Unclosed {
-                    open, open_span, ..
+                    open, close_span, ..
                 },
-            ) => Some((ParseText::Opened(*open), *open_span)),
+            ) => Some((ParseText::Expected(*open), *close_span)),
             _ => None,
         }
     }
@@ -185,6 +186,14 @@ impl fmt::Debug for Diagnostic {
 ///     ("`+` takes Int and Int, found Int and Bool".to_owned(), 0..11),
 ///     ("unknown name `bonus`".to_owned(), 14..19),
 ///     ("unknown name `nothing`".to_owned(), 22..29),
+/// ]);
+///
+/// // A syntax error is recovered from, and what is around it checked.
+/// let errors = evalite::compile("min(rank, , true) + bonus", &env).unwrap_err();
+/// let messages: Vec<_> = errors.iter().map(|e| (e.to_string(), e.span().range())).collect();
+/// assert_eq!(messages, [
+///     ("expected an expression, found `,`".to_owned(), 10..11),
+///     ("unknown name `bonus`".to_owned(), 20..25),
 /// ]);
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
@@ -346,15 +355,15 @@ impl Reporter {
 pub(crate) enum ParseText<'a> {
     /// The error itself.
     Primary(&'a Diagnostic),
-    /// Where a group that was not closed was opened.
-    Opened(Delimiter),
+    /// Where a group that was not closed had to be closed.
+    Expected(Delimiter),
 }
 
 impl fmt::Display for ParseText<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Primary(error) => error.fmt(f),
-            Self::Opened(open) => write!(f, "the {} opened here", open.open_text()),
+            Self::Expected(open) => write!(f, "expected `{}` here", closer(*open)),
         }
     }
 }
@@ -382,11 +391,11 @@ pub(crate) enum ErrorKind {
     },
     /// A `.` not followed by a name.
     ExpectedName(Found),
-    /// A group opened at `open_span` that was not closed where it had to
-    /// be.
+    /// A group that was not closed at `close_span`, where it had to be.
+    /// The diagnostic's span is its opener.
     Unclosed {
         open: Delimiter,
-        open_span: Span<u32>,
+        close_span: Span<u32>,
         found: Found,
     },
     /// A `)` or `]` with no group open.
@@ -571,7 +580,8 @@ impl Delimiter {
         }
     }
 
-    fn separated(self) -> bool {
+    /// Whether `,` separates its entries.
+    pub(crate) fn separated(self) -> bool {
         matches!(self, Self::Args | Self::List)
     }
 }
@@ -652,16 +662,12 @@ impl fmt::Display for Diagnostic {
                     "expected a field or method name after `.`, found {found}"
                 )
             }
-            ErrorKind::Unclosed {
-                open,
-                open_span,
-                found,
-            } => write!(
+            ErrorKind::Unclosed { open, found, .. } => write!(
                 f,
                 "expected `{}` to close the {} at byte {}, found {found}",
                 closer(*open),
                 open.open_text(),
-                open_span.start
+                self.span.start
             ),
             ErrorKind::Unmatched(found) => {
                 write!(f, "unmatched {found}, there is no group open to close")
