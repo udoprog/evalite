@@ -210,9 +210,9 @@ pub enum StoreError {
     Encode(String),
     /// The bytes are not a stored program.
     Decode(String),
-    /// A stored program of another version of shex.
+    /// A stored program of another version of shexel.
     Format(u32),
-    /// The bytes decode, but are not a program shex would compile.
+    /// The bytes decode, but are not a program shexel would compile.
     Invalid(String),
 }
 
@@ -223,7 +223,7 @@ impl fmt::Display for StoreError {
             Self::Decode(e) => write!(f, "these bytes are not a stored program: {e}"),
             Self::Format(v) => write!(
                 f,
-                "the program was stored in format {v}, this shex reads format {FORMAT}"
+                "the program was stored in format {v}, this shexel reads format {FORMAT}"
             ),
             Self::Invalid(e) => write!(f, "the stored program is not valid: {e}"),
         }
@@ -285,7 +285,7 @@ impl Program {
         musli::storage::to_vec(&stored).map_err(|e| StoreError::Encode(e.to_string()))
     }
 
-    /// Read a stored program, checking that it is one shex would compile:
+    /// Read a stored program, checking that it is one shexel would compile:
     /// well formed, well typed, and using exactly the memory it declares.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, StoreError> {
         let stored: Stored =

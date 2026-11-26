@@ -1,10 +1,10 @@
 [package]
-name = "shex-cli"
+name = "shexel-cli"
 edition = "2024"
 publish = false
 
 [[bin]]
-name = "shex"
+name = "shexel"
 path = "src/main.rs"
 
 [lints.clippy]
@@ -17,4 +17,4 @@ arithmetic_side_effects = "deny"
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
-shex = { path = "../shex" }
+shexel = { path = "../shexel" }

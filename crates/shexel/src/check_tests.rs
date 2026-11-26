@@ -1553,7 +1553,7 @@ fn stored_bytes_errors() {
 
     assert_eq!(
         load(&stored).unwrap_err().to_string(),
-        "the program was stored in format 3, this shex reads format 2"
+        "the program was stored in format 3, this shexel reads format 2"
     );
 
     assert!(

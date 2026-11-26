@@ -20,16 +20,16 @@ type N<'a> = Node<'a, Syntax, FlavorDefault>;
 /// [`Options`].
 ///
 /// ```
-/// use shex::{Environment, Type};
+/// use shexel::{Environment, Type};
 ///
 /// let mut env = Environment::with_builtins();
 /// env.value("wits", Type::Int)?;
 /// env.value("bonus", Type::option(Type::Int))?;
 ///
-/// let program = shex::compile("min(wits, 3) + bonus.unwrap_or(0)", &env)?;
+/// let program = shexel::compile("min(wits, 3) + bonus.unwrap_or(0)", &env)?;
 /// assert_eq!(program.result_type(), Type::Int);
 ///
-/// let error = shex::compile("wits + bonus", &env).unwrap_err();
+/// let error = shexel::compile("wits + bonus", &env).unwrap_err();
 /// assert_eq!(
 ///     error.to_string(),
 ///     "`+` takes Int and Int, found Int and Option<Int>, unwrap the optional value first with `.unwrap_or(...)`"

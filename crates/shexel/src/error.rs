@@ -68,7 +68,7 @@ pub enum ErrorKind {
     TooDeep { nesting: Nesting, max: usize },
     /// An input longer than spans can address.
     TooLong(usize),
-    /// A fault in shex itself, not in the input.
+    /// A fault in shexel itself, not in the input.
     Internal(String),
 
     /// A name the environment does not declare as a value. `suggestion` is
@@ -317,7 +317,7 @@ impl fmt::Display for Error {
                 "the expression is {len} bytes long, more than the {} that can be parsed",
                 u32::MAX
             ),
-            ErrorKind::Internal(message) => write!(f, "internal error in shex: {message}"),
+            ErrorKind::Internal(message) => write!(f, "internal error in shexel: {message}"),
             ErrorKind::UnknownName { name, suggestion } => {
                 write!(f, "unknown name `{name}`")?;
                 did_you_mean(f, suggestion)

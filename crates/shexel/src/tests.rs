@@ -840,7 +840,7 @@ fn error_kinds() {
     );
     assert_eq!(
         Error::new(span(0, 0), ErrorKind::Internal("x".to_owned())).to_string(),
-        "internal error in shex: x"
+        "internal error in shexel: x"
     );
 
     let error: Box<dyn std::error::Error> = Box::new(parse("").unwrap_err());

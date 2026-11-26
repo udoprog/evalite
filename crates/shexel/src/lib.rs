@@ -1,4 +1,4 @@
-//! shex, the sheet expression language: small, strictly typed expressions
+//! shexel, the sheet expression language: small, strictly typed expressions
 //! over a character sheet's values, such as a computed widget's
 //! `min(wits, dexterity) + athletics` or
 //! `specialties.brawl.unwrap_or(0) + 1`.
@@ -13,13 +13,13 @@
 //!   tree covering every byte of the input, whitespace included.
 //!
 //! ```
-//! let tree = shex::parse("min(wits, dexterity) + athletics")?;
+//! let tree = shexel::parse("min(wits, dexterity) + athletics")?;
 //! assert_eq!(tree.span().range(), 0..32);
 //!
-//! let error = shex::parse("1 +").unwrap_err();
+//! let error = shexel::parse("1 +").unwrap_err();
 //! assert_eq!(error.to_string(), "expected an expression, found the end of the expression");
 //! assert_eq!(error.span().range(), 3..3);
-//! # Ok::<_, shex::Error>(())
+//! # Ok::<_, shexel::Error>(())
 //! ```
 //!
 //! ## Types
@@ -66,17 +66,17 @@
 //! calls the first whose parameters the arguments match.
 //!
 //! ```
-//! use shex::{Environment, Type};
+//! use shexel::{Environment, Type};
 //!
 //! let mut env = Environment::with_builtins();
 //! env.value("health", Type::record([("boxes", Type::Int)]))?;
 //! env.value("specialties", Type::record([("brawl", Type::option(Type::Int))]))?;
 //! env.function("lookup", [Type::Int, Type::String], Type::Int)?;
 //!
-//! let program = shex::compile("health.boxes + specialties.brawl.unwrap_or(0)", &env)?;
+//! let program = shexel::compile("health.boxes + specialties.brawl.unwrap_or(0)", &env)?;
 //! assert_eq!(program.result_type(), Type::Int);
 //!
-//! let error = shex::compile("lookup(1, health)", &env).unwrap_err();
+//! let error = shexel::compile("lookup(1, health)", &env).unwrap_err();
 //! assert_eq!(error.to_string(), "no `lookup` takes (Int, {boxes: Int}), it takes (Int, List<T>) or (Int, String)");
 //! assert_eq!(error.span().range(), 0..17);
 //! # Ok::<_, Box<dyn std::error::Error>>(())
@@ -108,12 +108,12 @@
 //! field is an offset fixed when the program was compiled.
 //!
 //! ```
-//! use shex::{Environment, Program, Type};
+//! use shexel::{Environment, Program, Type};
 //!
 //! let mut env = Environment::with_builtins();
 //! env.value("blood_potency", Type::Int)?;
 //!
-//! let program = shex::compile("lookup(blood_potency, [10, 11, 12, 13])", &env)?;
+//! let program = shexel::compile("lookup(blood_potency, [10, 11, 12, 13])", &env)?;
 //! assert_eq!(program.memory().stack, 2);
 //! assert_eq!(program.memory().constants, 4);
 //!
@@ -143,14 +143,14 @@
 //! function's failure or wrongly typed result.
 //!
 //! ```
-//! use shex::{Environment, Limits, Machine, Type, Value};
+//! use shexel::{Environment, Limits, Machine, Type, Value};
 //!
 //! let mut env = Environment::with_builtins();
 //! env.value("health", Type::record([("boxes", Type::Int), ("count", Type::list(Type::Int))]))?;
 //! env.value("brawl", Type::option(Type::Int))?;
 //! env.function("lookup", [Type::Int, Type::String], Type::Int)?;
 //!
-//! let program = shex::compile(r#"health.count[1] + brawl.unwrap_or(0) + lookup(1, "Essence")"#, &env)?;
+//! let program = shexel::compile(r#"health.count[1] + brawl.unwrap_or(0) + lookup(1, "Essence")"#, &env)?;
 //!
 //! let mut machine = Machine::new(Limits::new().fuel(100));
 //! let mut run = machine.load(&program)?;

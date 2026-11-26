@@ -1,17 +1,17 @@
-# shex benchmarks
+# shexel benchmarks
 
-[`shex.rs`](shex.rs) measures each stage a computed value goes through, on
+[`shexel.rs`](shexel.rs) measures each stage a computed value goes through, on
 expressions shaped like a character sheet's (attributes, skills,
 `specialties`, optional `bonus_N`s, tracks, lookup tables), with
 [criterion](https://docs.rs/criterion).
 
 ```sh
-CARGO_BUILD_JOBS=4 cargo bench -p shex --bench shex
+CARGO_BUILD_JOBS=4 cargo bench -p shexel --bench shexel
 # one group or case: the argument is a regex over the names
-cargo bench -p shex --bench shex -- 'stage/long/'
-cargo bench -p shex --bench shex -- '^sheet/'
+cargo bench -p shexel --bench shexel -- 'stage/long/'
+cargo bench -p shexel --bench shexel -- '^sheet/'
 # a quick check that every case still compiles and runs
-cargo bench -p shex --bench shex -- --test
+cargo bench -p shexel --bench shexel -- --test
 ```
 
 Results go to `target/criterion/`, with a report in
@@ -23,9 +23,9 @@ Save the numbers on the base, then compare a change against them:
 
 ```sh
 git switch main
-cargo bench -p shex --bench shex -- --save-baseline main
+cargo bench -p shexel --bench shexel -- --save-baseline main
 git switch my-change
-cargo bench -p shex --bench shex -- --baseline main
+cargo bench -p shexel --bench shexel -- --baseline main
 ```
 
 The machine is often busy building other things, so run the two back to
@@ -71,10 +71,10 @@ There is no `perf` on the usual machine; callgrind works. Build with debug
 info and run one benchmark under it (cargo prints the executable's path):
 
 ```sh
-CARGO_PROFILE_BENCH_DEBUG=true cargo bench -p shex --bench shex --no-run
-valgrind --tool=callgrind --callgrind-out-file=/tmp/shex.cg \
-    target/release/build/shex/<hash>/out/shex-<hash> --bench '^sheet/evaluate$' --profile-time 2
-callgrind_annotate --inclusive=yes /tmp/shex.cg | head -60
+CARGO_PROFILE_BENCH_DEBUG=true cargo bench -p shexel --bench shexel --no-run
+valgrind --tool=callgrind --callgrind-out-file=/tmp/shexel.cg \
+    target/release/build/shexel/<hash>/out/shexel-<hash> --bench '^sheet/evaluate$' --profile-time 2
+callgrind_annotate --inclusive=yes /tmp/shexel.cg | head -60
 ```
 
 ## Where the time went (2026-11-26, `86ce38ce`)

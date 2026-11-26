@@ -274,7 +274,7 @@ impl std::error::Error for EditError {}
 pub enum LoadError {
     Encode(String),
     Decode(String),
-    /// A structure stored by another version of shex.
+    /// A structure stored by another version of shexel.
     Format(u32),
     /// The bytes decode, but their nodes are not one tree.
     Invalid(String),
@@ -287,7 +287,7 @@ impl fmt::Display for LoadError {
             Self::Decode(e) => write!(f, "these bytes are not a stored structure: {e}"),
             Self::Format(v) => write!(
                 f,
-                "the structure was stored in format {v}, this shex reads format {FORMAT}"
+                "the structure was stored in format {v}, this shexel reads format {FORMAT}"
             ),
             Self::Invalid(e) => write!(f, "the stored structure is not valid: {e}"),
         }
@@ -361,7 +361,7 @@ struct Stored {
 /// it is stored.
 ///
 /// ```
-/// use shex::{Environment, Node, Structure, Type};
+/// use shexel::{Environment, Node, Structure, Type};
 ///
 /// let mut env = Environment::with_builtins();
 /// env.value("bonus", Type::option(Type::Int))?;

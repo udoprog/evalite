@@ -1,4 +1,4 @@
-//! `shex`, a command line evaluator to try the sheet expression language.
+//! `shexel`, a command line evaluator to try the sheet expression language.
 //!
 //! Variables are declared and bound on the command line as
 //! `--var name:Type=value`, where a type is `Int`, `Bool`, `String`,
@@ -6,13 +6,13 @@
 //! `some(2)` or `[1, 2]`.
 //!
 //! ```text
-//! $ shex eval 'strength + 2' --var strength:Int=3
+//! $ shexel eval 'strength + 2' --var strength:Int=3
 //! 5 : Int
 //!
-//! $ shex eval 'bonus.unwrap_or(0) + 1' --var bonus:Option<Int>=none
+//! $ shexel eval 'bonus.unwrap_or(0) + 1' --var bonus:Option<Int>=none
 //! 1 : Int
 //!
-//! $ shex --var strength:Int=3          # a loop over stdin, one expression per line
+//! $ shexel --var strength:Int=3          # a loop over stdin, one expression per line
 //! > strength * 2
 //! 6 : Int
 //! ```
@@ -20,7 +20,7 @@
 //! Limits are `--max-depth` (nesting), `--memory` (64-bit words) and `--fuel`
 //! (steps); `--explain` also prints the type, memory and steps. Errors
 //! print the expression with a caret under what is wrong and exit non-zero.
-//! With no expression, `shex` reads expressions from stdin until the end.
+//! With no expression, `shexel` reads expressions from stdin until the end.
 
 mod vars;
 
@@ -28,14 +28,14 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use shex::{
+use shexel::{
     DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MEMORY, Environment, Limits, Machine, Options,
 };
 
 use crate::vars::{Var, VarError, parse_var};
 
 #[derive(Parser)]
-#[command(name = "shex", version, about = "Try sheet expressions")]
+#[command(name = "shexel", version, about = "Try sheet expressions")]
 struct Cli {
     /// Declare and bind a variable, as `name:Type=value`.
     #[arg(long = "var", value_name = "NAME:TYPE=VALUE", global = true, value_parser = parse_var)]
@@ -114,7 +114,8 @@ impl Session<'_> {
 
     fn try_eval(&self, source: &str) -> Result<String, Failure> {
         let options = Options::new().max_depth(self.cli.max_depth);
-        let program = shex::compile_with(source, &self.env, &options).map_err(Failure::Compile)?;
+        let program =
+            shexel::compile_with(source, &self.env, &options).map_err(Failure::Compile)?;
         let mut machine = Machine::new(Limits::new().memory(self.cli.memory).fuel(self.cli.fuel));
         let mut run = machine.load(&program).map_err(Failure::Run)?;
 
@@ -185,8 +186,8 @@ impl Session<'_> {
 }
 
 enum Failure {
-    Compile(shex::Error),
-    Run(shex::RunError),
+    Compile(shexel::Error),
+    Run(shexel::RunError),
 }
 
 impl Failure {

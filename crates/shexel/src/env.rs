@@ -4,7 +4,7 @@ use std::fmt;
 use crate::Type;
 use crate::types::{TypeFault, check_type, is_value_name};
 
-/// A function shex itself provides, which a caller adds to an
+/// A function shexel itself provides, which a caller adds to an
 /// [`Environment`] with [`Environment::builtin`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -102,14 +102,14 @@ impl std::error::Error for DeclareError {}
 /// may call, which [`compile`](crate::compile) checks expressions against.
 ///
 /// ```
-/// use shex::{Builtin, Environment, Type};
+/// use shexel::{Builtin, Environment, Type};
 ///
 /// let mut env = Environment::new();
 /// env.value("strength", Type::Int)?;
 /// env.value("bonus", Type::option(Type::Int))?;
 /// env.builtin(Builtin::Min);
 /// env.function("rating", [Type::String], Type::Int)?;
-/// # Ok::<_, shex::DeclareError>(())
+/// # Ok::<_, shexel::DeclareError>(())
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct Environment {

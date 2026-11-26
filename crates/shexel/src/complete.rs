@@ -231,7 +231,7 @@ impl Structure {
     /// expressions to put in the node's place.
     ///
     /// ```
-    /// use shex::{Environment, Insert, Structure, Type};
+    /// use shexel::{Environment, Insert, Structure, Type};
     ///
     /// let mut env = Environment::with_builtins();
     /// env.value("bonus", Type::option(Type::Int))?;
