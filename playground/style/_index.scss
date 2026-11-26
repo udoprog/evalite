@@ -136,9 +136,10 @@ a {
     text-underline-offset: 3px;
 }
 
-// The outcome's room is kept whatever it shows, so nothing below moves.
+// The outcome's room is kept for a value or a short error, so the limits
+// below it rarely move.
 .playground-outcome {
-    min-height: 15rem;
+    min-height: 10rem;
 }
 
 // A value as the outcome shows it: large, wrapping anywhere.

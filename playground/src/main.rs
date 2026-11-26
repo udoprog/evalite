@@ -27,9 +27,9 @@ use gloo_timers::callback::Timeout;
 use yew::prelude::*;
 
 use sockel::{
-    Align, Button, ButtonSize, ButtonVariant, Card, CardGrid, Cluster, ErrorBox, Field, Gap,
-    GridSize, Inset, OverlayHost, PropertyList, PropertyRow, SectionHead, Select, SelectOption,
-    Stack, Stepper, TextInput,
+    Align, Button, ButtonSize, ButtonVariant, Card, CardGrid, Cluster, Disclosure, ErrorBox, Field,
+    Gap, GridSize, InputSize, Inset, OverlayHost, PropertyList, PropertyRow, SectionHead, Select,
+    SelectOption, Stack, Stepper, TextInput, Toolbar, ToolbarSpacer,
 };
 
 use crate::editor::Editor;
@@ -376,6 +376,8 @@ fn Playground() -> Html {
     let input = use_state(|| from_location().unwrap_or_else(Input::initial));
     let outcome = use_state(|| Rc::new(compute(&input)));
     let linked = use_state(|| false);
+    let vars_open = use_state(|| !input.rows.is_empty());
+    let limits_open = use_state(|| false);
 
     {
         let (outcome, linked) = (outcome.clone(), linked.clone());
@@ -407,9 +409,10 @@ fn Playground() -> Html {
         .map(|(index, e)| SelectOption::new(index, e.title))
         .collect::<Vec<_>>();
     let on_example = {
-        let input = input.clone();
+        let (input, vars_open) = (input.clone(), vars_open.clone());
         Callback::from(move |index: usize| {
             if let Some(example) = EXAMPLES.get(index) {
+                vars_open.set(!example.vars.is_empty());
                 input.set(Input::example(example));
             }
         })
@@ -428,13 +431,19 @@ fn Playground() -> Html {
     };
 
     let on_add = {
-        let input = input.clone();
+        let (input, vars_open) = (input.clone(), vars_open.clone());
         Callback::from(move |_: MouseEvent| {
             let mut next = (*input).clone();
             let id = next.next_id();
             next.rows.push(Row::new(id, &format!("v{id}"), "Int", "0"));
             input.set(next);
+            vars_open.set(true);
         })
+    };
+
+    let toggle = |open: &UseStateHandle<bool>| {
+        let open = open.clone();
+        Callback::from(move |next: bool| open.set(next))
     };
 
     let primary = match &**outcome {
@@ -451,11 +460,23 @@ fn Playground() -> Html {
         html! { <VarRow key={row.id} row={row.clone()} input={input.clone()} /> }
     });
 
+    let vars_summary = if input.rows.is_empty() {
+        String::from("None")
+    } else {
+        input
+            .rows
+            .iter()
+            .map(|r| r.name.trim())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
     let limit = |label: &'static str,
                  id: &'static str,
                  value: i64,
                  max: i64,
                  step: i64,
+                 used: Option<u64>,
                  set: fn(&mut Bounds, i64)| {
         let input = input.clone();
         let on_change = Callback::from(move |n: i64| {
@@ -465,55 +486,81 @@ fn Playground() -> Html {
         });
 
         html! {
-            <Field label={html! { label }} {id} class={classes!(sockel::class::GROW, sockel::class::BASIS_SM)}>
+            <Field label={html! { label }} {id} hint={used.map(|n| html! { format!("{n} used") })} class={classes!(sockel::class::GROW, sockel::class::BASIS_SM)}>
                 <Stepper {id} label={label} {value} min={1} {max} {step} {on_change} />
             </Field>
         }
     };
 
     let bounds = input.bounds;
-    let limits = html! {
-        <Cluster gap={Gap::Medium} align={Align::Top}>
-            { limit("Fuel (steps)", "limit-fuel", i64::try_from(bounds.fuel).unwrap_or(i64::MAX), 1_000_000, 10,
-                |b, n| b.fuel = u64::try_from(n).unwrap_or(1)) }
-            { limit("Memory (words)", "limit-memory", i64::from(bounds.memory), 1 << 20, 64,
-                |b, n| b.memory = u32::try_from(n).unwrap_or(1)) }
-            { limit("Depth", "limit-depth", i64::try_from(bounds.depth).unwrap_or(i64::MAX), 256, 1,
-                |b, n| b.depth = usize::try_from(n).unwrap_or(1)) }
-        </Cluster>
+    let used = (**outcome).as_ref().ok();
+    let limits_summary = match &**outcome {
+        Ok(done) => format!(
+            "{} of {} · {} of {}",
+            done.steps,
+            plural(bounds.fuel, "step", "steps"),
+            done.memory,
+            plural(u64::from(bounds.memory), "word", "words"),
+        ),
+        Err(_) => format!(
+            "{} · {} · depth {}",
+            plural(bounds.fuel, "step", "steps"),
+            plural(u64::from(bounds.memory), "word", "words"),
+            bounds.depth,
+        ),
     };
 
     html! {
         <section aria-label="Playground">
             <Stack gap={Gap::Loose}>
                 <SectionHead title={html! { "Try it" }} />
-                <Cluster gap={Gap::Wide} align={Align::Top}>
-                    <Stack gap={Gap::Medium} class={classes!(sockel::class::GROW, sockel::class::BASIS_LG)}>
-                        <Cluster gap={Gap::Tight}>
-                            <Select<usize> label="Example" placeholder="Examples" options={examples} on_change={on_example} />
-                            <Button variant={ButtonVariant::Ghost} onclick={on_share}>
-                                { if *linked { "Link copied" } else { "Copy link" } }
-                            </Button>
-                        </Cluster>
-                        <Editor source={input.source.clone()} on_change={on_source} {primary} {bindings} />
-                        <Stack gap={Gap::Tight}>
-                            <strong>{ "Variables" }</strong>
-                            <Stack tag="ul" gap={Gap::Snug} class={sockel::class::PLAIN_LIST}>{ for rows }</Stack>
-                            <Cluster>
-                                <Button size={ButtonSize::Small} onclick={on_add}>{ "Add a variable" }</Button>
-                            </Cluster>
+                <Stack gap={Gap::Tight}>
+                    <Cluster gap={Gap::Loose} align={Align::Top}>
+                        <Stack gap={Gap::Tight} class={classes!(sockel::class::GROW, sockel::class::BASIS_LG)}>
+                            <Toolbar label="Example and link">
+                                <Select<usize> label="Example" placeholder="Examples" options={examples} on_change={on_example} />
+                                <ToolbarSpacer />
+                                <Button variant={ButtonVariant::Quiet} onclick={on_share}>
+                                    { if *linked { "Link copied" } else { "Copy link" } }
+                                </Button>
+                            </Toolbar>
+                            <Editor source={input.source.clone()} on_change={on_source} {primary} {bindings} />
                         </Stack>
-                    </Stack>
-                    <Stack gap={Gap::Medium} class={classes!(sockel::class::GROW, sockel::class::BASIS_MD)}>
-                        <Card class={class::OUTCOME} gap={Gap::Tight}>
-                            <OutcomeView outcome={(*outcome).clone()} bounds={input.bounds} />
+                        <Card class={classes!(class::OUTCOME, sockel::class::GROW, sockel::class::BASIS_MD)} gap={Gap::Tight}>
+                            <OutcomeView outcome={(*outcome).clone()} />
                         </Card>
-                        { limits }
-                    </Stack>
-                </Cluster>
+                    </Cluster>
+                    <Cluster gap={Gap::Loose} align={Align::Top}>
+                        <Disclosure class={classes!(sockel::class::GROW, sockel::class::BASIS_LG)} title={html! { "Variables" }} summary={html! { vars_summary }}
+                            id="playground-variables" open={*vars_open} on_toggle={toggle(&vars_open)}
+                            actions={html! {
+                                <Button variant={ButtonVariant::Quiet} size={ButtonSize::Small} onclick={on_add}>
+                                    { "Add a variable" }
+                                </Button>
+                            }}>
+                            <Stack tag="ul" gap={Gap::Hair} class={sockel::class::PLAIN_LIST}>{ for rows }</Stack>
+                        </Disclosure>
+                        <Disclosure class={classes!(sockel::class::GROW, sockel::class::BASIS_MD)} title={html! { "Limits" }} summary={html! { limits_summary }}
+                            id="playground-limits" open={*limits_open} on_toggle={toggle(&limits_open)}>
+                            <Cluster gap={Gap::Medium} align={Align::Top}>
+                                { limit("Fuel (steps)", "limit-fuel", i64::try_from(bounds.fuel).unwrap_or(i64::MAX), 1_000_000, 10, used.map(|d| d.steps),
+                                    |b, n| b.fuel = u64::try_from(n).unwrap_or(1)) }
+                                { limit("Memory (words)", "limit-memory", i64::from(bounds.memory), 1 << 20, 64, used.map(|d| d.memory),
+                                    |b, n| b.memory = u32::try_from(n).unwrap_or(1)) }
+                                { limit("Depth", "limit-depth", i64::try_from(bounds.depth).unwrap_or(i64::MAX), 256, 1, None,
+                                    |b, n| b.depth = usize::try_from(n).unwrap_or(1)) }
+                            </Cluster>
+                        </Disclosure>
+                    </Cluster>
+                </Stack>
             </Stack>
         </section>
     }
+}
+
+/// `n` and its noun, singular for one.
+fn plural(n: u64, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 #[derive(Properties, PartialEq)]
@@ -612,17 +659,17 @@ fn VarRow(props: &VarRowProps) -> Html {
             <Stack gap={Gap::Hair}>
                 <Cluster gap={Gap::Tight}>
                     <TextInput class={classes!(class::CODE, sockel::class::GROW, sockel::class::BASIS_SM)}
-                        label="Name" value={row.name.clone()} invalid={name_bad}
+                        label="Name" size={InputSize::Small} value={row.name.clone()} invalid={name_bad}
                         on_input={set(|r, t| r.name = t)} />
-                    <Select<&'static str> label="Type" options={types} value={Some(picked)}
+                    <Select<&'static str> label="Type" size={InputSize::Small} options={types} value={Some(picked)}
                         invalid={ty_bad && !row.custom} on_change={on_pick} />
                     if row.custom {
                         <TextInput class={classes!(class::CODE, sockel::class::GROW, sockel::class::BASIS_MD)}
-                            label="Type" placeholder="{boxes: Int}" value={row.ty.clone()} invalid={ty_bad}
+                            label="Type" size={InputSize::Small} placeholder="{boxes: Int}" value={row.ty.clone()} invalid={ty_bad}
                             on_input={set(|r, t| r.ty = t)} />
                     }
                     <TextInput class={classes!(class::CODE, sockel::class::GROW, sockel::class::BASIS_SM)}
-                        label="Value" value={row.value.clone()} invalid={value_bad}
+                        label="Value" size={InputSize::Small} value={row.value.clone()} invalid={value_bad}
                         on_input={set(|r, t| r.value = t)} />
                     <Button variant={ButtonVariant::Quiet} size={ButtonSize::Small} onclick={on_remove}>{ "Remove" }</Button>
                 </Cluster>
@@ -635,7 +682,6 @@ fn VarRow(props: &VarRowProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct OutcomeProps {
     outcome: Rc<Outcome>,
-    bounds: Bounds,
 }
 
 #[function_component]
@@ -648,12 +694,6 @@ fn OutcomeView(props: &OutcomeProps) -> Html {
                 </PropertyRow>
                 <PropertyRow label="Type">
                     <span class={class::CODE}>{ &done.ty }</span>
-                </PropertyRow>
-                <PropertyRow label="Steps">
-                    <span class={sockel::class::NUMERIC}>{ format!("{} of {}", done.steps, props.bounds.fuel) }</span>
-                </PropertyRow>
-                <PropertyRow label="Memory">
-                    <span class={sockel::class::NUMERIC}>{ format!("{} of {} words", done.memory, props.bounds.memory) }</span>
                 </PropertyRow>
             </PropertyList>
         },
