@@ -1,0 +1,208 @@
+// The playground's own styles, built by sockel-build after sockel's: the
+// colours sockel reads (light and dark), the page's column, and the code
+// surfaces (the editor and the outcome). Every class starts `playground-`.
+
+@use "sockel" as p;
+
+@mixin light {
+    --bg: #f7f7f4;
+    --surface: #ffffff;
+    --text: #1c1d1a;
+    --muted: #5f625a;
+    --border: #d8dad2;
+    --accent: #2f7d4f;
+    --on-accent: #ffffff;
+    --danger: #b42318;
+    --shadow-1: 0 1px 2px rgb(20 24 20 / 0.08), 0 1px 3px rgb(20 24 20 / 0.06);
+    color-scheme: light;
+}
+
+@mixin dark {
+    --bg: #121411;
+    --surface: #1b1e1a;
+    --text: #e9ebe5;
+    --muted: #a2a69b;
+    --border: #33372f;
+    --accent: #7cc999;
+    --on-accent: #121411;
+    --danger: #f97066;
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 0.5);
+    color-scheme: dark;
+}
+
+:root {
+    @include light;
+    --code-font: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        @include dark;
+    }
+}
+
+:root[data-theme="dark"] {
+    @include dark;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html {
+    scrollbar-gutter: stable;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: var(--text-base) / 1.5 system-ui, sans-serif;
+}
+
+// The page's one column, centred.
+.playground-page {
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: var(--space-8) var(--space-6);
+
+    @include p.below("phone") {
+        padding: var(--space-6) var(--space-4);
+    }
+}
+
+// The hero's headline, larger than any page title.
+.playground-display {
+    margin: 0;
+    font-size: clamp(2rem, 5vw, 3.25rem);
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+}
+
+// Lead text: the pitch under a headline.
+.playground-lead {
+    margin: 0;
+    max-width: 44rem;
+    color: var(--muted);
+    font-size: var(--text-lg);
+}
+
+// A list of strengths, two columns where there is room.
+.playground-points {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: var(--space-3) var(--space-6);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+// Two columns side by side, one above the other below the medium breakpoint.
+.playground-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: var(--space-6);
+    align-items: start;
+
+    @include p.below("medium") {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+// Code: monospace, on a control, a block or an inline span.
+.playground-code {
+    font-family: var(--code-font);
+    font-size: var(--text-md);
+}
+
+// A block of code that keeps its spacing and scrolls rather than wraps.
+.playground-code-block {
+    margin: 0;
+    padding: var(--space-3);
+    overflow-x: auto;
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    white-space: pre;
+}
+
+// The editor: a textarea under a layer that repeats its text in
+// transparent ink, drawing only the error's underline at the same place.
+// Both sit in one grid cell, so the textarea stretches with the text
+// rather than scrolling, and the two never drift apart.
+.playground-editor {
+    display: grid;
+}
+
+.playground-editor-input {
+    grid-area: 1 / 1;
+    min-height: 7.5rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow: hidden;
+    resize: none;
+}
+
+.playground-editor-marks {
+    grid-area: 1 / 1;
+    position: relative;
+    padding-block: var(--space-1);
+    padding-inline: var(--space-2);
+    border: 1px solid transparent;
+    color: transparent;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+}
+
+// The span an error points at.
+.playground-mark {
+    text-decoration: underline wavy var(--danger);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 3px;
+}
+
+// The outcome's room is kept whatever it shows, so nothing below moves.
+.playground-outcome {
+    min-height: 12rem;
+}
+
+.playground-value {
+    margin: 0;
+    font-size: var(--text-xl);
+    overflow-wrap: anywhere;
+}
+
+// Secondary text.
+.playground-muted {
+    color: var(--muted);
+}
+
+// An error's message.
+.playground-error {
+    margin: 0;
+    color: var(--danger);
+}
+
+// A row's error, one line kept whether or not there is one.
+.playground-row-error {
+    display: block;
+    min-height: 1lh;
+    color: var(--danger);
+    font-size: var(--text-sm);
+}
+
+// A variable's controls in one row: name, type, value and its remove
+// button; two to a row on a phone.
+.playground-var-row {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) minmax(0, 3fr) auto;
+    gap: var(--space-2);
+    align-items: center;
+
+    @include p.below("phone") {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+}
