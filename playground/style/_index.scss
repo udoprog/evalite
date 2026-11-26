@@ -1,6 +1,9 @@
 // The playground's own styles, built by sockel-build after sockel's: the
-// colours sockel reads (light and dark), the page's column, and the code
-// surfaces (the editor and the outcome). Every class starts `playground-`.
+// colours sockel reads (light and dark), the page's margins and links, and
+// what sockel has no component for: the hero's headline and pitch, code
+// type, the editor's mark layer and the outcome's kept room. Layout, cards,
+// lists, fields, errors and the completions list are sockel's. Every class
+// starts `playground-`.
 
 @use "sockel" as p;
 
@@ -55,22 +58,23 @@ html {
     scrollbar-gutter: stable;
 }
 
+// The page's column is sockel's `.sockel-workspace-page`; the window's
+// edge keeps the page gutter from it, less on a phone.
 body {
     margin: 0;
+    padding: var(--page-gutter) var(--space-6);
     background: var(--bg);
     color: var(--text);
     font: var(--text-base) / 1.5 system-ui, sans-serif;
-}
-
-// The page's one column, centred.
-.playground-page {
-    max-width: 72rem;
-    margin: 0 auto;
-    padding: var(--space-8) var(--space-6);
 
     @include p.below("phone") {
         padding: var(--space-6) var(--space-4);
     }
+}
+
+// Links in the accent, which each theme sets for its ground.
+a {
+    color: var(--accent);
 }
 
 // The hero's headline, larger than any page title.
@@ -81,50 +85,18 @@ body {
     letter-spacing: -0.02em;
 }
 
-// Lead text: the pitch under a headline.
+// The pitch under the headline: larger, in the muted ink.
 .playground-lead {
     margin: 0;
-    max-width: 44rem;
+    max-width: var(--page-reading);
     color: var(--muted);
     font-size: var(--text-lg);
 }
 
-// A list of strengths, two columns where there is room.
-.playground-points {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-    gap: var(--space-3) var(--space-6);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-}
-
-// Two columns side by side, one above the other below the medium breakpoint.
-.playground-columns {
-    display: grid;
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-    gap: var(--space-6);
-    align-items: start;
-
-    @include p.below("medium") {
-        grid-template-columns: minmax(0, 1fr);
-    }
-}
-
-// Code: monospace, on a control, a block or an inline span.
+// Code: monospace, on a control or an inline span.
 .playground-code {
     font-family: var(--code-font);
     font-size: var(--text-md);
-}
-
-// A block of code that keeps its spacing and scrolls rather than wraps.
-.playground-code-block {
-    margin: 0;
-    padding: var(--space-3);
-    overflow-x: auto;
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-    white-space: pre;
 }
 
 // The editor: a textarea under a layer that repeats its text in
@@ -149,7 +121,7 @@ body {
     position: relative;
     padding-block: var(--space-1);
     padding-inline: var(--space-2);
-    border: 1px solid transparent;
+    border: var(--space-px) solid transparent;
     color: transparent;
     line-height: 1.4;
     white-space: pre-wrap;
@@ -166,43 +138,18 @@ body {
 
 // The outcome's room is kept whatever it shows, so nothing below moves.
 .playground-outcome {
-    min-height: 12rem;
+    min-height: 15rem;
 }
 
+// A value as the outcome shows it: large, wrapping anywhere.
 .playground-value {
-    margin: 0;
     font-size: var(--text-xl);
     overflow-wrap: anywhere;
 }
 
-// Secondary text.
-.playground-muted {
-    color: var(--muted);
-}
-
-// An error's message.
-.playground-error {
-    margin: 0;
-    color: var(--danger);
-}
-
-// A row's error, one line kept whether or not there is one.
-.playground-row-error {
-    display: block;
-    min-height: 1lh;
-    color: var(--danger);
-    font-size: var(--text-sm);
-}
-
-// A variable's controls in one row: name, type, value and its remove
-// button; two to a row on a phone.
-.playground-var-row {
-    display: grid;
-    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) minmax(0, 3fr) auto;
-    gap: var(--space-2);
-    align-items: center;
-
-    @include p.below("phone") {
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    }
+// Where the completions open: the start of the word at the cursor, in a
+// layer laid over the textarea.
+.playground-editor-caret {
+    display: inline-block;
+    line-height: inherit;
 }

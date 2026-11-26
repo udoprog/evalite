@@ -53,18 +53,7 @@ pub struct Mark {
 
 /// Compile and run `source` with `bindings` declared and bound.
 pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Done, Vec<Mark>> {
-    let mut env = Environment::with_builtins();
-
-    for binding in bindings {
-        env.value(&binding.name, binding.ty.clone())
-            .map_err(|error| {
-                vec![Mark {
-                    message: format!("`{}`: {error}", binding.name),
-                    span: None,
-                    primary: true,
-                }]
-            })?;
-    }
+    let env = environment(bindings)?;
 
     let options = Options::new().max_depth(bounds.depth);
     let (program, debug) = evalite::compile_debug(source, &env, &options)
@@ -95,6 +84,24 @@ pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Do
         steps: outcome.steps(),
         memory: outcome.memory(),
     })
+}
+
+/// The builtins, with `bindings` declared.
+pub fn environment(bindings: &[Binding]) -> Result<Environment, Vec<Mark>> {
+    let mut env = Environment::with_builtins();
+
+    for binding in bindings {
+        env.value(&binding.name, binding.ty.clone())
+            .map_err(|error| {
+                vec![Mark {
+                    message: format!("`{}`: {error}", binding.name),
+                    span: None,
+                    primary: true,
+                }]
+            })?;
+    }
+
+    Ok(env)
 }
 
 fn marks(source: &str, labels: Labels<'_>) -> Vec<Mark> {
