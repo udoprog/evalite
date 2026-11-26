@@ -17,7 +17,7 @@ use crate::*;
 /// A track as the sheet's environment declares one: a record of its
 /// boxes and how many are at each state or worse.
 pub(crate) fn track() -> Type {
-    Type::record([("boxes", Type::Int), ("count", Type::list(Type::Int))])
+    Type::record([("boxes", Type::int()), ("count", Type::list(Type::int()))])
 }
 
 /// The environment most tests compile against.
@@ -33,43 +33,46 @@ pub(crate) fn env() -> Environment {
         "primal_urge",
         "min",
     ] {
-        env.value(name, Type::Int).unwrap();
+        env.value(name, Type::int()).unwrap();
     }
 
-    env.value("flag", Type::Bool).unwrap();
-    env.value("bonus", Type::option(Type::Int)).unwrap();
-    env.value("maybe", Type::option(Type::Bool)).unwrap();
-    env.value("levels", Type::list(Type::Int)).unwrap();
-    env.value("grid", Type::list(Type::list(Type::Int)))
+    env.value("flag", Type::bool()).unwrap();
+    env.value("bonus", Type::option(Type::int())).unwrap();
+    env.value("maybe", Type::option(Type::bool())).unwrap();
+    env.value("levels", Type::list(Type::int())).unwrap();
+    env.value("grid", Type::list(Type::list(Type::int())))
         .unwrap();
-    env.value("name", Type::String).unwrap();
+    env.value("name", Type::string()).unwrap();
     env.value("health", track()).unwrap();
     env.value("tracks", Type::list(track())).unwrap();
     env.value(
         "specialties",
-        Type::record([("athletics", Type::Int), ("brawl", Type::option(Type::Int))]),
+        Type::record([
+            ("athletics", Type::int()),
+            ("brawl", Type::option(Type::int())),
+        ]),
     )
     .unwrap();
     env.value(
         "m",
         Type::record([
-            ("Brawl (bar)", Type::Int),
+            ("Brawl (bar)", Type::int()),
             ("a b", track()),
-            ("inner", Type::record([("deep", Type::Bool)])),
+            ("inner", Type::record([("deep", Type::bool())])),
         ]),
     )
     .unwrap();
     env.value("maybe_track", Type::option(track())).unwrap();
 
-    env.function("count", [track()], Type::Int).unwrap();
-    env.function("count", [track(), Type::Int], Type::Int)
+    env.function("count", [track()], Type::int()).unwrap();
+    env.function("count", [track(), Type::int()], Type::int())
         .unwrap();
-    env.function("boxes", [track()], Type::Int).unwrap();
-    env.function("lookup", [Type::Int, Type::String], Type::Int)
+    env.function("boxes", [track()], Type::int()).unwrap();
+    env.function("lookup", [Type::int(), Type::string()], Type::int())
         .unwrap();
-    env.function("label", [Type::Int], Type::option(Type::Int))
+    env.function("label", [Type::int()], Type::option(Type::int()))
         .unwrap();
-    env.function("pick", [], Type::Bool).unwrap();
+    env.function("pick", [], Type::bool()).unwrap();
     env
 }
 
@@ -775,14 +778,14 @@ fn parse_errors_pass_through() {
 
     let options = Options::new().max_depth(40);
     let program = compile_with(&deep, &env(), &options).unwrap();
-    assert_eq!(program.result_type(), Type::Int);
+    assert_eq!(program.result_type(), Type::int());
 }
 
 #[test]
 fn empty_environment() {
     let env = Environment::new();
 
-    assert_eq!(compile("1 + 2", &env).unwrap().result_type(), Type::Int);
+    assert_eq!(compile("1 + 2", &env).unwrap().result_type(), Type::int());
     assert_eq!(error_in("min(1)", &env).0, "unknown function `min`");
     assert_eq!(error_in("wits", &env).0, "unknown name `wits`");
 }
@@ -792,43 +795,46 @@ fn declarations() {
     let mut env = Environment::new();
 
     for name in ["a", "_", "_a1", "wits", "blood_potency", "x9"] {
-        assert_eq!(env.value(name, Type::Int), Ok(()), "{name}");
+        assert_eq!(env.value(name, Type::int()), Ok(()), "{name}");
     }
 
     for name in ["", "A", "Wits", "9a", "a-b", "a b", "é", "a.b"] {
         assert_eq!(
-            env.value(name, Type::Int),
+            env.value(name, Type::int()),
             Err(DeclareError::InvalidName(name.to_owned())),
             "{name}"
         );
         assert_eq!(
-            env.function(name, [], Type::Int),
+            env.function(name, [], Type::int()),
             Err(DeclareError::InvalidName(name.to_owned())),
             "{name}"
         );
     }
 
     assert_eq!(
-        env.value("x", Type::option(Type::option(Type::Int))),
+        env.value("x", Type::option(Type::option(Type::int()))),
         Err(DeclareError::NestedOption("x".to_owned()))
     );
     assert_eq!(
         env.value(
             "x",
-            Type::list(Type::record([("a", Type::option(Type::option(Type::Int)))]))
+            Type::list(Type::record([(
+                "a",
+                Type::option(Type::option(Type::int()))
+            )]))
         ),
         Err(DeclareError::NestedOption("x".to_owned()))
     );
     assert_eq!(
-        env.function("f", [Type::option(Type::option(Type::Int))], Type::Int),
+        env.function("f", [Type::option(Type::option(Type::int()))], Type::int()),
         Err(DeclareError::NestedOption("f".to_owned()))
     );
     assert_eq!(
-        env.function("f", [], Type::option(Type::option(Type::Int))),
+        env.function("f", [], Type::option(Type::option(Type::int()))),
         Err(DeclareError::NestedOption("f".to_owned()))
     );
 
-    let mut deep = Type::Int;
+    let mut deep = Type::int();
 
     for _ in 1..MAX_TYPE_DEPTH {
         deep = Type::list(deep);
@@ -863,21 +869,21 @@ fn declarations() {
 #[test]
 fn redeclaring() {
     let mut env = Environment::new();
-    env.value("a", Type::Int).unwrap();
-    env.value("a", Type::Bool).unwrap();
-    assert_eq!(env.value_type("a"), Some(&Type::Bool));
-    assert_eq!(compile("a", &env).unwrap().result_type(), Type::Bool);
+    env.value("a", Type::int()).unwrap();
+    env.value("a", Type::bool()).unwrap();
+    assert_eq!(env.value_type("a"), Some(&Type::bool()));
+    assert_eq!(compile("a", &env).unwrap().result_type(), Type::bool());
 
-    env.function("f", [Type::Int], Type::Int).unwrap();
-    env.function("f", [Type::Int], Type::Bool).unwrap();
-    assert_eq!(compile("f(1)", &env).unwrap().result_type(), Type::Bool);
+    env.function("f", [Type::int()], Type::int()).unwrap();
+    env.function("f", [Type::int()], Type::bool()).unwrap();
+    assert_eq!(compile("f(1)", &env).unwrap().result_type(), Type::bool());
     assert_eq!(
         error_in("f(true)", &env).0,
         "argument 1 of `f` must be Int, found Bool"
     );
 
-    env.function("f", [Type::Bool], Type::Int).unwrap();
-    assert_eq!(compile("f(true)", &env).unwrap().result_type(), Type::Int);
+    env.function("f", [Type::bool()], Type::int()).unwrap();
+    assert_eq!(compile("f(true)", &env).unwrap().result_type(), Type::int());
 
     // Adding a builtin twice keeps one.
     env.builtin(Builtin::Min);
@@ -888,35 +894,43 @@ fn redeclaring() {
     );
 
     // The first matching declaration wins.
-    env.function("lookup", [Type::Int, Type::list(Type::Int)], Type::Bool)
-        .unwrap();
+    env.function(
+        "lookup",
+        [Type::int(), Type::list(Type::int())],
+        Type::bool(),
+    )
+    .unwrap();
     env.builtin(Builtin::Lookup);
     assert_eq!(
         compile("lookup(1, [1])", &env).unwrap().result_type(),
-        Type::Bool
+        Type::bool()
     );
     assert_eq!(
         compile("lookup(1, [true])", &env).unwrap().result_type(),
-        Type::Bool
+        Type::bool()
     );
     assert_eq!(
         compile("lookup(1, [[1]])", &env).unwrap().result_type(),
-        Type::list(Type::Int)
+        Type::list(Type::int())
     );
 }
 
 #[test]
 fn type_display() {
     let cases = [
-        (Type::Int, "Int"),
-        (Type::list(Type::option(Type::Bool)), "List<Option<Bool>>"),
+        (Type::int(), "Int"),
+        (Type::list(Type::option(Type::bool())), "List<Option<Bool>>"),
         (Type::record::<&str>([]), "{}"),
         (
-            Type::record([("b", Type::Int), ("a", Type::String)]),
+            Type::record([("b", Type::int()), ("a", Type::string())]),
             "{a: String, b: Int}",
         ),
         (
-            Type::record([("x y", Type::Int), ("_1", Type::Int), ("1", Type::Int)]),
+            Type::record([
+                ("x y", Type::int()),
+                ("_1", Type::int()),
+                ("1", Type::int()),
+            ]),
             r#"{"1": Int, _1: Int, "x y": Int}"#,
         ),
     ];
@@ -1003,16 +1017,16 @@ fn globals_and_functions() {
         program.globals(),
         [
             ("health", track()),
-            ("wits", Type::Int),
-            ("bonus", Type::option(Type::Int)),
+            ("wits", Type::int()),
+            ("bonus", Type::option(Type::int())),
         ]
     );
 
     assert_eq!(
         program.functions(),
         [
-            ("count", vec![track()], Type::Int),
-            ("count", vec![track(), Type::Int], Type::Int),
+            ("count", vec![track()], Type::int()),
+            ("count", vec![track(), Type::int()], Type::int()),
         ]
     );
 

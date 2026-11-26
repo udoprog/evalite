@@ -66,12 +66,12 @@
 //! use evalite::{Environment, Type};
 //!
 //! let mut env = Environment::with_builtins();
-//! env.value("health", Type::record([("boxes", Type::Int)]))?;
-//! env.value("specialties", Type::record([("brawl", Type::option(Type::Int))]))?;
-//! env.function("lookup", [Type::Int, Type::String], Type::Int)?;
+//! env.value("health", Type::record([("boxes", Type::int())]))?;
+//! env.value("specialties", Type::record([("brawl", Type::option(Type::int()))]))?;
+//! env.function("lookup", [Type::int(), Type::string()], Type::int())?;
 //!
 //! let program = evalite::compile("health.boxes + specialties.brawl.unwrap_or(0)", &env)?;
-//! assert_eq!(program.result_type(), Type::Int);
+//! assert_eq!(program.result_type(), Type::int());
 //!
 //! let error = evalite::compile("lookup(1, health)", &env).unwrap_err();
 //! assert_eq!(error.to_string(), "no `lookup` takes (Int, {boxes: Int}), it takes (Int, List<T>) or (Int, String)");
@@ -108,14 +108,14 @@
 //! use evalite::{Environment, Program, Type};
 //!
 //! let mut env = Environment::with_builtins();
-//! env.value("blood_potency", Type::Int)?;
+//! env.value("blood_potency", Type::int())?;
 //!
 //! let program = evalite::compile("lookup(blood_potency, [10, 11, 12, 13])", &env)?;
-//! assert_eq!(program.memory().stack, 2);
-//! assert_eq!(program.memory().constants, 4);
+//! assert_eq!(program.memory().stack(), 2);
+//! assert_eq!(program.memory().constants(), 4);
 //!
 //! let loaded = Program::from_bytes(&program.to_bytes()?)?;
-//! assert_eq!(loaded.globals(), [("blood_potency", Type::Int)]);
+//! assert_eq!(loaded.globals(), [("blood_potency", Type::int())]);
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
 //!
@@ -149,28 +149,28 @@
 //! use evalite::{Environment, Limits, Machine, Type, Value};
 //!
 //! let mut env = Environment::with_builtins();
-//! env.value("health", Type::record([("boxes", Type::Int), ("count", Type::list(Type::Int))]))?;
-//! env.value("brawl", Type::option(Type::Int))?;
-//! env.function("lookup", [Type::Int, Type::String], Type::Int)?;
+//! env.value("health", Type::record([("boxes", Type::int()), ("count", Type::list(Type::int()))]))?;
+//! env.value("brawl", Type::option(Type::int()))?;
+//! env.function("lookup", [Type::int(), Type::string()], Type::int())?;
 //!
 //! let program = evalite::compile(r#"health.count[1] + brawl.unwrap_or(0) + lookup(1, "Essence")"#, &env)?;
 //!
 //! let mut machine = Machine::new(Limits::new().fuel(100));
 //! let mut run = machine.load(&program)?;
 //! run.bind("health", Value::record([
-//!     ("boxes", Value::Int(7)),
-//!     ("count", Value::List(vec![Value::Int(3), Value::Int(1)])),
+//!     ("boxes", Value::int(7)),
+//!     ("count", Value::list(vec![Value::int(3), Value::int(1)])),
 //! ]))?;
-//! run.bind("brawl", Value::None)?;
+//! run.bind("brawl", Value::none())?;
 //!
 //! let mut host = |name: &str, args: Vec<Value>| match (name, args.as_slice()) {
-//!     ("lookup", [Value::Int(1), Value::String(table)]) if table == "Essence" => Ok(Value::Int(10)),
+//!     ("lookup", [n, table]) if n.as_int() == Some(1) && table.as_str() == Some("Essence") => Ok(Value::int(10)),
 //!     _ => Err(format!("no function {name}")),
 //! };
 //!
 //! let outcome = run.run_with(&mut host)?;
-//! assert_eq!(outcome.value, Value::Int(11));
-//! assert_eq!(outcome.steps, 12);
+//! assert_eq!(outcome.value(), &Value::int(11));
+//! assert_eq!(outcome.steps(), 12);
 //!
 //! let error = Machine::new(Limits::new().memory(2)).load(&program).unwrap_err();
 //! assert_eq!(error.to_string(), "the program needs 8 words of memory, more than the 2 the machine allows");
@@ -249,6 +249,7 @@ mod program;
 mod structure;
 mod syntax;
 mod types;
+mod value;
 mod vm;
 mod word;
 
@@ -285,6 +286,7 @@ pub use self::structure::{
     StructureErrorKind, UnaryOp,
 };
 pub(crate) use self::syntax::Syntax;
-pub use self::types::{MAX_TYPE_DEPTH, Type};
-pub use self::vm::{DEFAULT_FUEL, DEFAULT_MEMORY, Host, Limits, Machine, Outcome, Run, Value};
+pub use self::types::{FieldTypes, MAX_TYPE_DEPTH, Type};
+pub use self::value::{Fields, Value};
+pub use self::vm::{DEFAULT_FUEL, DEFAULT_MEMORY, Host, Limits, Machine, Outcome, Run};
 pub use syntree::Span;

@@ -24,11 +24,11 @@ type N<'a> = Node<'a, Syntax, FlavorDefault>;
 /// use evalite::{Environment, Type};
 ///
 /// let mut env = Environment::with_builtins();
-/// env.value("wits", Type::Int)?;
-/// env.value("bonus", Type::option(Type::Int))?;
+/// env.value("wits", Type::int())?;
+/// env.value("bonus", Type::option(Type::int()))?;
 ///
 /// let program = evalite::compile("min(wits, 3) + bonus.unwrap_or(0)", &env)?;
-/// assert_eq!(program.result_type(), Type::Int);
+/// assert_eq!(program.result_type(), Type::int());
 ///
 /// let error = evalite::compile("wits + bonus", &env).unwrap_err();
 /// assert_eq!(
@@ -59,13 +59,13 @@ pub fn compile_with(
 /// use evalite::{Environment, Machine, Options, Type, Value};
 ///
 /// let mut env = Environment::with_builtins();
-/// env.value("bonus", Type::Int)?;
+/// env.value("bonus", Type::int())?;
 /// let source = "1 + 9223372036854775807 + bonus";
 /// let (program, debug) = evalite::compile_debug(source, &env, &Options::new())?;
 ///
 /// let mut machine = Machine::default();
 /// let mut run = machine.load(&program)?;
-/// run.bind("bonus", Value::Int(0))?;
+/// run.bind("bonus", Value::int(0))?;
 /// let error = run.run().unwrap_err();
 ///
 /// let span = error.labels(&program, Some(&debug)).next().and_then(|l| l.span());
@@ -229,7 +229,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn ty(&self, id: TypeId) -> Type {
-        self.types.to_type(id).unwrap_or(Type::Int)
+        self.types.to_type(id).unwrap_or(Type::int())
     }
 
     fn node(&mut self, node: TypeNode, at: Span<u32>) -> Result<TypeId, ParseError> {

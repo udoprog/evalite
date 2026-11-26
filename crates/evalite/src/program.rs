@@ -142,23 +142,59 @@ pub(crate) struct HostFunction {
     pub(crate) ret: TypeId,
 }
 
-/// The most memory a program uses as it runs, in 64-bit words.
+/// The most memory a program uses as it runs, in 64-bit words, from
+/// [`Program::memory`].
+///
+/// ```
+/// use evalite::{Environment, Type};
+///
+/// let mut env = Environment::new();
+/// env.value("bonus", Type::option(Type::int()))?;
+///
+/// let program = evalite::compile("[1, 2, 3][bonus.unwrap_or(0)]", &env)?;
+/// let memory = program.memory();
+/// assert_eq!(memory.globals(), 2); // an `Option<Int>` is held in two words
+/// assert_eq!(memory.constants(), 3); // the constant list's entries
+/// assert!(memory.stack() > 0);
+/// assert_eq!(memory.heap(), 0);
+/// assert_eq!(
+///     memory.total(),
+///     u64::from(memory.stack() + memory.heap() + memory.constants() + memory.globals()),
+/// );
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Encode, Decode)]
 pub struct Memory {
-    /// The deepest the stack gets.
-    pub stack: u32,
-    /// The entries of lists built as it runs.
-    pub heap: u32,
-    /// The program's constant lists and strings, copied into the machine
-    /// when the program is loaded.
-    pub constants: u32,
-    /// The values it reads, as they are held: a word each, two for an
-    /// `Option<Int>`. Their parts, such as a bound list's entries, are
-    /// the bindings' to fit in the memory left.
-    pub globals: u32,
+    pub(crate) stack: u32,
+    pub(crate) heap: u32,
+    pub(crate) constants: u32,
+    pub(crate) globals: u32,
 }
 
 impl Memory {
+    /// The deepest the stack gets.
+    pub fn stack(&self) -> u32 {
+        self.stack
+    }
+
+    /// The entries of lists built as it runs.
+    pub fn heap(&self) -> u32 {
+        self.heap
+    }
+
+    /// The program's constant lists and strings, copied into the machine
+    /// when the program is loaded.
+    pub fn constants(&self) -> u32 {
+        self.constants
+    }
+
+    /// The values it reads, as they are held: a word each, two for an
+    /// `Option<Int>`. Their parts, such as a bound list's entries, are the
+    /// bindings' to fit in the memory left.
+    pub fn globals(&self) -> u32 {
+        self.globals
+    }
+
     /// Every word, the parts of bound and returned values aside.
     pub fn total(&self) -> u64 {
         u64::from(self.stack)
@@ -266,7 +302,7 @@ impl Program {
 
     pub(crate) fn type_of(&self, id: TypeId) -> Type {
         // A program's ids are checked when it is made.
-        self.types.to_type(id).unwrap_or(Type::Int)
+        self.types.to_type(id).unwrap_or(Type::int())
     }
 
     /// The program's stored form, which [`Program::from_bytes`] reads.

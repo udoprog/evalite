@@ -3,6 +3,7 @@
 
 use crate::Type;
 use crate::program::Instr;
+use crate::types::Kind;
 use crate::types::TypeId;
 
 /// The kinds of value that have methods.
@@ -19,9 +20,9 @@ impl Receiver {
     /// The kind of `ty`, with the `T` of an option or list.
     pub(crate) fn of(ty: &Type) -> Option<(Self, Option<&Type>)> {
         match ty {
-            Type::Int => Some((Self::Int, None)),
-            Type::Option(t) => Some((Self::Option, Some(t))),
-            Type::List(t) => Some((Self::List, Some(t))),
+            Type(Kind::Int) => Some((Self::Int, None)),
+            Type(Kind::Option(t)) => Some((Self::Option, Some(t))),
+            Type(Kind::List(t)) => Some((Self::List, Some(t))),
             _ => None,
         }
     }
@@ -61,11 +62,11 @@ impl MethodSig {
     /// Its parameters' types and its result's, called on a `receiver`.
     pub(crate) fn signature(&self, receiver: &Type) -> (Vec<Type>, Type) {
         let inner = match receiver {
-            Type::Option(t) | Type::List(t) => (**t).clone(),
+            Type(Kind::Option(t)) | Type(Kind::List(t)) => (**t).clone(),
             other => other.clone(),
         };
 
-        let resolve = |slot: Slot| slot.resolve(&Type::Int, &Type::Bool, &inner);
+        let resolve = |slot: Slot| slot.resolve(&Type::int(), &Type::bool(), &inner);
         let params = self.params.iter().map(|p| resolve(*p)).collect();
         (params, resolve(self.ret))
     }

@@ -7,13 +7,31 @@ use musli::{Decode, Encode};
 /// types past it are refused, and so are stored programs.
 pub const MAX_TYPE_DEPTH: usize = 64;
 
-/// The type of a value.
+/// The type of a value: `Int`, `Bool`, `String`, `List<T>`, `Option<T>`
+/// or a record.
+///
+/// It is opaque. Build one with [`Type::int`], [`Type::bool`],
+/// [`Type::string`], [`Type::list`], [`Type::option`] and
+/// [`Type::record`], and look into one with the `is_*` and `as_*`
+/// try-accessors, which give `false` or `None` for any other type.
 ///
 /// `Option<Option<T>>` is not a type: an optional value is either absent or
 /// a `T`, so [`Environment`](crate::Environment) refuses declaring one.
+///
+/// ```
+/// use evalite::Type;
+///
+/// let health = Type::record([("boxes", Type::int()), ("count", Type::list(Type::int()))]);
+/// assert_eq!(health.to_string(), "{boxes: Int, count: List<Int>}");
+/// assert_eq!(Type::option(Type::string()).to_string(), "Option<String>");
+/// assert_ne!(Type::int(), Type::bool());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum Type {
+pub struct Type(pub(crate) Kind);
+
+/// What a [`Type`] is.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum Kind {
     /// A 64-bit signed integer.
     Int,
     /// `true` or `false`.
@@ -29,28 +47,222 @@ pub enum Type {
 }
 
 impl Type {
-    /// `List<T>`.
+    /// `Int`, a 64-bit signed integer.
+    ///
+    /// ```
+    /// assert_eq!(evalite::Type::int().to_string(), "Int");
+    /// ```
+    pub const fn int() -> Self {
+        Self(Kind::Int)
+    }
+
+    /// `Bool`, `true` or `false`.
+    ///
+    /// ```
+    /// assert_eq!(evalite::Type::bool().to_string(), "Bool");
+    /// ```
+    pub const fn bool() -> Self {
+        Self(Kind::Bool)
+    }
+
+    /// `String`, a string literal such as a library table's name.
+    ///
+    /// ```
+    /// assert_eq!(evalite::Type::string().to_string(), "String");
+    /// ```
+    pub const fn string() -> Self {
+        Self(Kind::String)
+    }
+
+    /// `List<T>`, entries of one type.
+    ///
+    /// ```
+    /// use evalite::Type;
+    ///
+    /// assert_eq!(Type::list(Type::list(Type::int())).to_string(), "List<List<Int>>");
+    /// ```
     pub fn list(entry: Type) -> Self {
-        Self::List(Box::new(entry))
+        Self(Kind::List(Box::new(entry)))
     }
 
-    /// `Option<T>`.
+    /// `Option<T>`, a value that may be absent.
+    ///
+    /// ```
+    /// use evalite::Type;
+    ///
+    /// assert_eq!(Type::option(Type::int()).to_string(), "Option<Int>");
+    /// ```
     pub fn option(value: Type) -> Self {
-        Self::Option(Box::new(value))
+        Self(Kind::Option(Box::new(value)))
     }
 
-    /// A record of these fields.
+    /// A record of these fields, read with `.name` or `["name"]`. A name
+    /// given twice keeps its last type.
+    ///
+    /// ```
+    /// use evalite::Type;
+    ///
+    /// let ty = Type::record([("boxes", Type::int()), ("Brawl (bar)", Type::option(Type::int()))]);
+    /// assert_eq!(ty.to_string(), r#"{"Brawl (bar)": Option<Int>, boxes: Int}"#);
+    /// ```
     pub fn record<K>(fields: impl IntoIterator<Item = (K, Type)>) -> Self
     where
         K: Into<String>,
     {
-        Self::Record(fields.into_iter().map(|(k, t)| (k.into(), t)).collect())
+        Self(Kind::Record(
+            fields.into_iter().map(|(k, t)| (k.into(), t)).collect(),
+        ))
+    }
+
+    /// Whether it is `Int`.
+    ///
+    /// ```
+    /// use evalite::Type;
+    ///
+    /// assert!(Type::int().is_int());
+    /// assert!(!Type::bool().is_int());
+    /// assert!(!Type::option(Type::int()).is_int());
+    /// assert!(!Type::list(Type::int()).is_int());
+    /// ```
+    pub fn is_int(&self) -> bool {
+        matches!(self.0, Kind::Int)
+    }
+
+    /// Whether it is `Bool`.
+    ///
+    /// ```
+    /// use evalite::Type;
+    ///
+    /// assert!(Type::bool().is_bool());
+    /// assert!(!Type::int().is_bool());
+    /// assert!(!Type::option(Type::bool()).is_bool());
+    /// ```
+    pub fn is_bool(&self) -> bool {
+        matches!(self.0, Kind::Bool)
+    }
+
+    /// Whether it is `String`.
+    ///
+    /// ```
+    /// use evalite::Type;
+    ///
+    /// assert!(Type::string().is_string());
+    /// assert!(!Type::int().is_string());
+    /// assert!(!Type::list(Type::string()).is_string());
+    /// ```
+    pub fn is_string(&self) -> bool {
+        matches!(self.0, Kind::String)
+    }
+
+    /// The entry type of the `List<T>` it is, or `None` if it is another
+    /// type.
+    ///
+    /// ```
+    /// use evalite::Type;
+    ///
+    /// let ty = Type::list(Type::option(Type::int()));
+    /// assert_eq!(ty.as_list(), Some(&Type::option(Type::int())));
+    /// assert_eq!(ty.as_list().and_then(Type::as_option), Some(&Type::int()));
+    ///
+    /// assert_eq!(Type::int().as_list(), None);
+    /// assert_eq!(Type::option(Type::list(Type::int())).as_list(), None);
+    /// assert_eq!(Type::record([("a", Type::list(Type::int()))]).as_list(), None);
+    /// ```
+    pub fn as_list(&self) -> Option<&Type> {
+        match &self.0 {
+            Kind::List(entry) => Some(entry),
+            _ => None,
+        }
+    }
+
+    /// The value type of the `Option<T>` it is, or `None` if it is another
+    /// type.
+    ///
+    /// ```
+    /// use evalite::Type;
+    ///
+    /// assert_eq!(Type::option(Type::bool()).as_option(), Some(&Type::bool()));
+    ///
+    /// assert_eq!(Type::bool().as_option(), None);
+    /// assert_eq!(Type::list(Type::option(Type::int())).as_option(), None);
+    /// ```
+    pub fn as_option(&self) -> Option<&Type> {
+        match &self.0 {
+            Kind::Option(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// The fields of the record it is, by name in order, or `None` if it is
+    /// another type.
+    ///
+    /// ```
+    /// use evalite::Type;
+    ///
+    /// let ty = Type::record([("count", Type::list(Type::int())), ("boxes", Type::int())]);
+    /// let fields: Vec<(&str, String)> = ty
+    ///     .as_record()
+    ///     .map(|fields| fields.map(|(name, ty)| (name, ty.to_string())).collect())
+    ///     .unwrap_or_default();
+    /// assert_eq!(fields, [("boxes", "Int".to_owned()), ("count", "List<Int>".to_owned())]);
+    ///
+    /// assert!(Type::int().as_record().is_none());
+    /// assert!(Type::option(Type::record([("a", Type::int())])).as_record().is_none());
+    /// ```
+    pub fn as_record(&self) -> Option<FieldTypes<'_>> {
+        match &self.0 {
+            Kind::Record(fields) => Some(FieldTypes {
+                iter: fields.iter(),
+            }),
+            _ => None,
+        }
     }
 
     pub(crate) fn is_option(&self) -> bool {
-        matches!(self, Self::Option(..))
+        matches!(self.0, Kind::Option(..))
     }
 }
+
+/// The fields of a record [`Type`], by name in order, from
+/// [`Type::as_record`].
+///
+/// ```
+/// use evalite::Type;
+///
+/// let ty = Type::record([("b", Type::bool()), ("a", Type::int())]);
+/// let mut fields = ty.as_record().into_iter().flatten();
+/// assert_eq!(fields.next(), Some(("a", &Type::int())));
+/// assert_eq!(fields.next(), Some(("b", &Type::bool())));
+/// assert_eq!(fields.next(), None);
+/// ```
+#[derive(Debug, Clone)]
+pub struct FieldTypes<'a> {
+    iter: std::collections::btree_map::Iter<'a, String, Type>,
+}
+
+impl<'a> Iterator for FieldTypes<'a> {
+    type Item = (&'a str, &'a Type);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (name, ty) = self.iter.next()?;
+        Some((name, ty))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+impl DoubleEndedIterator for FieldTypes<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let (name, ty) = self.iter.next_back()?;
+        Some((name, ty))
+    }
+}
+
+impl ExactSizeIterator for FieldTypes<'_> {}
+
+impl std::iter::FusedIterator for FieldTypes<'_> {}
 
 /// Whether `name` is written as a name in an expression: a lowercase
 /// letter or `_`, then lowercase letters, digits and `_`.
@@ -93,16 +305,16 @@ pub(crate) fn check_type(ty: &Type) -> Result<(), TypeFault> {
         let next = depth.saturating_add(1);
 
         match ty {
-            Type::Int | Type::Bool | Type::String => {}
-            Type::List(entry) => stack.push((entry, next)),
-            Type::Option(value) => {
+            Type(Kind::Int) | Type(Kind::Bool) | Type(Kind::String) => {}
+            Type(Kind::List(entry)) => stack.push((entry, next)),
+            Type(Kind::Option(value)) => {
                 if value.is_option() {
                     return Err(TypeFault::NestedOption);
                 }
 
                 stack.push((value, next));
             }
-            Type::Record(fields) => stack.extend(fields.values().map(|t| (t, next))),
+            Type(Kind::Record(fields)) => stack.extend(fields.values().map(|t| (t, next))),
         }
     }
 
@@ -127,20 +339,20 @@ impl fmt::Display for Type {
                 Piece::Field(name) if is_field_name(name) => write!(f, "{name}: ")?,
                 Piece::Field(name) => write!(f, "{name:?}: ")?,
                 Piece::Type(ty) => match ty {
-                    Type::Int => f.write_str("Int")?,
-                    Type::Bool => f.write_str("Bool")?,
-                    Type::String => f.write_str("String")?,
-                    Type::List(entry) => {
+                    Type(Kind::Int) => f.write_str("Int")?,
+                    Type(Kind::Bool) => f.write_str("Bool")?,
+                    Type(Kind::String) => f.write_str("String")?,
+                    Type(Kind::List(entry)) => {
                         f.write_str("List<")?;
                         stack.push(Piece::Text(">"));
                         stack.push(Piece::Type(entry));
                     }
-                    Type::Option(value) => {
+                    Type(Kind::Option(value)) => {
                         f.write_str("Option<")?;
                         stack.push(Piece::Text(">"));
                         stack.push(Piece::Type(value));
                     }
-                    Type::Record(fields) => {
+                    Type(Kind::Record(fields)) => {
                         f.write_str("{")?;
                         stack.push(Piece::Text("}"));
 
@@ -301,21 +513,21 @@ impl Types {
                     steps.push(Step::Build(ty));
 
                     match ty {
-                        Type::List(t) | Type::Option(t) => steps.push(Step::Visit(t)),
-                        Type::Record(fields) => {
+                        Type(Kind::List(t)) | Type(Kind::Option(t)) => steps.push(Step::Visit(t)),
+                        Type(Kind::Record(fields)) => {
                             steps.extend(fields.values().rev().map(Step::Visit));
                         }
-                        Type::Int | Type::Bool | Type::String => {}
+                        Type(Kind::Int) | Type(Kind::Bool) | Type(Kind::String) => {}
                     }
                 }
                 Step::Build(ty) => {
                     let node = match ty {
-                        Type::Int => TypeNode::Int,
-                        Type::Bool => TypeNode::Bool,
-                        Type::String => TypeNode::String,
-                        Type::List(_) => TypeNode::List(done.pop()?),
-                        Type::Option(_) => TypeNode::Option(done.pop()?),
-                        Type::Record(fields) => {
+                        Type(Kind::Int) => TypeNode::Int,
+                        Type(Kind::Bool) => TypeNode::Bool,
+                        Type(Kind::String) => TypeNode::String,
+                        Type(Kind::List(_)) => TypeNode::List(done.pop()?),
+                        Type(Kind::Option(_)) => TypeNode::Option(done.pop()?),
+                        Type(Kind::Record(fields)) => {
                             let at = done.len().checked_sub(fields.len())?;
                             let ids = done.split_off(at);
 
@@ -364,9 +576,9 @@ impl Types {
             }
 
             let ty = match self.nodes.get(at)? {
-                TypeNode::Int => Type::Int,
-                TypeNode::Bool => Type::Bool,
-                TypeNode::String => Type::String,
+                TypeNode::Int => Type::int(),
+                TypeNode::Bool => Type::bool(),
+                TypeNode::String => Type::string(),
                 TypeNode::List(t) => Type::list(built.get(&t.index())?.clone()),
                 TypeNode::Option(t) => Type::option(built.get(&t.index())?.clone()),
                 TypeNode::Record(fields) => {
@@ -376,7 +588,7 @@ impl Types {
                         record.insert(field.name.clone(), built.get(&field.ty.index())?.clone());
                     }
 
-                    Type::Record(record)
+                    Type::record(record)
                 }
             };
 

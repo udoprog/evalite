@@ -3,6 +3,7 @@ use std::fmt;
 use syntree::Span;
 
 use crate::message::Labels;
+use crate::types::Kind;
 use crate::{Syntax, Type};
 
 /// Why text is not an expression of its environment, and where: a syntax
@@ -16,7 +17,7 @@ use crate::{Syntax, Type};
 /// use evalite::{Environment, Type};
 ///
 /// let mut env = Environment::with_builtins();
-/// env.value("strength", Type::Int)?;
+/// env.value("strength", Type::int())?;
 ///
 /// let error = evalite::compile("strength + true", &env).unwrap_err();
 /// assert_eq!(error.to_string(), "`+` takes Int and Int, found Int and Bool");
@@ -84,7 +85,7 @@ impl ParseError {
     /// use evalite::{Environment, Type};
     ///
     /// let mut env = Environment::with_builtins();
-    /// env.value("skills", Type::list(Type::Int))?;
+    /// env.value("skills", Type::list(Type::int()))?;
     ///
     /// let error = evalite::compile("skills[true]", &env).unwrap_err();
     /// let labels: Vec<_> = error.labels().map(|l| (l.message().to_string(), l.span().map(|s| s.range()))).collect();
@@ -522,7 +523,7 @@ impl fmt::Display for ParseError {
                 write!(f, "{receiver} has no method `{method}`")?;
 
                 match receiver {
-                    Type::Option(..) if !available.contains(&method.as_str()) => {
+                    Type(Kind::Option(..)) if !available.contains(&method.as_str()) => {
                         f.write_str(", unwrap the optional value first with `.unwrap_or(...)`")
                     }
                     _ if available.is_empty() => f.write_str(", it has no methods"),

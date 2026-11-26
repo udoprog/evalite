@@ -144,19 +144,19 @@ impl Session<'_> {
 
         let outcome = run.run().map_err(failed)?;
         let ty = program.result_type();
-        let mut out = format!("{} : {ty}", outcome.value);
+        let mut out = format!("{} : {ty}", outcome.value());
 
         if self.cli.explain {
             let memory = program.memory();
             out.push_str(&format!(
                 "\ntype: {ty}\nmemory: {} words at most (stack {}, heap {}, constants {}, values read {}), {} used\nsteps: {}",
                 memory.total(),
-                memory.stack,
-                memory.heap,
-                memory.constants,
-                memory.globals,
-                outcome.memory,
-                outcome.steps,
+                memory.stack(),
+                memory.heap(),
+                memory.constants(),
+                memory.globals(),
+                outcome.memory(),
+                outcome.steps(),
             ));
         }
 

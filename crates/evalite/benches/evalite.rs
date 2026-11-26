@@ -66,34 +66,34 @@ fn env() -> Environment {
     let mut env = Environment::with_builtins();
 
     for name in ATTRIBUTES.iter().chain(&SKILLS) {
-        env.value(name, Type::Int).unwrap();
+        env.value(name, Type::int()).unwrap();
     }
 
     for n in 0..BONUSES {
-        env.value(&format!("bonus_{n}"), Type::option(Type::Int))
+        env.value(&format!("bonus_{n}"), Type::option(Type::int()))
             .unwrap();
     }
 
     env.value(
         "specialties",
-        Type::record(SKILLS.map(|s| (s, Type::option(Type::Int)))),
+        Type::record(SKILLS.map(|s| (s, Type::option(Type::int())))),
     )
     .unwrap();
 
-    let track = || Type::record([("boxes", Type::Int), ("count", Type::list(Type::Int))]);
+    let track = || Type::record([("boxes", Type::int()), ("count", Type::list(Type::int()))]);
 
     env.value("health", track()).unwrap();
     env.value("willpower", track()).unwrap();
     env.value("vitae", track()).unwrap();
-    env.value("blood_potency", Type::Int).unwrap();
-    env.value("humanity", Type::Int).unwrap();
-    env.value("size", Type::Int).unwrap();
-    env.value("armor", Type::option(Type::Int)).unwrap();
-    env.value("merits", Type::list(Type::option(Type::Int)))
+    env.value("blood_potency", Type::int()).unwrap();
+    env.value("humanity", Type::int()).unwrap();
+    env.value("size", Type::int()).unwrap();
+    env.value("armor", Type::option(Type::int())).unwrap();
+    env.value("merits", Type::list(Type::option(Type::int())))
         .unwrap();
-    env.value("feeding", Type::list(Type::Int)).unwrap();
-    env.value("table", Type::list(Type::Int)).unwrap();
-    env.function("lookup", [Type::Int, Type::String], Type::Int)
+    env.value("feeding", Type::list(Type::int())).unwrap();
+    env.value("table", Type::list(Type::int())).unwrap();
+    env.function("lookup", [Type::int(), Type::string()], Type::int())
         .unwrap();
     env
 }
@@ -103,18 +103,18 @@ fn values() -> BTreeMap<String, Value> {
     let mut values = BTreeMap::new();
 
     for (n, name) in ATTRIBUTES.iter().enumerate() {
-        values.insert((*name).to_owned(), Value::Int(1 + n as i64 % 5));
+        values.insert((*name).to_owned(), Value::int(1 + n as i64 % 5));
     }
 
     for (n, name) in SKILLS.iter().enumerate() {
-        values.insert((*name).to_owned(), Value::Int(n as i64 % 4));
+        values.insert((*name).to_owned(), Value::int(n as i64 % 4));
     }
 
     let some_or_none = |n: usize| {
         if n.is_multiple_of(3) {
-            Value::None
+            Value::none()
         } else {
-            Value::some(Value::Int(n as i64 % 3))
+            Value::some(Value::int(n as i64 % 3))
         }
     };
 
@@ -134,10 +134,10 @@ fn values() -> BTreeMap<String, Value> {
 
     let track = |boxes: i64| {
         Value::record([
-            ("boxes", Value::Int(boxes)),
+            ("boxes", Value::int(boxes)),
             (
                 "count",
-                Value::List(vec![Value::Int(boxes - 2), Value::Int(1), Value::Int(1)]),
+                Value::list(vec![Value::int(boxes - 2), Value::int(1), Value::int(1)]),
             ),
         ])
     };
@@ -145,21 +145,18 @@ fn values() -> BTreeMap<String, Value> {
     values.insert("health".to_owned(), track(7));
     values.insert("willpower".to_owned(), track(5));
     values.insert("vitae".to_owned(), track(10));
-    values.insert("blood_potency".to_owned(), Value::Int(2));
-    values.insert("humanity".to_owned(), Value::Int(7));
-    values.insert("size".to_owned(), Value::Int(5));
-    values.insert("armor".to_owned(), Value::some(Value::Int(1)));
+    values.insert("blood_potency".to_owned(), Value::int(2));
+    values.insert("humanity".to_owned(), Value::int(7));
+    values.insert("size".to_owned(), Value::int(5));
+    values.insert("armor".to_owned(), Value::some(Value::int(1)));
     values.insert(
         "merits".to_owned(),
-        Value::List((0..MERITS).map(some_or_none).collect()),
+        Value::list((0..MERITS).map(some_or_none)),
     );
-    values.insert(
-        "feeding".to_owned(),
-        Value::List((0..11).map(Value::Int).collect()),
-    );
+    values.insert("feeding".to_owned(), Value::list((0..11).map(Value::int)));
     values.insert(
         "table".to_owned(),
-        Value::List((0..64).map(|n| Value::Int(n * 3)).collect()),
+        Value::list((0..64).map(|n| Value::int(n * 3))),
     );
     values
 }
@@ -167,7 +164,10 @@ fn values() -> BTreeMap<String, Value> {
 /// The caller's `lookup(Int, String)`: a named library table.
 fn host(name: &str, args: Vec<Value>) -> Result<Value, String> {
     match (name, args.as_slice()) {
-        ("lookup", [Value::Int(n), Value::String(_)]) => Ok(Value::Int(n * 2)),
+        ("lookup", [n, table]) => match (n.as_int(), table.as_str()) {
+            (Some(n), Some(_)) => Ok(Value::int(n * 2)),
+            _ => Err(format!("wrong arguments to {name}")),
+        },
         _ => Err(format!("no function {name}")),
     }
 }
@@ -342,7 +342,7 @@ fn prepare(source: &str, env: &Environment, values: &BTreeMap<String, Value>) ->
     // Every benchmark must run within the default limits.
     let mut machine = Machine::new(Limits::new());
     let outcome = evaluate(&mut machine, &prepared);
-    assert!(outcome.steps <= DEFAULT_FUEL, "{source}");
+    assert!(outcome.steps() <= DEFAULT_FUEL, "{source}");
     prepared
 }
 

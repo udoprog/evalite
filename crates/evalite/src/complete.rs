@@ -11,6 +11,7 @@ use crate::structure::{
     BinaryOp, EditError, HOLE, Node, NodeId, Structure, StructureError, UnaryOp, escape,
     is_reserved,
 };
+use crate::types::Kind;
 use crate::types::is_field_name;
 
 /// Types are walked at most this many steps when looking for a way to
@@ -117,11 +118,11 @@ impl Want {
             Self::Any => true,
             Self::OneOf(patterns) => patterns.iter().any(|p| match p {
                 Pattern::Type(t) => t == ty,
-                Pattern::List => matches!(ty, Type::List(_)),
-                Pattern::Record => matches!(ty, Type::Record(_)),
+                Pattern::List => matches!(ty, Type(Kind::List(_))),
+                Pattern::Record => matches!(ty, Type(Kind::Record(_))),
                 Pattern::Method(name) => receiver_methods(ty).any(|m| m.name == name),
                 Pattern::Field(name) => {
-                    matches!(ty, Type::Record(fields) if fields.contains_key(name))
+                    matches!(ty, Type(Kind::Record(fields)) if fields.contains_key(name))
                 }
             }),
         }
@@ -150,8 +151,8 @@ impl Want {
             }
 
             match &ty {
-                Type::Record(fields) => stack.extend(fields.values().cloned()),
-                Type::List(entry) => stack.push((**entry).clone()),
+                Type(Kind::Record(fields)) => stack.extend(fields.values().cloned()),
+                Type(Kind::List(entry)) => stack.push((**entry).clone()),
                 _ => {}
             }
 
@@ -177,7 +178,7 @@ impl Want {
                 patterns
                     .into_iter()
                     .filter_map(|p| match p {
-                        Pattern::Type(Type::List(t)) => Some(Pattern::Type(*t)),
+                        Pattern::Type(Type(Kind::List(t))) => Some(Pattern::Type(*t)),
                         _ => None,
                     })
                     .collect(),
@@ -234,7 +235,7 @@ impl Structure {
     /// use evalite::{Environment, Insert, Structure, Type};
     ///
     /// let mut env = Environment::with_builtins();
-    /// env.value("bonus", Type::option(Type::Int))?;
+    /// env.value("bonus", Type::option(Type::int()))?;
     ///
     /// let mut s = Structure::from_text("1 + bonus._")?;
     /// let hole = s.holes()[0];
@@ -365,24 +366,24 @@ impl Structure {
             break match node {
                 Node::Unary {
                     op: UnaryOp::Neg, ..
-                } => Want::exactly(Type::Int),
+                } => Want::exactly(Type::int()),
                 Node::Unary {
                     op: UnaryOp::Not, ..
-                } => Want::exactly(Type::Bool),
+                } => Want::exactly(Type::bool()),
                 Node::Binary { op, left, right } => match op {
-                    BinaryOp::And | BinaryOp::Or => Want::exactly(Type::Bool),
+                    BinaryOp::And | BinaryOp::Or => Want::exactly(Type::bool()),
                     BinaryOp::Eq | BinaryOp::Ne => {
                         let other = if *left == at { *right } else { *left };
 
                         match self.type_of(env, other) {
-                            Some(ty @ (Type::Int | Type::Bool)) => Want::exactly(ty),
+                            Some(ty @ (Type(Kind::Int) | Type(Kind::Bool))) => Want::exactly(ty),
                             _ => Want::OneOf(vec![
-                                Pattern::Type(Type::Int),
-                                Pattern::Type(Type::Bool),
+                                Pattern::Type(Type::int()),
+                                Pattern::Type(Type::bool()),
                             ]),
                         }
                     }
-                    _ => Want::exactly(Type::Int),
+                    _ => Want::exactly(Type::int()),
                 },
                 Node::Call { function, args } => self.argument(env, function, args, at),
                 Node::Method {
@@ -421,8 +422,8 @@ impl Structure {
                 }
                 Node::Index { receiver, index } if *index == at => {
                     match self.type_of(env, *receiver) {
-                        Some(Type::List(_)) => Want::exactly(Type::Int),
-                        Some(Type::Record(_)) => Want::exactly(Type::String),
+                        Some(Type(Kind::List(_))) => Want::exactly(Type(Kind::Int)),
+                        Some(Type(Kind::Record(_))) => Want::exactly(Type(Kind::String)),
                         _ => Want::Any,
                     }
                 }
@@ -476,16 +477,16 @@ impl Structure {
         for overload in overloads {
             match overload {
                 Overload::Builtin(Builtin::Min | Builtin::Max) => {
-                    if (0..args.len()).all(|i| fits(i, &|t| *t == Type::Int)) {
-                        want.push(Pattern::Type(Type::Int));
+                    if (0..args.len()).all(|i| fits(i, &|t| *t == Type::int())) {
+                        want.push(Pattern::Type(Type::int()));
                     }
                 }
                 Overload::Builtin(Builtin::Lookup) => {
-                    let list = |t: &Type| matches!(t, Type::List(_));
+                    let list = |t: &Type| matches!(t, Type(Kind::List(_)));
 
-                    if args.len() == 2 && fits(0, &|t| *t == Type::Int) && fits(1, &list) {
+                    if args.len() == 2 && fits(0, &|t| *t == Type::int()) && fits(1, &list) {
                         want.push(match n {
-                            0 => Pattern::Type(Type::Int),
+                            0 => Pattern::Type(Type::int()),
                             _ => Pattern::List,
                         });
                     }
@@ -516,7 +517,7 @@ impl Structure {
         let record = match self.parent(at).and_then(|p| self.get(p)) {
             Some(Node::Index { receiver, index }) if *index == at => {
                 match self.type_of(env, *receiver) {
-                    Some(Type::Record(fields)) => Some(fields),
+                    Some(Type(Kind::Record(fields))) => Some(fields),
                     _ => None,
                 }
             }
@@ -527,7 +528,12 @@ impl Structure {
             for name in fields.keys() {
                 let mut label = String::new();
                 escape(&mut label, name);
-                expr(&mut out, label, CompletionKind::Literal, Some(Type::String));
+                expr(
+                    &mut out,
+                    label,
+                    CompletionKind::Literal,
+                    Some(Type::string()),
+                );
             }
 
             return out;
@@ -540,7 +546,7 @@ impl Structure {
         for (name, overloads) in &env.functions {
             for overload in overloads {
                 let (arity, ret) = match overload {
-                    Overload::Builtin(Builtin::Min | Builtin::Max) => (2, Some(Type::Int)),
+                    Overload::Builtin(Builtin::Min | Builtin::Max) => (2, Some(Type::int())),
                     Overload::Builtin(Builtin::Lookup) => (2, None),
                     Overload::Host { params, ret } => (params.len(), Some(ret.clone())),
                 };
@@ -553,10 +559,10 @@ impl Structure {
         }
 
         let literals = [
-            ("0", Type::Int),
-            ("true", Type::Bool),
-            ("false", Type::Bool),
-            ("\"\"", Type::String),
+            ("0", Type::int()),
+            ("true", Type::bool()),
+            ("false", Type::bool()),
+            ("\"\"", Type::string()),
         ];
 
         for (label, ty) in literals {
@@ -573,7 +579,7 @@ impl Structure {
         let list = match want {
             Want::Any => Some(None),
             Want::OneOf(patterns) => patterns.iter().find_map(|p| match p {
-                Pattern::Type(ty @ Type::List(_)) => Some(Some(ty.clone())),
+                Pattern::Type(ty @ Type(Kind::List(_))) => Some(Some(ty.clone())),
                 Pattern::List => Some(None),
                 _ => None,
             }),
@@ -585,7 +591,7 @@ impl Structure {
 
         let operators = [
             (
-                Type::Int,
+                Type::int(),
                 &[
                     BinaryOp::Add,
                     BinaryOp::Sub,
@@ -596,7 +602,7 @@ impl Structure {
                 UnaryOp::Neg,
             ),
             (
-                Type::Bool,
+                Type::bool(),
                 &[
                     BinaryOp::Eq,
                     BinaryOp::Ne,
@@ -675,14 +681,14 @@ fn paths(out: &mut Vec<Completion>, name: &str, ty: &Type, want: &Want) {
         let mut next = Vec::new();
 
         match &ty {
-            Type::Record(fields) => {
+            Type(Kind::Record(fields)) => {
                 for (field, ty) in fields {
                     if want.reachable(ty) {
                         next.push((format!("{path}{}", member(field)), ty.clone()));
                     }
                 }
             }
-            Type::List(entry) if want.reachable(entry) => {
+            Type(Kind::List(entry)) if want.reachable(entry) => {
                 next.push((format!("{path}[{HOLE}]"), (**entry).clone()));
             }
             _ => {}
@@ -709,7 +715,7 @@ fn member(name: &str) -> String {
 fn members(receiver: &Type, want: &Want) -> Vec<Completion> {
     let mut out = Vec::new();
 
-    if let Type::Record(fields) = receiver {
+    if let Type(Kind::Record(fields)) = receiver {
         for (name, ty) in fields {
             if want.reachable(ty) {
                 let label = member(name);

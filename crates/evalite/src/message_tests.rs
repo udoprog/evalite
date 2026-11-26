@@ -17,14 +17,14 @@ use crate::*;
 
 fn env() -> Environment {
     let mut env = Environment::with_builtins();
-    env.value("strength", Type::Int).unwrap();
+    env.value("strength", Type::int()).unwrap();
     env.value(
         "health",
-        Type::record([("boxes", Type::Int), ("count", Type::list(Type::Int))]),
+        Type::record([("boxes", Type::int()), ("count", Type::list(Type::int()))]),
     )
     .unwrap();
-    env.value("bonus", Type::option(Type::Int)).unwrap();
-    env.function("count", [Type::Int], Type::record([("n", Type::Int)]))
+    env.value("bonus", Type::option(Type::int())).unwrap();
+    env.function("count", [Type::int()], Type::record([("n", Type::int())]))
         .unwrap();
     env
 }
@@ -428,8 +428,8 @@ fn mistyped_nested_binding_gives_path_then_binding() {
         .bind(
             "health",
             Value::record([
-                ("boxes", Value::Int(1)),
-                ("count", Value::List(vec![Value::Int(1), Value::Bool(true)])),
+                ("boxes", Value::int(1)),
+                ("count", Value::list(vec![Value::int(1), Value::bool(true)])),
             ]),
         )
         .unwrap_err();
@@ -448,14 +448,14 @@ fn mistyped_nested_binding_gives_path_then_binding() {
     );
 
     // A whole value of the wrong type has no path.
-    let error = run.bind("strength", Value::None).unwrap_err();
+    let error = run.bind("strength", Value::none()).unwrap_err();
     assert_eq!(
         messages(&error, &program),
         ["expected Int, found none", "while binding `strength`"]
     );
 
     let error = run
-        .bind("bonus", Value::some(Value::Bool(true)))
+        .bind("bonus", Value::some(Value::bool(true)))
         .unwrap_err();
     assert_eq!(
         messages(&error, &program),
@@ -465,7 +465,7 @@ fn mistyped_nested_binding_gives_path_then_binding() {
         ]
     );
 
-    let error = run.bind("nothing", Value::Int(1)).unwrap_err();
+    let error = run.bind("nothing", Value::int(1)).unwrap_err();
     assert_eq!(
         messages(&error, &program),
         ["the program reads no value of that name"]
@@ -480,7 +480,7 @@ fn mistyped_host_result_gives_path_function_then_instruction() {
     let mut machine = Machine::default();
     let run = machine.load(&program).unwrap();
 
-    let mut host = |_: &str, _: Vec<Value>| Ok(Value::record([("n", Value::Bool(false))]));
+    let mut host = |_: &str, _: Vec<Value>| Ok(Value::record([("n", Value::bool(false))]));
     let error = run.run_with(&mut host).unwrap_err();
 
     assert_eq!(
@@ -501,7 +501,7 @@ fn mistyped_host_result_gives_path_function_then_instruction() {
     );
 
     let run = machine.load(&program).unwrap();
-    let mut host = |_: &str, _: Vec<Value>| Ok(Value::Int(1));
+    let mut host = |_: &str, _: Vec<Value>| Ok(Value::int(1));
     let error = run.run_with(&mut host).unwrap_err();
     assert_eq!(
         messages(&error, &program),
@@ -583,12 +583,12 @@ fn runtime_errors_give_instruction_then_running() {
 
         for (name, _) in run.globals() {
             let value = match name {
-                "strength" => Value::Int(2),
+                "strength" => Value::int(2),
                 "health" => Value::record([
-                    ("boxes", Value::Int(1)),
-                    ("count", Value::List(vec![Value::Int(1)])),
+                    ("boxes", Value::int(1)),
+                    ("count", Value::list(vec![Value::int(1)])),
                 ]),
-                _ => Value::None,
+                _ => Value::none(),
             };
 
             run.bind(name, value).unwrap();
@@ -686,8 +686,8 @@ fn load_and_unbound_errors_have_context() {
     );
 
     let mut run = machine.load(&program).unwrap();
-    run.bind("strength", Value::Int(1)).unwrap();
-    let error = run.bind("strength", Value::Int(1)).unwrap_err();
+    run.bind("strength", Value::int(1)).unwrap();
+    let error = run.bind("strength", Value::int(1)).unwrap_err();
     assert_eq!(
         messages(&error, &program),
         ["`strength` is already bound", "while binding `strength`"]
@@ -703,7 +703,7 @@ fn structural_compile_spans_point_into_its_text() {
 
     let mut machine = Machine::default();
     let mut run = machine.load(&program).unwrap();
-    run.bind("strength", Value::Int(2)).unwrap();
+    run.bind("strength", Value::int(2)).unwrap();
     let error = run.run().unwrap_err();
 
     let got = labels(&error, &program, Some(&debug), &text);

@@ -9,6 +9,8 @@
     clippy::arithmetic_side_effects
 )]
 
+use crate::types::Kind;
+use crate::value::Repr;
 use std::collections::HashSet;
 use std::mem::discriminant;
 
@@ -22,8 +24,8 @@ use crate::*;
 /// A track of `boxes` boxes, `boxes` of them at the first state.
 fn track(boxes: i64) -> Value {
     Value::record([
-        ("boxes", Value::Int(boxes)),
-        ("count", Value::List(vec![Value::Int(boxes)])),
+        ("boxes", Value::int(boxes)),
+        ("count", Value::list(vec![Value::int(boxes)])),
     ])
 }
 
@@ -31,42 +33,42 @@ fn track(boxes: i64) -> Value {
 /// take.
 fn binding(name: &str) -> (Value, usize) {
     match name {
-        "wits" => (Value::Int(2), 0),
-        "dexterity" => (Value::Int(3), 0),
-        "athletics" => (Value::Int(1), 0),
-        "strength" => (Value::Int(4), 0),
-        "blood_potency" => (Value::Int(2), 0),
-        "primal_urge" => (Value::Int(1), 0),
-        "min" => (Value::Int(5), 0),
-        "flag" => (Value::Bool(true), 0),
-        "bonus" => (Value::some(Value::Int(2)), 0),
-        "maybe" => (Value::None, 0),
+        "wits" => (Value::int(2), 0),
+        "dexterity" => (Value::int(3), 0),
+        "athletics" => (Value::int(1), 0),
+        "strength" => (Value::int(4), 0),
+        "blood_potency" => (Value::int(2), 0),
+        "primal_urge" => (Value::int(1), 0),
+        "min" => (Value::int(5), 0),
+        "flag" => (Value::bool(true), 0),
+        "bonus" => (Value::some(Value::int(2)), 0),
+        "maybe" => (Value::none(), 0),
         "levels" => (
-            Value::List(vec![Value::Int(10), Value::Int(20), Value::Int(30)]),
+            Value::list(vec![Value::int(10), Value::int(20), Value::int(30)]),
             3,
         ),
         "grid" => (
-            Value::List(vec![
-                Value::List(vec![Value::Int(1), Value::Int(2)]),
-                Value::List(vec![Value::Int(3)]),
+            Value::list(vec![
+                Value::list(vec![Value::int(1), Value::int(2)]),
+                Value::list(vec![Value::int(3)]),
             ]),
             5,
         ),
         "name" => (Value::from("Essence"), 1),
         "health" => (track(1), 3),
-        "tracks" => (Value::List(vec![track(2), track(3)]), 8),
+        "tracks" => (Value::list(vec![track(2), track(3)]), 8),
         "specialties" => (
             Value::record([
-                ("athletics", Value::Int(2)),
-                ("brawl", Value::some(Value::Int(1))),
+                ("athletics", Value::int(2)),
+                ("brawl", Value::some(Value::int(1))),
             ]),
             3,
         ),
         "m" => (
             Value::record([
-                ("Brawl (bar)", Value::Int(4)),
+                ("Brawl (bar)", Value::int(4)),
                 ("a b", track(4)),
-                ("inner", Value::record([("deep", Value::Bool(false))])),
+                ("inner", Value::record([("deep", Value::bool(false))])),
             ]),
             7,
         ),
@@ -80,16 +82,16 @@ fn binding(name: &str) -> (Value, usize) {
 /// even `i`, `pick()` is `true`.
 fn host(name: &str, args: Vec<Value>) -> Result<Value, String> {
     Ok(match (name, args.as_slice()) {
-        ("count", [Value::Record(t)]) => t["boxes"].clone(),
-        ("count", [Value::Record(_), Value::Int(n)]) => Value::Int(*n),
-        ("boxes", [Value::Record(_)]) => Value::Int(5),
-        ("lookup", [Value::Int(i), Value::String(table)]) => {
+        ("count", [Value(Repr::Record(t))]) => t["boxes"].clone(),
+        ("count", [Value(Repr::Record(_)), Value(Repr::Int(n))]) => Value::int(*n),
+        ("boxes", [Value(Repr::Record(_))]) => Value::int(5),
+        ("lookup", [Value(Repr::Int(i)), Value(Repr::String(table))]) => {
             assert_eq!(table, "Essence");
-            Value::Int(*i)
+            Value::int(*i)
         }
-        ("label", [Value::Int(i)]) if i % 2 == 0 => Value::some(Value::Int(*i)),
-        ("label", [Value::Int(_)]) => Value::None,
-        ("pick", []) => Value::Bool(true),
+        ("label", [Value(Repr::Int(i))]) if i % 2 == 0 => Value::some(Value::int(*i)),
+        ("label", [Value(Repr::Int(_))]) => Value::none(),
+        ("pick", []) => Value::bool(true),
         _ => return Err(format!("unexpected call {name}{args:?}")),
     })
 }
@@ -101,11 +103,11 @@ fn compile_in(source: &str, extra: &[(&str, Type, Value)]) -> Program {
         env.value(name, ty.clone()).unwrap();
     }
 
-    env.function("fail", [], Type::Int).unwrap();
-    env.function("wrong", [], Type::Int).unwrap();
-    env.function("nested", [], Type::list(Type::record([("a", Type::Int)])))
+    env.function("fail", [], Type::int()).unwrap();
+    env.function("wrong", [], Type::int()).unwrap();
+    env.function("nested", [], Type::list(Type::record([("a", Type::int())])))
         .unwrap();
-    env.function("many", [Type::Int], Type::list(Type::Int))
+    env.function("many", [Type::int()], Type::list(Type::int()))
         .unwrap();
 
     compile(source, &env).unwrap_or_else(|e| panic!("{source:?}: {e}"))
@@ -115,12 +117,12 @@ fn compile_in(source: &str, extra: &[(&str, Type, Value)]) -> Program {
 fn test_host(name: &str, args: Vec<Value>) -> Result<Value, String> {
     match (name, args.as_slice()) {
         ("fail", []) => Err("the track is gone".to_owned()),
-        ("wrong", []) => Ok(Value::Bool(true)),
-        ("nested", []) => Ok(Value::List(vec![
-            Value::record([("a", Value::Int(1))]),
-            Value::record([("a", Value::None)]),
+        ("wrong", []) => Ok(Value::bool(true)),
+        ("nested", []) => Ok(Value::list(vec![
+            Value::record([("a", Value::int(1))]),
+            Value::record([("a", Value::none())]),
         ])),
-        ("many", [Value::Int(n)]) => Ok(Value::List(vec![Value::Int(0); *n as usize])),
+        ("many", [Value(Repr::Int(n))]) => Ok(Value::list(vec![Value::int(0); *n as usize])),
         _ => host(name, args),
     }
 }
@@ -207,11 +209,11 @@ fn fails(source: &str) -> String {
 }
 
 fn int(n: i64) -> Value {
-    Value::Int(n)
+    Value::int(n)
 }
 
 fn ints(ns: &[i64]) -> Value {
-    Value::List(ns.iter().map(|n| Value::Int(*n)).collect())
+    Value::list(ns.iter().map(|n| Value::int(*n)))
 }
 
 /// One or more expressions per instruction, with what each gives.
@@ -412,12 +414,12 @@ fn every_instruction_is_covered() {
 fn values_come_back_whole() {
     // Lists of strings, options and records survive the round trip
     // through memory, whether constant, bound, built or returned.
-    let list = Value::List(vec![
+    let list = Value::list(vec![
         Value::from("a"),
         Value::from("bcdefghij"),
         Value::from(""),
     ]);
-    let extra = [("words", Type::list(Type::String), list.clone())];
+    let extra = [("words", Type::list(Type::string()), list.clone())];
     assert_eq!(eval_in("words", &extra, Limits::new()).unwrap().value, list);
     assert_eq!(
         eval_in("[words, words][1]", &extra, Limits::new())
@@ -427,7 +429,7 @@ fn values_come_back_whole() {
     );
 
     let unicode = Value::from("Ærø \"é\" \\ 🐉 and some more bytes");
-    let extra = [("s", Type::String, unicode.clone())];
+    let extra = [("s", Type::string(), unicode.clone())];
     assert_eq!(eval_in("s", &extra, Limits::new()).unwrap().value, unicode);
     assert_eq!(
         unicode.to_string(),
@@ -435,7 +437,7 @@ fn values_come_back_whole() {
     );
 
     let option_list = Value::some(ints(&[1, 2]));
-    let extra = [("ol", Type::option(Type::list(Type::Int)), option_list)];
+    let extra = [("ol", Type::option(Type::list(Type::int())), option_list)];
     assert_eq!(
         eval_in("ol.unwrap_or([9])", &extra, Limits::new())
             .unwrap()
@@ -443,7 +445,7 @@ fn values_come_back_whole() {
         ints(&[1, 2])
     );
 
-    let extra = [("ol", Type::option(Type::list(Type::Int)), Value::None)];
+    let extra = [("ol", Type::option(Type::list(Type::int())), Value::none())];
     assert_eq!(
         eval_in("ol.unwrap_or([9])[0]", &extra, Limits::new())
             .unwrap()
@@ -451,7 +453,7 @@ fn values_come_back_whole() {
         int(9)
     );
 
-    let empty = [("e", Type::list(Type::Int), ints(&[]))];
+    let empty = [("e", Type::list(Type::int()), ints(&[]))];
     assert_eq!(
         eval_in("e.len()", &empty, Limits::new()).unwrap().value,
         int(0)
@@ -462,20 +464,20 @@ fn values_come_back_whole() {
 fn options() {
     // Every way an option is made, and every way it is used.
     let cases: &[(&str, Value, &str)] = &[
-        ("o.unwrap_or(7)", Value::None, "7"),
+        ("o.unwrap_or(7)", Value::none(), "7"),
         ("o.unwrap_or(7)", Value::some(int(3)), "3"),
-        ("o.is_some()", Value::None, "false"),
+        ("o.is_some()", Value::none(), "false"),
         ("o.is_some()", Value::some(int(3)), "true"),
-        ("o.is_none()", Value::None, "true"),
+        ("o.is_none()", Value::none(), "true"),
         ("o.is_none()", Value::some(int(3)), "false"),
-        ("o", Value::None, "none"),
+        ("o", Value::none(), "none"),
         ("o", Value::some(int(3)), "some(3)"),
         ("[o, o][0]", Value::some(int(0)), "some(0)"),
-        ("o.unwrap_or(-1).max(0)", Value::None, "0"),
+        ("o.unwrap_or(-1).max(0)", Value::none(), "0"),
     ];
 
     for (source, value, expected) in cases {
-        let extra = [("o", Type::option(Type::Int), value.clone())];
+        let extra = [("o", Type::option(Type::int()), value.clone())];
         let outcome = eval_in(source, &extra, Limits::new()).unwrap();
         assert_eq!(
             outcome.value.to_string(),
@@ -485,11 +487,11 @@ fn options() {
     }
 
     // An option of a record, and a record's optional field.
-    let ty = Type::option(Type::record([("x", Type::option(Type::Int))]));
+    let ty = Type::option(Type::record([("x", Type::option(Type::int()))]));
     let extra = [(
         "r",
         ty.clone(),
-        Value::some(Value::record([("x", Value::None)])),
+        Value::some(Value::record([("x", Value::none())])),
     )];
     assert_eq!(
         eval_in("r", &extra, Limits::new())
@@ -500,19 +502,19 @@ fn options() {
     );
     assert_eq!(
         eval_in("r.is_some()", &extra, Limits::new()).unwrap().value,
-        Value::Bool(true)
+        Value::bool(true)
     );
 
     // Options from the caller's functions.
-    assert_eq!(eval("label(2).is_some()"), Value::Bool(true));
-    assert_eq!(eval("label(1).is_none()"), Value::Bool(true));
+    assert_eq!(eval("label(2).is_some()"), Value::bool(true));
+    assert_eq!(eval("label(1).is_none()"), Value::bool(true));
 }
 
 #[test]
 fn arithmetic_errors() {
     let big = [
-        ("big", Type::Int, int(i64::MAX)),
-        ("small", Type::Int, int(i64::MIN)),
+        ("big", Type::int(), int(i64::MAX)),
+        ("small", Type::int(), int(i64::MIN)),
     ];
 
     let cases = [
@@ -583,7 +585,7 @@ fn lookup_errors() {
     assert_eq!(eval("levels[2]"), int(30));
     assert_eq!(eval("levels[0]"), int(10));
 
-    let empty = [("e", Type::list(Type::Int), ints(&[]))];
+    let empty = [("e", Type::list(Type::int()), ints(&[]))];
     assert_eq!(
         fails_in("e[0]", &empty),
         "index 0 is out of range of a list of 0 entries"
@@ -653,7 +655,7 @@ fn binding_errors() {
     let cases: &[(&str, Value, &str)] = &[
         (
             "wits",
-            Value::Bool(true),
+            Value::bool(true),
             "expected Int, found Bool: while binding `wits`",
         ),
         (
@@ -663,7 +665,7 @@ fn binding_errors() {
         ),
         (
             "wits",
-            Value::None,
+            Value::none(),
             "expected Int, found none: while binding `wits`",
         ),
         (
@@ -673,12 +675,12 @@ fn binding_errors() {
         ),
         (
             "bonus",
-            Value::some(Value::Bool(true)),
+            Value::some(Value::bool(true)),
             "expected Option<Int>, found some(Bool): while binding `bonus`",
         ),
         (
             "levels",
-            Value::List(vec![int(1), Value::Bool(false)]),
+            Value::list(vec![int(1), Value::bool(false)]),
             "expected Int, found Bool: at `levels[1]`: while binding `levels`",
         ),
         (
@@ -688,7 +690,7 @@ fn binding_errors() {
         ),
         (
             "grid",
-            Value::List(vec![ints(&[1]), int(2)]),
+            Value::list(vec![ints(&[1]), int(2)]),
             "expected List<Int>, found Int: at `grid[1]`: while binding `grid`",
         ),
         (
@@ -701,7 +703,7 @@ fn binding_errors() {
             Value::record([
                 ("Brawl (bar)", int(1)),
                 ("a b", track(1)),
-                ("inner", Value::record([("deep", Value::Bool(true))])),
+                ("inner", Value::record([("deep", Value::bool(true))])),
                 ("zzz", int(0)),
             ]),
             r#"expected {"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}, found a record with an extra field: while binding `m`"#,
@@ -709,9 +711,9 @@ fn binding_errors() {
         (
             "m",
             Value::record([
-                ("Brawl (bar)", Value::Bool(true)),
+                ("Brawl (bar)", Value::bool(true)),
                 ("a b", track(1)),
-                ("inner", Value::record([("deep", Value::Bool(true))])),
+                ("inner", Value::record([("deep", Value::bool(true))])),
             ]),
             r#"expected Int, found Bool: at `m["Brawl (bar)"]`: while binding `m`"#,
         ),
@@ -731,7 +733,10 @@ fn binding_errors() {
         ),
         (
             "health",
-            Value::record([("boxes", int(1)), ("count", Value::List(vec![Value::None]))]),
+            Value::record([
+                ("boxes", int(1)),
+                ("count", Value::list(vec![Value::none()])),
+            ]),
             "expected Int, found none: at `health.count[0]`: while binding `health`",
         ),
         (
@@ -770,7 +775,7 @@ fn binding_errors() {
 
     // A failed binding leaves the value unbound, and a good one binds.
     let mut run = machine.load(&program).unwrap();
-    run.bind("wits", Value::Bool(true)).unwrap_err();
+    run.bind("wits", Value::bool(true)).unwrap_err();
     run.bind("wits", int(1)).unwrap();
 }
 
@@ -779,7 +784,7 @@ fn memory_budget() {
     // `lookup(i, [10, 11, 12, 13])` takes 2 stack words, 4 constant words
     // and a word for `i`.
     let mut env = Environment::with_builtins();
-    env.value("i", Type::Int).unwrap();
+    env.value("i", Type::int()).unwrap();
     let program = compile("lookup(i, [10, 11, 12, 13])", &env).unwrap();
     assert_eq!(
         program.memory(),
@@ -839,8 +844,8 @@ fn binding_memory() {
     // `l.len()` takes 1 stack word and 1 for `l`, so a machine of 2 + k
     // words takes a bound list of k entries, and no more.
     let mut env = Environment::with_builtins();
-    env.value("l", Type::list(Type::Int)).unwrap();
-    env.value("s", Type::String).unwrap();
+    env.value("l", Type::list(Type::int())).unwrap();
+    env.value("s", Type::string()).unwrap();
     let program = compile("l.len()", &env).unwrap();
     assert_eq!(program.memory().total(), 2);
 
@@ -1014,13 +1019,13 @@ fn faulty_programs() {
     }
 
     let wrong = [
-        (vec![Instr::Bool(true), Instr::Neg], 1, Value::Int(-1)),
-        (vec![global], 1, Value::Int(0)),
-        (vec![Instr::Int(1), Instr::Len], 1, Value::Int(0)),
+        (vec![Instr::Bool(true), Instr::Neg], 1, Value::int(-1)),
+        (vec![global], 1, Value::int(0)),
+        (vec![Instr::Int(1), Instr::Len], 1, Value::int(0)),
         (
             vec![Instr::Bool(true), Instr::Or(u32::MAX)],
             1,
-            Value::Int(1),
+            Value::int(1),
         ),
     ];
 
@@ -1116,10 +1121,12 @@ fn random_programs() {
 /// The type a generated program's value has, as [`generate`] names it.
 fn describe(value: &Value) -> &'static str {
     match value {
-        Value::Int(_) => "Int",
-        Value::Bool(_) => "Bool",
-        Value::None | Value::Some(..) => "Option<Int>",
-        Value::List(items) if items.iter().all(|i| matches!(i, Value::Int(_))) => "List<Int>",
+        Value(Repr::Int(_)) => "Int",
+        Value(Repr::Bool(_)) => "Bool",
+        Value(Repr::None) | Value(Repr::Some(..)) => "Option<Int>",
+        Value(Repr::List(items)) if items.iter().all(|i| matches!(i, Value(Repr::Int(_)))) => {
+            "List<Int>"
+        }
         _ => "?",
     }
 }
@@ -1127,12 +1134,14 @@ fn describe(value: &Value) -> &'static str {
 /// Whether `value` is of type `ty`.
 fn conforms(value: &Value, ty: &Type) -> bool {
     match (ty, value) {
-        (Type::Int, Value::Int(_)) | (Type::Bool, Value::Bool(_)) => true,
-        (Type::String, Value::String(_)) => true,
-        (Type::Option(_), Value::None) => true,
-        (Type::Option(inner), Value::Some(value)) => conforms(value, inner),
-        (Type::List(entry), Value::List(items)) => items.iter().all(|i| conforms(i, entry)),
-        (Type::Record(fields), Value::Record(map)) => {
+        (Type(Kind::Int), Value(Repr::Int(_))) | (Type(Kind::Bool), Value(Repr::Bool(_))) => true,
+        (Type(Kind::String), Value(Repr::String(_))) => true,
+        (Type(Kind::Option(_)), Value(Repr::None)) => true,
+        (Type(Kind::Option(inner)), Value(Repr::Some(value))) => conforms(value, inner),
+        (Type(Kind::List(entry)), Value(Repr::List(items))) => {
+            items.iter().all(|i| conforms(i, entry))
+        }
+        (Type(Kind::Record(fields)), Value(Repr::Record(map))) => {
             fields.len() == map.len()
                 && fields
                     .iter()
@@ -1145,19 +1154,18 @@ fn conforms(value: &Value, ty: &Type) -> bool {
 /// A value of type `ty`, from the edges of each type's range.
 fn value_of(rng: &mut Rng, ty: &Type) -> Value {
     match ty {
-        Type::Int => int([0, 1, -1, 7, i64::MIN, i64::MAX][rng.below(6)]),
-        Type::Bool => Value::Bool(rng.below(2) == 0),
-        Type::String => Value::from(rng.pick(&["", "Essence", "0123456789abcdefg"])),
-        Type::Option(inner) => match rng.below(3) {
-            0 => Value::None,
+        Type(Kind::Int) => int([0, 1, -1, 7, i64::MIN, i64::MAX][rng.below(6)]),
+        Type(Kind::Bool) => Value::bool(rng.below(2) == 0),
+        Type(Kind::String) => Value::from(rng.pick(&["", "Essence", "0123456789abcdefg"])),
+        Type(Kind::Option(inner)) => match rng.below(3) {
+            0 => Value::none(),
             _ => Value::some(value_of(rng, inner)),
         },
-        Type::List(entry) => Value::List((0..rng.below(4)).map(|_| value_of(rng, entry)).collect()),
-        Type::Record(fields) => Value::Record(
+        Type(Kind::List(entry)) => Value::list((0..rng.below(4)).map(|_| value_of(rng, entry))),
+        Type(Kind::Record(fields)) => Value::record(
             fields
                 .iter()
-                .map(|(name, ty)| (name.clone(), value_of(rng, ty)))
-                .collect(),
+                .map(|(name, ty)| (name.clone(), value_of(rng, ty))),
         ),
     }
 }
@@ -1168,16 +1176,16 @@ fn value_of(rng: &mut Rng, ty: &Type) -> Value {
 /// one word with a value no `Bool` or reference is for absent.
 #[test]
 fn option_layouts() {
-    let record = Type::record([("a", Type::Int), ("b", Type::option(Type::Int))]);
+    let record = Type::record([("a", Type::int()), ("b", Type::option(Type::int()))]);
 
     let cases: Vec<(Type, Vec<Value>)> = vec![
         (
-            Type::Int,
+            Type::int(),
             vec![int(0), int(-1), int(1), int(i64::MIN), int(i64::MAX)],
         ),
-        (Type::Bool, vec![Value::Bool(false), Value::Bool(true)]),
+        (Type::bool(), vec![Value::bool(false), Value::bool(true)]),
         (
-            Type::String,
+            Type::string(),
             vec![
                 Value::from(""),
                 Value::from("\u{ff}\u{ff}\u{ff}\u{ff}"),
@@ -1185,13 +1193,13 @@ fn option_layouts() {
             ],
         ),
         (
-            Type::list(Type::Int),
+            Type::list(Type::int()),
             vec![ints(&[-1]), ints(&[i64::MIN, i64::MAX, 0])],
         ),
         (
             record.clone(),
             vec![
-                Value::record([("a", int(-1)), ("b", Value::None)]),
+                Value::record([("a", int(-1)), ("b", Value::none())]),
                 Value::record([("a", int(i64::MAX)), ("b", Value::some(int(-1)))]),
             ],
         ),
@@ -1199,7 +1207,7 @@ fn option_layouts() {
 
     for (ty, values) in cases {
         let option = Type::option(ty.clone());
-        let holder = Type::record([("o", option.clone()), ("z", Type::Int)]);
+        let holder = Type::record([("o", option.clone()), ("z", Type::int())]);
 
         let mut env = Environment::with_builtins();
         env.value("o", option.clone()).unwrap();
@@ -1207,24 +1215,24 @@ fn option_layouts() {
         env.value("r", holder.clone()).unwrap();
         env.value("l", Type::list(option.clone())).unwrap();
         env.function("give", [], option.clone()).unwrap();
-        env.function("take", [option.clone(), Type::Int], Type::Int)
+        env.function("take", [option.clone(), Type::int()], Type::int())
             .unwrap();
 
         for value in &values {
-            for o in [Value::None, Value::some(value.clone())] {
+            for o in [Value::none(), Value::some(value.clone())] {
                 let default = values[0].clone();
                 let unwrapped = match &o {
-                    Value::Some(v) => (**v).clone(),
+                    Value(Repr::Some(v)) => (**v).clone(),
                     _ => default.clone(),
                 };
 
                 let expected: &[(&str, Value)] = &[
                     ("o", o.clone()),
-                    ("o.is_some()", Value::Bool(o != Value::None)),
-                    ("o.is_none()", Value::Bool(o == Value::None)),
+                    ("o.is_some()", Value::bool(o != Value::none())),
+                    ("o.is_none()", Value::bool(o == Value::none())),
                     ("o.unwrap_or(d)", unwrapped.clone()),
                     ("[o, o, o][2]", o.clone()),
-                    ("[o, give()]", Value::List(vec![o.clone(), o.clone()])),
+                    ("[o, give()]", Value::list(vec![o.clone(), o.clone()])),
                     ("lookup(9, [give(), o])", o.clone()),
                     ("r.o", o.clone()),
                     ("r.z", int(-5)),
@@ -1246,8 +1254,8 @@ fn option_layouts() {
                             "o" => o.clone(),
                             "d" => default.clone(),
                             "r" => Value::record([("o", o.clone()), ("z", int(-5))]),
-                            "l" => Value::List(vec![
-                                Value::None,
+                            "l" => Value::list(vec![
+                                Value::none(),
                                 o.clone(),
                                 Value::some(default.clone()),
                             ]),
@@ -1260,7 +1268,7 @@ fn option_layouts() {
                     let given = o.clone();
                     let mut host = |name: &str, args: Vec<Value>| match (name, args.as_slice()) {
                         ("give", []) => Ok(given.clone()),
-                        ("take", [arg, Value::Int(n)]) => {
+                        ("take", [arg, Value(Repr::Int(n))]) => {
                             assert_eq!(*arg, given, "{source:?}");
                             Ok(int(*n))
                         }
@@ -1279,13 +1287,14 @@ fn option_layouts() {
 #[test]
 fn list_of_optional_ints() {
     let mut env = Environment::with_builtins();
-    env.value("l", Type::list(Type::option(Type::Int))).unwrap();
-    env.value("o", Type::option(Type::Int)).unwrap();
-    env.function("many", [Type::Int], Type::list(Type::option(Type::Int)))
+    env.value("l", Type::list(Type::option(Type::int())))
+        .unwrap();
+    env.value("o", Type::option(Type::int())).unwrap();
+    env.function("many", [Type::int()], Type::list(Type::option(Type::int())))
         .unwrap();
 
-    let l = Value::List(vec![
-        Value::None,
+    let l = Value::list(vec![
+        Value::none(),
         Value::some(int(i64::MIN)),
         Value::some(int(i64::MAX)),
         Value::some(int(-1)),
@@ -1329,7 +1338,7 @@ fn list_of_optional_ints() {
         }
 
         let mut host = |_: &str, args: Vec<Value>| match args.as_slice() {
-            [Value::Int(n)] => Ok(Value::List((0..*n).map(|i| Value::some(int(i))).collect())),
+            [Value(Repr::Int(n))] => Ok(Value::list((0..*n).map(|i| Value::some(int(i))))),
             _ => Err("unexpected".to_owned()),
         };
 
@@ -1362,10 +1371,11 @@ fn list_of_optional_ints() {
 #[test]
 fn word_budget() {
     let mut env = Environment::with_builtins();
-    env.value("l", Type::list(Type::option(Type::Int))).unwrap();
-    env.value("o", Type::option(Type::Int)).unwrap();
-    env.value("s", Type::String).unwrap();
-    env.function("many", [Type::Int], Type::list(Type::option(Type::Int)))
+    env.value("l", Type::list(Type::option(Type::int())))
+        .unwrap();
+    env.value("o", Type::option(Type::int())).unwrap();
+    env.value("s", Type::string()).unwrap();
+    env.function("many", [Type::int()], Type::list(Type::option(Type::int())))
         .unwrap();
 
     // A program's own memory: `[o, o, o]` is 6 stack, 6 heap and 2 for `o`.
@@ -1395,7 +1405,7 @@ fn word_budget() {
     assert_eq!(program.memory().total(), 2);
 
     for k in [1usize, 2, 7] {
-        let list = Value::List(vec![Value::some(int(-1)); k]);
+        let list = Value::list(vec![Value::some(int(-1)); k]);
         let words = 2 + 2 * k as u32;
 
         let mut machine = Machine::new(Limits::new().memory(words));
@@ -1445,7 +1455,7 @@ fn word_budget() {
     let run = |memory: u32| {
         let mut machine = Machine::new(Limits::new().memory(memory));
         let mut host = |_: &str, args: Vec<Value>| match args.as_slice() {
-            [Value::Int(n)] => Ok(Value::List(vec![Value::None; *n as usize])),
+            [Value(Repr::Int(n))] => Ok(Value::list(vec![Value::none(); *n as usize])),
             _ => Err("unexpected".to_owned()),
         };
         machine.load(&program).unwrap().run_with(&mut host)

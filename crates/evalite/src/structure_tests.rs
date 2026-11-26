@@ -5,25 +5,29 @@ use crate::*;
 
 fn env() -> Environment {
     let mut env = Environment::with_builtins();
-    env.value("wits", Type::Int).unwrap();
-    env.value("dexterity", Type::Int).unwrap();
-    env.value("dead", Type::Bool).unwrap();
-    env.value("bonus", Type::option(Type::Int)).unwrap();
-    env.value("dots", Type::list(Type::Int)).unwrap();
+    env.value("wits", Type::int()).unwrap();
+    env.value("dexterity", Type::int()).unwrap();
+    env.value("dead", Type::bool()).unwrap();
+    env.value("bonus", Type::option(Type::int())).unwrap();
+    env.value("dots", Type::list(Type::int())).unwrap();
     env.value("health", crate::check_tests::track()).unwrap();
     env.value(
         "m",
         Type::record([
-            ("athletics", Type::Int),
-            ("Brawl (bar)", Type::Int),
-            ("brawl", Type::option(Type::Int)),
+            ("athletics", Type::int()),
+            ("Brawl (bar)", Type::int()),
+            ("brawl", Type::option(Type::int())),
         ]),
     )
     .unwrap();
-    env.function("count", [crate::check_tests::track()], Type::Int)
+    env.function("count", [crate::check_tests::track()], Type::int())
         .unwrap();
-    env.function("count", [crate::check_tests::track(), Type::Int], Type::Int)
-        .unwrap();
+    env.function(
+        "count",
+        [crate::check_tests::track(), Type::int()],
+        Type::int(),
+    )
+    .unwrap();
     env
 }
 

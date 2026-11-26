@@ -1,33 +1,38 @@
 #![allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
 use crate::error::ErrorKind;
+use crate::types::Kind;
 use crate::*;
 
 fn env() -> Environment {
     let mut env = Environment::with_builtins();
-    env.value("wits", Type::Int).unwrap();
-    env.value("dead", Type::Bool).unwrap();
-    env.value("bonus", Type::option(Type::Int)).unwrap();
-    env.value("dots", Type::list(Type::Int)).unwrap();
+    env.value("wits", Type::int()).unwrap();
+    env.value("dead", Type::bool()).unwrap();
+    env.value("bonus", Type::option(Type::int())).unwrap();
+    env.value("dots", Type::list(Type::int())).unwrap();
     env.value("health", crate::check_tests::track()).unwrap();
-    env.value("table", Type::String).unwrap();
+    env.value("table", Type::string()).unwrap();
     env.value(
         "m",
         Type::record([
-            ("athletics", Type::Int),
-            ("Brawl (bar)", Type::Int),
-            ("brawl", Type::option(Type::Int)),
-            ("flags", Type::record([("frenzy", Type::Bool)])),
+            ("athletics", Type::int()),
+            ("Brawl (bar)", Type::int()),
+            ("brawl", Type::option(Type::int())),
+            ("flags", Type::record([("frenzy", Type::bool())])),
         ]),
     )
     .unwrap();
-    env.function("count", [crate::check_tests::track()], Type::Int)
+    env.function("count", [crate::check_tests::track()], Type::int())
         .unwrap();
-    env.function("count", [crate::check_tests::track(), Type::Int], Type::Int)
+    env.function(
+        "count",
+        [crate::check_tests::track(), Type::int()],
+        Type::int(),
+    )
+    .unwrap();
+    env.function("lookup", [Type::int(), Type::string()], Type::int())
         .unwrap();
-    env.function("lookup", [Type::Int, Type::String], Type::Int)
-        .unwrap();
-    env.function("broken", [Type::Int], crate::check_tests::track())
+    env.function("broken", [Type::int()], crate::check_tests::track())
         .unwrap();
     env
 }
@@ -138,24 +143,24 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
     vec![
         // Value holes, by the type the expression must have.
         ("_", 0, None, ANY.to_vec()),
-        ("_", 0, Some(Type::Int), INT.to_vec()),
-        ("_", 0, Some(Type::Bool), BOOL.to_vec()),
+        ("_", 0, Some(Type::int()), INT.to_vec()),
+        ("_", 0, Some(Type::bool()), BOOL.to_vec()),
         (
             "_",
             0,
-            Some(Type::String),
+            Some(Type::string()),
             vec!["table", "lookup(_, _)", r#""""#],
         ),
         (
             "_",
             0,
-            Some(Type::list(Type::Int)),
+            Some(Type::list(Type::int())),
             vec!["dots", "health.count", "lookup(_, _)", "[_]"],
         ),
         (
             "_",
             0,
-            Some(Type::list(Type::Bool)),
+            Some(Type::list(Type::bool())),
             vec!["lookup(_, _)", "[_]"],
         ),
         (
@@ -167,7 +172,7 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         (
             "_",
             0,
-            Some(Type::record([("nothing", Type::Bool)])),
+            Some(Type::record([("nothing", Type::bool())])),
             vec!["lookup(_, _)"],
         ),
         // Operands.
@@ -277,25 +282,25 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         // List entries, by a sibling or the list's own type.
         ("[1, _]", 0, None, INT.to_vec()),
         ("[_, dead]", 0, None, BOOL.to_vec()),
-        ("[_]", 0, Some(Type::list(Type::Int)), INT.to_vec()),
+        ("[_]", 0, Some(Type::list(Type::int())), INT.to_vec()),
         (
             "[[_]]",
             0,
-            Some(Type::list(Type::list(Type::Bool))),
+            Some(Type::list(Type::list(Type::bool()))),
             BOOL.to_vec(),
         ),
-        ("[_]", 0, Some(Type::Int), vec![]),
+        ("[_]", 0, Some(Type::int()), vec![]),
         ("[_]", 0, None, ANY.to_vec()),
         ("lookup(1, [_])", 0, None, ANY.to_vec()),
         ("count(health, [_][0])", 0, None, INT.to_vec()),
         (
             "_[0]",
             0,
-            Some(Type::Int),
+            Some(Type::int()),
             vec!["dots", "health.count", "lookup(_, _)", "[_]"],
         ),
-        ("_[0]", 0, Some(Type::Bool), vec!["lookup(_, _)", "[_]"]),
-        ("[_][0]", 0, Some(Type::Bool), BOOL.to_vec()),
+        ("_[0]", 0, Some(Type::bool()), vec!["lookup(_, _)", "[_]"]),
+        ("[_][0]", 0, Some(Type::bool()), BOOL.to_vec()),
         // Member holes, by the receiver's type and what the place takes.
         (
             "bonus._",
@@ -303,12 +308,12 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             None,
             vec!["is_none()", "is_some()", "unwrap_or(_)"],
         ),
-        ("bonus._", 0, Some(Type::Int), vec!["unwrap_or(_)"]),
+        ("bonus._", 0, Some(Type::int()), vec!["unwrap_or(_)"]),
         ("1 + bonus._", 0, None, vec!["unwrap_or(_)"]),
         (
             "bonus._()",
             0,
-            Some(Type::Bool),
+            Some(Type::bool()),
             vec!["is_none()", "is_some()"],
         ),
         (
@@ -317,8 +322,8 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             None,
             vec!["abs()", "clamp(_, _)", "max(_)", "min(_)"],
         ),
-        ("wits._", 0, Some(Type::Bool), vec![]),
-        ("dots._", 0, Some(Type::Int), vec!["len()"]),
+        ("wits._", 0, Some(Type::bool()), vec![]),
+        ("dots._", 0, Some(Type::int()), vec!["len()"]),
         ("dead._", 0, None, vec![]),
         (
             "m._",
@@ -329,10 +334,10 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         (
             "m._",
             0,
-            Some(Type::Int),
+            Some(Type::int()),
             vec![r#"["Brawl (bar)"]"#, "athletics", "brawl"],
         ),
-        ("m._", 0, Some(Type::Bool), vec!["brawl", "flags"]),
+        ("m._", 0, Some(Type::bool()), vec!["brawl", "flags"]),
         ("m.flags._", 0, None, vec!["frenzy"]),
         (
             "1 + m._",
@@ -389,16 +394,16 @@ fn completions_by_place_and_type() {
 fn completion_kinds_and_types() {
     let s = s("_");
     let hole = s.root();
-    let all = s.complete(&env(), hole, Some(&Type::Int)).unwrap();
+    let all = s.complete(&env(), hole, Some(&Type::int())).unwrap();
     let find = |label: &str| all.iter().find(|c| c.label == label).unwrap();
 
     assert_eq!(find("wits").kind, CompletionKind::Value);
-    assert_eq!(find("wits").ty, Some(Type::Int));
+    assert_eq!(find("wits").ty, Some(Type::int()));
     assert_eq!(find("m.athletics").kind, CompletionKind::Value);
     assert_eq!(find("bonus.unwrap_or(_)").kind, CompletionKind::Method);
-    assert_eq!(find("bonus.unwrap_or(_)").ty, Some(Type::Int));
+    assert_eq!(find("bonus.unwrap_or(_)").ty, Some(Type::int()));
     assert_eq!(find("count(_)").kind, CompletionKind::Function);
-    assert_eq!(find("count(_)").ty, Some(Type::Int));
+    assert_eq!(find("count(_)").ty, Some(Type::int()));
     // The builtin `lookup` gives whatever its list holds.
     assert_eq!(find("lookup(_, _)").ty, None);
     assert_eq!(find("0").kind, CompletionKind::Literal);
@@ -465,7 +470,10 @@ fn applying_completions() {
             // A field that only leads to what fits, such as an option to
             // unwrap, takes another step before it compiles.
             let leads_on = matches!(completion.insert, Insert::Field(_))
-                && matches!(completion.ty, Some(Type::Option(_) | Type::Record(_)));
+                && matches!(
+                    completion.ty,
+                    Some(Type(Kind::Option(_)) | Type(Kind::Record(_)))
+                );
 
             if !s.holes().is_empty() || leads_on || NO_PROGRAM.contains(&text) {
                 continue;
@@ -504,7 +512,7 @@ fn applying_members() {
     let hole = s.holes()[0];
     s.apply(hole, &field("Brawl (bar)")).unwrap();
     assert_eq!(s.to_text(), r#"m["Brawl (bar)"] + 1"#);
-    assert_eq!(s.compile(&env).unwrap().result_type(), Type::Int);
+    assert_eq!(s.compile(&env).unwrap().result_type(), Type::int());
 
     let mut s = self::s("m._ + 1");
     let hole = s.holes()[0];
@@ -551,7 +559,7 @@ fn applying_members() {
     let completion = Completion {
         label: "bonus.unwrap_or(_)".into(),
         kind: CompletionKind::Method,
-        ty: Some(Type::Int),
+        ty: Some(Type::int()),
         insert: Insert::Expr(self::s("bonus.unwrap_or(_)")),
     };
     s.apply(one, &completion).unwrap();
@@ -595,7 +603,7 @@ fn filling_a_form() {
         s.apply(hole, c).unwrap();
     };
 
-    let int = Some(&Type::Int);
+    let int = Some(&Type::int());
     pick(&mut s, int, "_ + _");
     pick(&mut s, int, "m.brawl.unwrap_or(_)");
     pick(&mut s, int, "0");
@@ -612,7 +620,7 @@ fn filling_a_form() {
         "m.brawl.unwrap_or(0) + count(health, lookup(wits, [-(0)]))"
     );
     assert!(s.holes().is_empty());
-    assert_eq!(s.compile(&env).unwrap().result_type(), Type::Int);
+    assert_eq!(s.compile(&env).unwrap().result_type(), Type::int());
 }
 
 #[test]
@@ -647,18 +655,18 @@ fn method_table_matches_the_checker() {
     let mut env = Environment::new();
 
     let receivers = [
-        Type::Int,
-        Type::option(Type::Int),
-        Type::option(Type::Bool),
-        Type::list(Type::Bool),
+        Type::int(),
+        Type::option(Type::int()),
+        Type::option(Type::bool()),
+        Type::list(Type::bool()),
     ];
 
     for (n, ty) in receivers.iter().enumerate() {
         env.value(&format!("r{n}"), ty.clone()).unwrap();
     }
 
-    env.value("i", Type::Int).unwrap();
-    env.value("b", Type::Bool).unwrap();
+    env.value("i", Type::int()).unwrap();
+    env.value("b", Type::bool()).unwrap();
 
     let mut checked = std::collections::HashSet::new();
 
@@ -673,8 +681,8 @@ fn method_table_matches_the_checker() {
             let args = params
                 .iter()
                 .map(|p| match p {
-                    Type::Int => "i",
-                    Type::Bool => "b",
+                    Type(Kind::Int) => "i",
+                    Type(Kind::Bool) => "b",
                     other => panic!("no argument of type {other}"),
                 })
                 .collect::<Vec<_>>()
@@ -740,7 +748,7 @@ fn deep_structures() {
     assert_eq!(labels, ANY);
 
     let labels = s
-        .complete(&env, first, Some(&Type::Int))
+        .complete(&env, first, Some(&Type::int()))
         .unwrap()
         .into_iter()
         .map(|c| c.label)

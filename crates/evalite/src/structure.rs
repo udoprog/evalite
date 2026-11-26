@@ -365,7 +365,7 @@ struct Stored {
 /// use evalite::{Environment, Node, Structure, Type};
 ///
 /// let mut env = Environment::with_builtins();
-/// env.value("bonus", Type::option(Type::Int))?;
+/// env.value("bonus", Type::option(Type::int()))?;
 ///
 /// let mut s = Structure::new();
 /// let bonus = s.add(Node::Name("bonus".into()))?;
@@ -375,7 +375,7 @@ struct Stored {
 ///
 /// assert_eq!(s.to_text(), "max(bonus.unwrap_or(0))");
 /// assert_eq!(Structure::from_text("max(bonus.unwrap_or(0))")?, s);
-/// assert_eq!(s.compile(&env)?.result_type(), Type::Int);
+/// assert_eq!(s.compile(&env)?.result_type(), Type::int());
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug, Clone)]

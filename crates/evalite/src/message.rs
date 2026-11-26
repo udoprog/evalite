@@ -15,8 +15,8 @@ use syntree::Span;
 use crate::debug::DebugInfo;
 use crate::error::{ParseError, ParseText};
 use crate::program::Program;
+use crate::types::is_field_name;
 use crate::types::{TypeId, TypeNode};
-use crate::vm::is_field_name;
 
 /// What went wrong, or what was being done when it did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -421,12 +421,12 @@ fn field_name(program: Option<&Program>, record: TypeId, field: u32) -> Option<&
 /// use evalite::{Environment, Machine, Type, Value};
 ///
 /// let mut env = Environment::with_builtins();
-/// env.value("strength", Type::Int)?;
+/// env.value("strength", Type::int())?;
 /// let program = evalite::compile("strength", &env)?;
 ///
 /// let mut machine = Machine::default();
 /// let mut run = machine.load(&program)?;
-/// let error = run.bind("strength", Value::Bool(true)).unwrap_err();
+/// let error = run.bind("strength", Value::bool(true)).unwrap_err();
 ///
 /// assert_eq!(error.to_string(), "expected another type, found Bool");
 /// assert_eq!(format!("{error:#}"), "expected another type, found Bool: while binding a value");
@@ -527,13 +527,13 @@ impl RunError {
     /// use evalite::{Environment, Machine, Type, Value};
     ///
     /// let mut env = Environment::with_builtins();
-    /// env.value("a", Type::Int)?;
+    /// env.value("a", Type::int())?;
     /// let source = "1 + a / 0";
     /// let (program, debug) = evalite::compile_debug(source, &env, &evalite::Options::new())?;
     ///
     /// let mut machine = Machine::default();
     /// let mut run = machine.load(&program)?;
-    /// run.bind("a", Value::Int(7))?;
+    /// run.bind("a", Value::int(7))?;
     /// let error = run.run().unwrap_err();
     ///
     /// let labels = error.labels(&program, Some(&debug)).collect::<Vec<_>>();

@@ -82,9 +82,9 @@ fn parse_type_at(text: &str, depth: usize) -> Result<Type, VarError> {
     let text = text.trim();
 
     match text {
-        "Int" => return Ok(Type::Int),
-        "Bool" => return Ok(Type::Bool),
-        "String" => return Ok(Type::String),
+        "Int" => return Ok(Type::int()),
+        "Bool" => return Ok(Type::bool()),
+        "String" => return Ok(Type::string()),
         _ => {}
     }
 
@@ -100,7 +100,7 @@ fn parse_type_at(text: &str, depth: usize) -> Result<Type, VarError> {
         {
             let inner = parse_type_at(inner, depth.saturating_add(1))?;
 
-            if head == "Option" && matches!(inner, Type::Option(..)) {
+            if head == "Option" && inner.as_option().is_some() {
                 return fail("`Option<Option<T>>` is not a type");
             }
 
@@ -191,66 +191,69 @@ impl Cursor<'_> {
     fn value(&mut self, ty: &Type, top: bool) -> Result<Value, VarError> {
         self.skip_space();
 
-        match ty {
-            Type::Int => {
-                let word = self.word();
-                match word.parse::<i64>() {
-                    Ok(n) => Ok(Value::Int(n)),
-                    Err(_) => fail(format!("`{word}` is not an Int")),
-                }
-            }
-            Type::Bool => match self.word().as_str() {
-                "true" => Ok(Value::Bool(true)),
-                "false" => Ok(Value::Bool(false)),
-                other => fail(format!("`{other}` is not `true` or `false`")),
-            },
-            Type::String => {
-                if self.peek() == Some('"') {
-                    self.quoted()
-                } else if top {
-                    let rest = self.chars.iter().skip(self.at).collect::<String>();
-                    self.at = self.chars.len();
-                    Ok(Value::String(rest))
-                } else {
-                    fail("a string inside a list or `some(..)` must be in quotes")
-                }
-            }
-            Type::Option(inner) => {
-                let word = self.word();
+        if ty.is_int() {
+            let word = self.word();
+            return match word.parse::<i64>() {
+                Ok(n) => Ok(Value::int(n)),
+                Err(_) => fail(format!("`{word}` is not an Int")),
+            };
+        }
 
-                match word.as_str() {
-                    "none" => Ok(Value::None),
-                    "some" => {
-                        self.expect('(')?;
-                        let value = self.value(inner, false)?;
-                        self.expect(')')?;
-                        Ok(Value::some(value))
-                    }
-                    other => fail(format!("`{other}` is not `none` or `some(..)`")),
+        if ty.is_bool() {
+            return match self.word().as_str() {
+                "true" => Ok(Value::bool(true)),
+                "false" => Ok(Value::bool(false)),
+                other => fail(format!("`{other}` is not `true` or `false`")),
+            };
+        }
+
+        if ty.is_string() {
+            return if self.peek() == Some('"') {
+                self.quoted()
+            } else if top {
+                let rest = self.chars.iter().skip(self.at).collect::<String>();
+                self.at = self.chars.len();
+                Ok(Value::string(rest))
+            } else {
+                fail("a string inside a list or `some(..)` must be in quotes")
+            };
+        }
+
+        if let Some(inner) = ty.as_option() {
+            let word = self.word();
+
+            return match word.as_str() {
+                "none" => Ok(Value::none()),
+                "some" => {
+                    self.expect('(')?;
+                    let value = self.value(inner, false)?;
+                    self.expect(')')?;
+                    Ok(Value::some(value))
                 }
+                other => fail(format!("`{other}` is not `none` or `some(..)`")),
+            };
+        }
+
+        if let Some(entry) = ty.as_list() {
+            self.expect('[')?;
+            let mut items = Vec::new();
+
+            if self.eat(']') {
+                return Ok(Value::list(items));
             }
-            Type::List(entry) => {
-                self.expect('[')?;
-                let mut items = Vec::new();
+
+            loop {
+                items.push(self.value(entry, false)?);
 
                 if self.eat(']') {
-                    return Ok(Value::List(items));
+                    return Ok(Value::list(items));
                 }
 
-                loop {
-                    items.push(self.value(entry, false)?);
-
-                    if self.eat(']') {
-                        return Ok(Value::List(items));
-                    }
-
-                    self.expect(',')?;
-                }
+                self.expect(',')?;
             }
-            other => fail(format!(
-                "{other} values cannot be given on the command line"
-            )),
         }
+
+        fail(format!("{ty} values cannot be given on the command line"))
     }
 
     fn quoted(&mut self) -> Result<Value, VarError> {
@@ -262,7 +265,7 @@ impl Cursor<'_> {
                 None => return fail("the string is never closed, expected a `\"`"),
                 Some('"') => {
                     self.bump();
-                    return Ok(Value::String(out));
+                    return Ok(Value::string(out));
                 }
                 Some('\\') => {
                     self.bump();
@@ -292,13 +295,16 @@ mod tests {
         let v = parse_var("a:Option<List<Int>>=some([1, -2])").unwrap();
         assert_eq!(
             v.value,
-            Value::some(Value::List(vec![Value::Int(1), Value::Int(-2)]))
+            Value::some(Value::list(vec![Value::int(1), Value::int(-2)]))
         );
         assert_eq!(
             parse_var("s:String=hi there").unwrap().value,
-            Value::String("hi there".into())
+            Value::string("hi there")
         );
-        assert_eq!(parse_var("b:Option<Int>=none").unwrap().value, Value::None);
+        assert_eq!(
+            parse_var("b:Option<Int>=none").unwrap().value,
+            Value::none()
+        );
     }
 
     #[test]

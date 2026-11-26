@@ -105,10 +105,10 @@ impl std::error::Error for DeclareError {}
 /// use evalite::{Builtin, Environment, Type};
 ///
 /// let mut env = Environment::new();
-/// env.value("strength", Type::Int)?;
-/// env.value("bonus", Type::option(Type::Int))?;
+/// env.value("strength", Type::int())?;
+/// env.value("bonus", Type::option(Type::int()))?;
 /// env.builtin(Builtin::Min);
-/// env.function("rating", [Type::String], Type::Int)?;
+/// env.function("rating", [Type::string()], Type::int())?;
 /// # Ok::<_, evalite::DeclareError>(())
 /// ```
 #[derive(Debug, Clone, Default)]

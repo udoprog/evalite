@@ -2,13 +2,11 @@
 //! when it is made, values bound and type-checked before it runs, and a
 //! step limit on how long it runs.
 
-use std::collections::BTreeMap;
-use std::fmt;
-
 use crate::Type;
 use crate::message::{Context, Fault, Found, Location, Message, Op, Root, RunError, Seg};
 use crate::program::{Constant, HostFunction, Instr, Program, Scalar};
 use crate::types::{TypeId, TypeNode};
+use crate::value::{Repr, Value};
 use crate::word::Word;
 
 /// The memory a [`Machine`] has unless [`Limits::memory`] says otherwise,
@@ -65,163 +63,6 @@ impl Default for Limits {
     }
 }
 
-/// A value bound to a program or given back by one.
-///
-/// An `Option<T>` is [`Value::None`] or [`Value::Some`] of a `T`, never a
-/// bare `T`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Value {
-    Int(i64),
-    Bool(bool),
-    String(String),
-    List(Vec<Value>),
-    /// A record's fields by name.
-    Record(BTreeMap<String, Value>),
-    /// An absent `Option<T>`.
-    None,
-    /// A present `Option<T>`.
-    Some(Box<Value>),
-}
-
-impl Value {
-    /// A present option.
-    pub fn some(value: Value) -> Self {
-        Self::Some(Box::new(value))
-    }
-
-    /// A record of these fields.
-    pub fn record<K>(fields: impl IntoIterator<Item = (K, Value)>) -> Self
-    where
-        K: Into<String>,
-    {
-        Self::Record(fields.into_iter().map(|(k, v)| (k.into(), v)).collect())
-    }
-
-    /// What it is, as an error names it.
-    fn describe(&self) -> Found {
-        match self {
-            Self::Int(_) => Found::Int,
-            Self::Bool(_) => Found::Bool,
-            Self::String(_) => Found::String,
-            Self::List(_) => Found::List,
-            Self::Record(_) => Found::Record,
-            Self::None => Found::None,
-            Self::Some(_) => Found::Some,
-        }
-    }
-}
-
-impl From<i64> for Value {
-    fn from(value: i64) -> Self {
-        Self::Int(value)
-    }
-}
-
-impl From<bool> for Value {
-    fn from(value: bool) -> Self {
-        Self::Bool(value)
-    }
-}
-
-impl From<&str> for Value {
-    fn from(value: &str) -> Self {
-        Self::String(value.to_owned())
-    }
-}
-
-impl From<String> for Value {
-    fn from(value: String) -> Self {
-        Self::String(value)
-    }
-}
-
-enum Piece<'a> {
-    Value(&'a Value),
-    Text(&'static str),
-    Key(&'a str),
-}
-
-impl fmt::Display for Value {
-    /// Values as evalite writes them: `3`, `true`, `"Brawl"`, `[1, 2]`,
-    /// `{athletics: 2, "Brawl (bar)": 1}`, `none` and `some(2)`.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut stack = vec![Piece::Value(self)];
-
-        while let Some(piece) = stack.pop() {
-            match piece {
-                Piece::Text(text) => f.write_str(text)?,
-                Piece::Key(name) if is_field_name(name) => write!(f, "{name}: ")?,
-                Piece::Key(name) => {
-                    write_string(f, name)?;
-                    f.write_str(": ")?;
-                }
-                Piece::Value(value) => match value {
-                    Value::Int(n) => write!(f, "{n}")?,
-                    Value::Bool(b) => write!(f, "{b}")?,
-                    Value::String(s) => write_string(f, s)?,
-                    Value::None => f.write_str("none")?,
-                    Value::Some(value) => {
-                        f.write_str("some(")?;
-                        stack.push(Piece::Text(")"));
-                        stack.push(Piece::Value(value));
-                    }
-                    Value::List(items) => {
-                        f.write_str("[")?;
-                        stack.push(Piece::Text("]"));
-
-                        for (n, item) in items.iter().enumerate().rev() {
-                            stack.push(Piece::Value(item));
-
-                            if n > 0 {
-                                stack.push(Piece::Text(", "));
-                            }
-                        }
-                    }
-                    Value::Record(fields) => {
-                        f.write_str("{")?;
-                        stack.push(Piece::Text("}"));
-
-                        for (n, (name, value)) in fields.iter().enumerate().rev() {
-                            stack.push(Piece::Value(value));
-                            stack.push(Piece::Key(name));
-
-                            if n > 0 {
-                                stack.push(Piece::Text(", "));
-                            }
-                        }
-                    }
-                },
-            }
-        }
-
-        Ok(())
-    }
-}
-
-fn write_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
-    f.write_str("\"")?;
-
-    for c in s.chars() {
-        match c {
-            '"' => f.write_str("\\\"")?,
-            '\\' => f.write_str("\\\\")?,
-            c => write!(f, "{c}")?,
-        }
-    }
-
-    f.write_str("\"")
-}
-
-pub(crate) fn is_field_name(name: &str) -> bool {
-    let mut chars = name.chars();
-
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
 #[cold]
 #[inline(never)]
 fn fault(fault: Fault) -> RunError {
@@ -259,15 +100,55 @@ impl Host for NoHost {
     }
 }
 
-/// What a run gave back.
+/// What a run gave back: the program's value, the steps it took and the
+/// most memory it used.
+///
+/// ```
+/// use evalite::{Environment, Limits, Machine, Type, Value};
+///
+/// let mut env = Environment::new();
+/// env.value("a", Type::int())?;
+///
+/// let program = evalite::compile("a * 2 + 1", &env)?;
+/// let mut machine = Machine::new(Limits::new());
+/// let mut run = machine.load(&program)?;
+/// run.bind("a", Value::int(20))?;
+///
+/// let outcome = run.run()?;
+/// assert_eq!(outcome.value(), &Value::int(41));
+/// assert_eq!(outcome.steps(), 5);
+/// assert!(outcome.memory() <= u64::from(machine.limits().memory_words()));
+/// assert_eq!(outcome.into_value().as_int(), Some(41));
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
+    pub(crate) value: Value,
+    pub(crate) steps: u64,
+    pub(crate) memory: u64,
+}
+
+impl Outcome {
     /// The program's value, of its [`result_type`](Program::result_type).
-    pub value: Value,
-    /// The steps it took.
-    pub steps: u64,
-    /// The most memory it used at once, in words, bindings included.
-    pub memory: u64,
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
+
+    /// The program's value, taken out of the outcome.
+    pub fn into_value(self) -> Value {
+        self.value
+    }
+
+    /// The steps it took, at most the machine's [`Limits::fuel`].
+    pub fn steps(&self) -> u64 {
+        self.steps
+    }
+
+    /// The most memory it used at once, in words, bindings included; at
+    /// most the machine's [`Limits::memory`].
+    pub fn memory(&self) -> u64 {
+        self.memory
+    }
 }
 
 /// A machine with a fixed memory of 64-bit words, reserved when it is
@@ -281,19 +162,19 @@ pub struct Outcome {
 /// use evalite::{Environment, Limits, Machine, Type, Value};
 ///
 /// let mut env = Environment::with_builtins();
-/// env.value("strength", Type::Int)?;
-/// env.value("bonus", Type::option(Type::Int))?;
+/// env.value("strength", Type::int())?;
+/// env.value("bonus", Type::option(Type::int()))?;
 ///
 /// let program = evalite::compile("strength + bonus.unwrap_or(0)", &env)?;
 ///
 /// let mut machine = Machine::new(Limits::new());
 /// let mut run = machine.load(&program)?;
-/// run.bind("strength", Value::Int(3))?;
-/// run.bind("bonus", Value::some(Value::Int(2)))?;
-/// assert_eq!(run.run()?.value, Value::Int(5));
+/// run.bind("strength", Value::int(3))?;
+/// run.bind("bonus", Value::some(Value::int(2)))?;
+/// assert_eq!(run.run()?.value(), &Value::int(5));
 ///
 /// let mut run = machine.load(&program)?;
-/// let error = run.bind("strength", Value::Bool(true)).unwrap_err();
+/// let error = run.bind("strength", Value::bool(true)).unwrap_err();
 /// let labels: Vec<String> = error.labels(&program, None).map(|l| l.message().to_string()).collect();
 /// assert_eq!(labels, ["expected Int, found Bool", "while binding `strength`"]);
 /// # Ok::<_, Box<dyn std::error::Error>>(())
@@ -945,19 +826,19 @@ impl<'a> Run<'a> {
         while let Some((value, ty, node, option)) = work.pop() {
             let ty_node = types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))?;
 
-            let found = match (ty_node, value) {
-                (TypeNode::Option(_), Value::None)
-                | (TypeNode::Int, Value::Int(_))
-                | (TypeNode::Bool, Value::Bool(_)) => continue,
-                (TypeNode::Option(inner), Value::Some(value)) => {
+            let found = match (ty_node, &value.0) {
+                (TypeNode::Option(_), Repr::None)
+                | (TypeNode::Int, Repr::Int(_))
+                | (TypeNode::Bool, Repr::Bool(_)) => continue,
+                (TypeNode::Option(inner), Repr::Some(value)) => {
                     work.push((value, *inner, node, Some(ty)));
                     continue;
                 }
-                (TypeNode::String, Value::String(s)) => {
+                (TypeNode::String, Repr::String(s)) => {
                     total = total.saturating_add(s.len().div_ceil(8));
                     continue;
                 }
-                (TypeNode::List(entry), Value::List(items)) => {
+                (TypeNode::List(entry), Repr::List(items)) => {
                     let width = types.width(*entry);
                     total = total.saturating_add(items.len().saturating_mul(width));
 
@@ -968,7 +849,7 @@ impl<'a> Run<'a> {
 
                     continue;
                 }
-                (TypeNode::Record(fields), Value::Record(map)) => {
+                (TypeNode::Record(fields), Repr::Record(map)) => {
                     let missing = fields.iter().position(|f| !map.contains_key(&f.name));
                     let extra = map.keys().any(|k| !fields.iter().any(|f| f.name == **k));
 
@@ -1025,14 +906,14 @@ impl<'a> Run<'a> {
         while let Some((value, ty, dest)) = work.pop() {
             let ty_node = types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))?;
 
-            let word = match (ty_node, value) {
-                (TypeNode::Option(_), Value::None) if types.is_option_int(ty) => {
+            let word = match (ty_node, &value.0) {
+                (TypeNode::Option(_), Repr::None) if types.is_option_int(ty) => {
                     self.put(Some(dest), Word::present(false))?;
                     self.put(dest.checked_add(1), Word::int(0))?;
                     continue;
                 }
-                (TypeNode::Option(_), Value::None) => Word::NONE,
-                (TypeNode::Option(inner), Value::Some(value)) => {
+                (TypeNode::Option(_), Repr::None) => Word::NONE,
+                (TypeNode::Option(inner), Repr::Some(value)) => {
                     let dest = if types.is_option_int(ty) {
                         self.put(Some(dest), Word::present(true))?;
                         dest.checked_add(1)
@@ -1044,14 +925,14 @@ impl<'a> Run<'a> {
                     work.push((value, *inner, dest));
                     continue;
                 }
-                (TypeNode::Int, Value::Int(n)) => Word::int(*n),
-                (TypeNode::Bool, Value::Bool(b)) => Word::bool(*b),
-                (TypeNode::String, Value::String(s)) => {
+                (TypeNode::Int, Repr::Int(n)) => Word::int(*n),
+                (TypeNode::Bool, Repr::Bool(b)) => Word::bool(*b),
+                (TypeNode::String, Repr::String(s)) => {
                     let at = self.alloc(s.len().div_ceil(8))?;
                     self.put_bytes(at, s.as_bytes())?;
                     Word::reference(at, s.len())?
                 }
-                (TypeNode::List(entry), Value::List(items)) => {
+                (TypeNode::List(entry), Repr::List(items)) => {
                     let width = types.width(*entry);
                     let words = items
                         .len()
@@ -1069,7 +950,7 @@ impl<'a> Run<'a> {
 
                     Word::reference(at, items.len())?
                 }
-                (TypeNode::Record(fields), Value::Record(map)) => {
+                (TypeNode::Record(fields), Repr::Record(map)) => {
                     let words = types.record_words(fields);
                     let at = self.alloc(words)?;
 
@@ -1110,14 +991,14 @@ impl<'a> Run<'a> {
                         TypeNode::Option(inner) => {
                             let at = if types.is_option_int(ty) {
                                 if !word.as_bool()? {
-                                    out.push(Value::None);
+                                    out.push(Value::none());
                                     continue;
                                 }
 
                                 at.checked_add(1)
                                     .ok_or_else(|| fault(Fault::OutsideMemory))?
                             } else if word.is_none() {
-                                out.push(Value::None);
+                                out.push(Value::none());
                                 continue;
                             } else {
                                 at
@@ -1126,11 +1007,11 @@ impl<'a> Run<'a> {
                             steps.push(Read::Some);
                             steps.push(Read::Visit(at, *inner));
                         }
-                        TypeNode::Int => out.push(Value::Int(word.as_int())),
-                        TypeNode::Bool => out.push(Value::Bool(word.as_bool()?)),
+                        TypeNode::Int => out.push(Value::int(word.as_int())),
+                        TypeNode::Bool => out.push(Value::bool(word.as_bool()?)),
                         TypeNode::String => {
                             let (at, len) = word.as_reference()?;
-                            out.push(Value::String(self.string(at, len)?));
+                            out.push(Value::string(self.string(at, len)?));
                         }
                         TypeNode::List(entry) => {
                             let (start, len) = word.as_reference()?;
@@ -1170,7 +1051,7 @@ impl<'a> Run<'a> {
                         .checked_sub(n)
                         .ok_or_else(|| fault(Fault::ListLostEntries))?;
                     let items = out.split_off(at);
-                    out.push(Value::List(items));
+                    out.push(Value(Repr::List(items)));
                 }
                 Read::Record(ty) => {
                     let Some(TypeNode::Record(fields)) = types.get(ty) else {
@@ -1183,9 +1064,9 @@ impl<'a> Run<'a> {
                         .ok_or_else(|| fault(Fault::RecordLostFields))?;
                     let values = out.split_off(at);
 
-                    out.push(Value::Record(
+                    out.push(Value(Repr::Record(
                         fields.iter().map(|f| f.name.clone()).zip(values).collect(),
-                    ));
+                    )));
                 }
                 Read::Some => {
                     let value = out.pop().ok_or_else(|| fault(Fault::OptionLostValue))?;
