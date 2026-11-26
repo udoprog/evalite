@@ -1,0 +1,11 @@
+evalite-editor-label = Expression
+evalite-errors-label = Errors
+evalite-completion-value = value
+evalite-completion-field = field
+evalite-completion-method = method
+evalite-completion-function = function
+evalite-completion-literal = literal
+evalite-completion-operator = operator
+evalite-completion-unwrap = unwrap
+evalite-completion-other = other
+evalite-completion-typed = { $kind } · { $type }

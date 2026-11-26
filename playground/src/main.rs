@@ -2,8 +2,6 @@
 //! evalite in the browser.
 
 mod claims;
-mod complete;
-mod editor;
 mod eval;
 mod examples;
 mod share;
@@ -23,7 +21,8 @@ const INSTALL: &str = "cargo add evalite";
 
 use std::rc::Rc;
 
-use evalite::{Type, Value};
+use evalite::{Environment, Type, Value};
+use evalite_sockel::{ErrorView, ExpressionEditor};
 use gloo_timers::callback::Timeout;
 use yew::prelude::*;
 
@@ -33,8 +32,7 @@ use sockel::{
 };
 
 use crate::claims::{CLAIMS, Gives};
-use crate::editor::Editor;
-use crate::eval::{Binding, Bounds, Done, Mark, evaluate};
+use crate::eval::{Binding, Bounds, Done, Failed, Mark, evaluate};
 use crate::examples::{EXAMPLES, Example};
 use crate::share::Shared;
 
@@ -203,7 +201,23 @@ impl Input {
     }
 }
 
-type Outcome = Result<Done, Vec<Mark>>;
+type Outcome = Result<Done, Failed>;
+
+/// An outcome, with the source it is of.
+#[derive(PartialEq)]
+struct Computed {
+    source: AttrValue,
+    outcome: Outcome,
+}
+
+impl Computed {
+    fn of(input: &Input) -> Rc<Self> {
+        Rc::new(Self {
+            source: input.source.clone().into(),
+            outcome: compute(input),
+        })
+    }
+}
 
 /// A change to the input from a control's text.
 type Edit = dyn Fn(&mut Input, String);
@@ -431,7 +445,7 @@ struct PlaygroundProps {
 fn Playground(props: &PlaygroundProps) -> Html {
     let input = props.input.clone();
     let vars_open = props.vars_open.clone();
-    let outcome = use_state(|| Rc::new(compute(&input)));
+    let outcome = use_state(|| Computed::of(&input));
     let linked = use_state(|| false);
     let limits_open = use_state(|| false);
 
@@ -442,7 +456,7 @@ fn Playground(props: &PlaygroundProps) -> Html {
             let timeout = Timeout::new(DEBOUNCE_MS, move || {
                 to_location(&input);
                 linked.set(false);
-                outcome.set(Rc::new(compute(&input)));
+                outcome.set(Computed::of(&input));
             });
             move || drop(timeout)
         });
@@ -499,16 +513,9 @@ fn Playground(props: &PlaygroundProps) -> Html {
         Callback::from(move |next: bool| open.set(next))
     };
 
-    let errors: Vec<_> = match &**outcome {
-        Err(marks) => marks
-            .iter()
-            .filter(|m| m.primary)
-            .filter_map(|m| Some((m.span.clone()?, AttrValue::from(m.message.clone()))))
-            .collect(),
-        Ok(_) => Vec::new(),
-    };
-
-    let bindings = Rc::new(input.bindings());
+    let environment = use_memo(input.bindings(), |bindings| {
+        eval::environment(bindings).unwrap_or_else(|_| Environment::with_builtins())
+    });
 
     let rows = input.rows.iter().map(|row| {
         html! { <VarRow key={row.id} row={row.clone()} input={input.clone()} /> }
@@ -547,8 +554,8 @@ fn Playground(props: &PlaygroundProps) -> Html {
     };
 
     let bounds = input.bounds;
-    let used = (**outcome).as_ref().ok();
-    let limits_summary = match &**outcome {
+    let used = outcome.outcome.as_ref().ok();
+    let limits_summary = match &outcome.outcome {
         Ok(done) => format!(
             "{} of {} · {} of {}",
             done.steps,
@@ -576,9 +583,10 @@ fn Playground(props: &PlaygroundProps) -> Html {
                     <span class={class::MUTED}>{ "Examples:" }</span>
                     { for examples }
                 </Cluster>
-                <Editor source={input.source.clone()} on_change={on_source} {errors} {bindings} />
+                <ExpressionEditor source={AttrValue::from(input.source.clone())} on_input={on_source}
+                    {environment} options={bounds.options()} />
                 <Card class={class::OUTCOME} gap={Gap::Tight}>
-                    <OutcomeView outcome={(*outcome).clone()} />
+                    <OutcomeView computed={(*outcome).clone()} />
                 </Card>
                 <Disclosure title={html! { "Variables" }} summary={html! { vars_summary }}
                     id="playground-variables" open={*vars_open} on_toggle={toggle(&vars_open)}
@@ -689,12 +697,12 @@ fn VarRow(props: &VarRowProps) -> Html {
 
 #[derive(Properties, PartialEq)]
 struct OutcomeProps {
-    outcome: Rc<Outcome>,
+    computed: Rc<Computed>,
 }
 
 #[function_component]
 fn OutcomeView(props: &OutcomeProps) -> Html {
-    match &*props.outcome {
+    match &props.computed.outcome {
         Ok(done) => html! {
             <PropertyList label="Outcome">
                 <PropertyRow label="Value">
@@ -705,7 +713,10 @@ fn OutcomeView(props: &OutcomeProps) -> Html {
                 </PropertyRow>
             </PropertyList>
         },
-        Err(marks) => {
+        Err(Failed::Compile(diagnostics)) => html! {
+            <ErrorView diagnostics={diagnostics.clone()} source={props.computed.source.clone()} />
+        },
+        Err(Failed::Run(marks)) => {
             // Each primary mark starts an error, which the marks after it explain.
             let mut groups: Vec<(&Mark, Vec<AttrValue>)> = Vec::new();
 

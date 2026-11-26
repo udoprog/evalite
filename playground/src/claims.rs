@@ -234,7 +234,21 @@ pub const CLAIMS: &[Claim] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use evalite::Structure;
+
+    use crate::eval::Failed;
     use crate::{Input, compute};
+
+    fn primaries(failed: &Failed) -> Vec<String> {
+        match failed {
+            Failed::Compile(diagnostics) => diagnostics.iter().map(|d| d.to_string()).collect(),
+            Failed::Run(marks) => marks
+                .iter()
+                .filter(|m| m.primary)
+                .map(|m| m.message.clone())
+                .collect(),
+        }
+    }
 
     #[test]
     fn every_case_gives_what_the_page_says() {
@@ -249,32 +263,28 @@ mod tests {
                         assert_eq!(format!("{} : {}", done.value, done.ty), *shown, "{source}");
                     }
                     Gives::Error(shown) => {
-                        let marks = compute(&input)
+                        let failed = compute(&input)
                             .err()
                             .unwrap_or_else(|| panic!("{source} ran"));
-                        let primary = marks.iter().find(|m| m.primary).map(|m| m.message.as_str());
-                        assert_eq!(primary, Some(*shown), "{source}");
+                        let primary = primaries(&failed);
+                        assert_eq!(
+                            primary.first().map(String::as_str),
+                            Some(*shown),
+                            "{source}"
+                        );
                     }
                     Gives::Errors(shown) => {
-                        let marks = compute(&input)
+                        let failed = compute(&input)
                             .err()
                             .unwrap_or_else(|| panic!("{source} ran"));
-                        let primary: Vec<_> = marks
-                            .iter()
-                            .filter(|m| m.primary)
-                            .map(|m| m.message.as_str())
-                            .collect();
-                        assert_eq!(primary, *shown, "{source}");
+                        assert_eq!(primaries(&failed), *shown, "{source}");
                     }
                     Gives::Offers { some, not, more } => {
                         let env = crate::eval::environment(&input.bindings()).unwrap();
-                        let offers = crate::complete::offers(source, source.chars().count(), &env)
-                            .unwrap_or_else(|| panic!("{source}: no offers"));
-                        let labels = offers
-                            .offers
-                            .iter()
-                            .map(|o| o.label.as_str())
-                            .collect::<Vec<_>>();
+                        let structure = Structure::from_text(&format!("{source}_")).unwrap();
+                        let hole = *structure.holes().last().unwrap();
+                        let offers = structure.complete(&env, hole, None).unwrap();
+                        let labels = offers.iter().map(|o| o.label()).collect::<Vec<_>>();
 
                         for label in *some {
                             assert!(labels.contains(label), "{source}: {label} in {labels:?}");

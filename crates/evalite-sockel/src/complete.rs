@@ -9,21 +9,21 @@ const MAX_OFFERS: usize = 40;
 
 /// One thing the popup offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Offer {
-    pub label: String,
-    pub kind: &'static str,
-    pub ty: Option<String>,
+pub(crate) struct Offer {
+    pub(crate) label: String,
+    pub(crate) kind: CompletionKind,
+    pub(crate) ty: Option<String>,
     /// The function's or method's signature, as `lookup<T>(Int, List<T>) -> Option<T>`.
-    pub signature: Option<String>,
+    pub(crate) signature: Option<String>,
 }
 
 /// What the cursor is in: the word it replaces (in characters) and what
 /// fits there.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Offers {
-    pub start: usize,
-    pub end: usize,
-    pub offers: Vec<Offer>,
+pub(crate) struct Offers {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) offers: Vec<Offer>,
 }
 
 fn is_word(c: char) -> bool {
@@ -33,7 +33,7 @@ fn is_word(c: char) -> bool {
 /// What fits at character `cursor` of `source`, with `env` declared. `None`
 /// when the text around the cursor does not parse with a hole there, or
 /// nothing fits.
-pub fn offers(source: &str, cursor: usize, env: &Environment) -> Option<Offers> {
+pub(crate) fn offers(source: &str, cursor: usize, env: &Environment) -> Option<Offers> {
     let chars = source.chars().collect::<Vec<_>>();
     let cursor = cursor.min(chars.len());
 
@@ -73,7 +73,7 @@ pub fn offers(source: &str, cursor: usize, env: &Environment) -> Option<Offers> 
         .take(MAX_OFFERS)
         .map(|c| Offer {
             label: c.label().to_owned(),
-            kind: kind_name(c.kind()),
+            kind: c.kind(),
             ty: c.ty().map(|ty| ty.to_string()),
             signature: c.signature().map(str::to_owned),
         })
@@ -88,7 +88,7 @@ pub fn offers(source: &str, cursor: usize, env: &Environment) -> Option<Offers> 
 
 /// `source` with `offer` in place of the word, and the characters to
 /// select after it: its first hole, or the place after it.
-pub fn accept(source: &str, at: &Offers, offer: &Offer) -> (String, usize, usize) {
+pub(crate) fn accept(source: &str, at: &Offers, offer: &Offer) -> (String, usize, usize) {
     let chars = source.chars().collect::<Vec<_>>();
     let mut start = at.start.min(chars.len());
     let end = at.end.clamp(start, chars.len());
@@ -168,19 +168,6 @@ fn holes_in(text: &str) -> usize {
     }
 
     count
-}
-
-fn kind_name(kind: CompletionKind) -> &'static str {
-    match kind {
-        CompletionKind::Value => "value",
-        CompletionKind::Field => "field",
-        CompletionKind::Method => "method",
-        CompletionKind::Function => "function",
-        CompletionKind::Literal => "literal",
-        CompletionKind::Operator => "operator",
-        CompletionKind::Unwrap => "unwrap",
-        _ => "other",
-    }
 }
 
 #[cfg(test)]

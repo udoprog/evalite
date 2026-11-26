@@ -1,10 +1,10 @@
 //! Evaluating the editor's expression against the page's variables.
 
-use std::ops::Range;
+use std::rc::Rc;
 
 use evalite::{
-    DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, DEFAULT_MEMORY, Environment, Labels, Limits,
-    Machine, Options, RunError, Type, Value,
+    DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, DEFAULT_MEMORY, Diagnostics, Environment,
+    Labels, Limits, Machine, Options, RunError, Type, Value,
 };
 
 /// The machine's bounds, as the page sets them.
@@ -44,29 +44,37 @@ pub struct Done {
     pub memory: u64,
 }
 
-/// One label of an error: its message, and the characters (not bytes) of
-/// the expression it points at.
+/// One label of a run error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mark {
     pub message: String,
-    pub span: Option<Range<usize>>,
     pub primary: bool,
 }
 
-/// Compile and run `source` with `bindings` declared and bound.
-pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Done, Vec<Mark>> {
-    let env = environment(bindings)?;
+/// Why an expression gave no value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Failed {
+    /// It does not compile.
+    Compile(Rc<Diagnostics>),
+    /// A variable could not be declared, or the run failed.
+    Run(Vec<Mark>),
+}
 
-    let options = Options::new().max_depth(bounds.depth).max_len(bounds.len);
-    let (program, debug) = evalite::compile_debug(source, &env, &options).map_err(|errors| {
-        errors
-            .iter()
-            .flat_map(|error| marks(source, error.labels()))
-            .collect::<Vec<_>>()
-    })?;
+impl Bounds {
+    pub fn options(self) -> Options {
+        Options::new().max_depth(self.depth).max_len(self.len)
+    }
+}
+
+/// Compile and run `source` with `bindings` declared and bound.
+pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Done, Failed> {
+    let env = environment(bindings).map_err(Failed::Run)?;
+
+    let (program, debug) = evalite::compile_debug(source, &env, &bounds.options())
+        .map_err(|errors| Failed::Compile(Rc::new(errors)))?;
 
     let mut machine = Machine::new(Limits::new().memory(bounds.memory).fuel(bounds.fuel));
-    let failed = |error: RunError| marks(source, error.labels(&program, Some(&debug)));
+    let failed = |error: RunError| Failed::Run(marks(error.labels(&program, Some(&debug))));
     let mut run = machine.load(&program).map_err(failed)?;
 
     let read = run
@@ -101,7 +109,6 @@ pub fn environment(bindings: &[Binding]) -> Result<Environment, Vec<Mark>> {
             .map_err(|error| {
                 vec![Mark {
                     message: format!("`{}`: {error}", binding.name),
-                    span: None,
                     primary: true,
                 }]
             })?;
@@ -110,27 +117,13 @@ pub fn environment(bindings: &[Binding]) -> Result<Environment, Vec<Mark>> {
     Ok(env)
 }
 
-fn marks(source: &str, labels: Labels<'_>) -> Vec<Mark> {
+fn marks(labels: Labels<'_>) -> Vec<Mark> {
     labels
         .map(|label| Mark {
             message: label.message().to_string(),
-            span: label.span().map(|span| {
-                let start = chars_before(source, span.start);
-                let end = chars_before(source, span.end);
-                start..end.max(start)
-            }),
             primary: label.is_primary(),
         })
         .collect()
-}
-
-/// How many characters come before byte `at` of `source`.
-fn chars_before(source: &str, at: u32) -> usize {
-    let at = usize::try_from(at).unwrap_or(usize::MAX);
-    source
-        .char_indices()
-        .take_while(|(index, _)| *index < at)
-        .count()
 }
 
 #[cfg(test)]
@@ -154,17 +147,9 @@ mod tests {
     }
 
     #[test]
-    fn type_error_points_at_its_span() {
-        let marks = evaluate("1 + true", &[], Bounds::default()).unwrap_err();
-        let primary = marks.iter().find(|m| m.primary).unwrap();
-        assert!(primary.span.is_some());
-    }
-
-    #[test]
-    fn spans_count_characters() {
-        let marks = evaluate("\"é\" + x", &[], Bounds::default()).unwrap_err();
-        let primary = marks.iter().find(|m| m.primary).unwrap();
-        assert_eq!(primary.span, Some(6..7));
+    fn type_errors_are_diagnostics() {
+        let failed = evaluate("1 + true", &[], Bounds::default()).unwrap_err();
+        assert!(matches!(failed, Failed::Compile(_)), "{failed:?}");
     }
 
     #[test]
@@ -173,7 +158,10 @@ mod tests {
             fuel: 3,
             ..Bounds::default()
         };
-        let marks = evaluate("1 + 2 + 3 + 4 + 5", &[], bounds).unwrap_err();
+        let failed = evaluate("1 + 2 + 3 + 4 + 5", &[], bounds).unwrap_err();
+        let Failed::Run(marks) = failed else {
+            panic!("{failed:?}");
+        };
         assert!(marks.iter().any(|m| m.primary));
     }
 }
