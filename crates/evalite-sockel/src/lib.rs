@@ -524,6 +524,7 @@ pub const CLASSES: &[&str] = &[
     "sockel-property-list",
     "sockel-property-row",
     "sockel-property-value",
+    "sockel-quantity",
     "sockel-quiet",
     "sockel-raised",
     "sockel-ranged",
