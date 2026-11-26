@@ -11,7 +11,7 @@ struct Output {
 }
 
 fn run(args: &[&str], stdin: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_shexel"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_evalite"))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

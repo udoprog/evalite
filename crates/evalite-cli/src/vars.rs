@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use shexel::{Type, Value};
+use evalite::{Type, Value};
 
 /// The deepest a type written on the command line may nest.
 const MAX_TYPE_DEPTH: usize = 16;

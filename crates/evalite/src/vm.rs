@@ -141,7 +141,7 @@ enum Piece<'a> {
 }
 
 impl fmt::Display for Value {
-    /// Values as shexel writes them: `3`, `true`, `"Brawl"`, `[1, 2]`,
+    /// Values as evalite writes them: `3`, `true`, `"Brawl"`, `[1, 2]`,
     /// `{athletics: 2, "Brawl (bar)": 1}`, `none` and `some(2)`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut stack = vec![Piece::Value(self)];
@@ -274,7 +274,7 @@ pub enum RunError {
         needed: u64,
         left: u64,
     },
-    /// The program is not one shexel made. Programs from
+    /// The program is not one evalite made. Programs from
     /// [`compile`](crate::compile) and [`Program::from_bytes`] never give
     /// it.
     Fault(String),
@@ -401,13 +401,13 @@ pub struct Outcome {
 /// absent. A string's bytes are packed 8 to a word.
 ///
 /// ```
-/// use shexel::{Environment, Limits, Machine, Type, Value};
+/// use evalite::{Environment, Limits, Machine, Type, Value};
 ///
 /// let mut env = Environment::with_builtins();
 /// env.value("strength", Type::Int)?;
 /// env.value("bonus", Type::option(Type::Int))?;
 ///
-/// let program = shexel::compile("strength + bonus.unwrap_or(0)", &env)?;
+/// let program = evalite::compile("strength + bonus.unwrap_or(0)", &env)?;
 ///
 /// let mut machine = Machine::new(Limits::new());
 /// let mut run = machine.load(&program)?;

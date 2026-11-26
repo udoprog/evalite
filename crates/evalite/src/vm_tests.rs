@@ -891,7 +891,7 @@ fn machines_are_reused() {
     }
 }
 
-/// A program that shexel would not make gives a fault or a wrong value,
+/// A program that evalite would not make gives a fault or a wrong value,
 /// never a panic: memory is untyped, so what the verifier would refuse
 /// but stays inside memory runs on whatever words it finds.
 #[test]

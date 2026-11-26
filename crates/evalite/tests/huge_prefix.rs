@@ -11,7 +11,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use shexel::{Environment, Program, StoreError, Type};
+use evalite::{Environment, Program, StoreError, Type};
 
 struct Counting;
 
@@ -57,7 +57,7 @@ fn varint(mut n: u64) -> Vec<u8> {
 fn huge_length_prefix() {
     let mut env = Environment::with_builtins();
     env.value("i", Type::Int).unwrap();
-    let bytes = shexel::compile("i", &env).unwrap().to_bytes().unwrap();
+    let bytes = evalite::compile("i", &env).unwrap().to_bytes().unwrap();
     assert!(Program::from_bytes(&bytes).is_ok());
 
     // The stored form starts with its field count, then each field's tag

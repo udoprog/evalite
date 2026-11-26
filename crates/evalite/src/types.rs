@@ -80,7 +80,7 @@ pub(crate) enum TypeFault {
     TooDeep,
 }
 
-/// Check that `ty` is a type shexel has: no `Option<Option<T>>`, at most
+/// Check that `ty` is a type evalite has: no `Option<Option<T>>`, at most
 /// [`MAX_TYPE_DEPTH`] deep.
 pub(crate) fn check_type(ty: &Type) -> Result<(), TypeFault> {
     let mut stack = vec![(ty, 1usize)];
@@ -116,7 +116,7 @@ enum Piece<'a> {
 }
 
 impl fmt::Display for Type {
-    /// Types as written in shexel: `Int`, `List<Int>`, `Option<Int>`, and
+    /// Types as written in evalite: `Int`, `List<Int>`, `Option<Int>`, and
     /// records as `{athletics: Int, "Brawl (bar)": Option<Int>}`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut stack = vec![Piece::Type(self)];

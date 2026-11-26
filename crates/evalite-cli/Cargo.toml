@@ -1,10 +1,10 @@
 [package]
-name = "shexel-cli"
+name = "evalite-cli"
 edition = "2024"
 publish = false
 
 [[bin]]
-name = "shexel"
+name = "evalite"
 path = "src/main.rs"
 
 [lints.clippy]
@@ -17,4 +17,4 @@ arithmetic_side_effects = "deny"
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
-shexel = { path = "../shexel" }
+evalite = { path = "../evalite" }

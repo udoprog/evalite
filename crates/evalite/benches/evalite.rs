@@ -14,7 +14,7 @@ use std::fmt::Write;
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use shexel::{DEFAULT_FUEL, Environment, Limits, Machine, Program, Type, Value};
+use evalite::{DEFAULT_FUEL, Environment, Limits, Machine, Program, Type, Value};
 
 const ATTRIBUTES: [&str; 9] = [
     "intelligence",
@@ -325,7 +325,7 @@ struct Prepared {
 }
 
 fn prepare(source: &str, env: &Environment, values: &BTreeMap<String, Value>) -> Prepared {
-    let program = shexel::compile(source, env).unwrap_or_else(|e| panic!("{source}: {e}"));
+    let program = evalite::compile(source, env).unwrap_or_else(|e| panic!("{source}: {e}"));
     let bytes = program.to_bytes().unwrap();
     let bindings = program
         .globals()
@@ -347,7 +347,7 @@ fn prepare(source: &str, env: &Environment, values: &BTreeMap<String, Value>) ->
 }
 
 /// Load, bind and run one program, as a caller holding its values does.
-fn evaluate(machine: &mut Machine, prepared: &Prepared) -> shexel::Outcome {
+fn evaluate(machine: &mut Machine, prepared: &Prepared) -> evalite::Outcome {
     let mut run = machine.load(&prepared.program).unwrap();
 
     for (name, value) in &prepared.bindings {
@@ -366,7 +366,7 @@ fn stages(c: &mut Criterion) {
         let mut group = c.benchmark_group(format!("stage/{name}"));
 
         group.bench_function("compile", |b| {
-            b.iter(|| shexel::compile(black_box(&source), &env).unwrap())
+            b.iter(|| evalite::compile(black_box(&source), &env).unwrap())
         });
 
         group.bench_function("from_bytes", |b| {
@@ -397,7 +397,7 @@ fn stages(c: &mut Criterion) {
 
         group.bench_function("end_to_end", |b| {
             b.iter(|| {
-                let program = shexel::compile(black_box(&source), &env).unwrap();
+                let program = evalite::compile(black_box(&source), &env).unwrap();
                 let mut run = machine.load(&program).unwrap();
 
                 for (name, _) in program.globals() {
@@ -455,7 +455,7 @@ fn whole_sheet(c: &mut Criterion) {
     group.bench_function("compile", |b| {
         b.iter(|| {
             for source in &sources {
-                black_box(shexel::compile(black_box(source), &env).unwrap());
+                black_box(evalite::compile(black_box(source), &env).unwrap());
             }
         })
     });
