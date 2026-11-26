@@ -78,14 +78,14 @@ fn binding(name: &str) -> (Value, usize) {
 }
 
 /// [`env`]'s functions: `count(t)` is its boxes, `count(t, n)` is `n`,
-/// `boxes` is 5, `lookup(i, table)` is `i`, `label(i)` is `some(i)` for
+/// `boxes` is 5, `chart(i, table)` is `i`, `label(i)` is `some(i)` for
 /// even `i`, `pick()` is `true`.
 fn host(name: &str, args: Vec<Value>) -> Result<Value, String> {
     Ok(match (name, args.as_slice()) {
         ("count", [Value(Repr::Record(t))]) => t["boxes"].clone(),
         ("count", [Value(Repr::Record(_)), Value(Repr::Int(n))]) => Value::int(*n),
         ("boxes", [Value(Repr::Record(_))]) => Value::int(5),
-        ("lookup", [Value(Repr::Int(i)), Value(Repr::String(table))]) => {
+        ("chart", [Value(Repr::Int(i)), Value(Repr::String(table))]) => {
             assert_eq!(table, "Essence");
             Value::int(*i)
         }
@@ -225,7 +225,7 @@ const CASES: &[(&str, &str)] = &[
     ("false", "false"),
     ("[4, 5, 6]", "[4, 5, 6]"),
     ("[[1], [2, 3]]", "[[1], [2, 3]]"),
-    (r#"lookup(3, "Essence")"#, "3"),
+    (r#"chart(3, "Essence")"#, "3"),
     ("wits", "2"),
     // Neg, Not
     ("-wits", "-2"),
@@ -296,47 +296,44 @@ const CASES: &[(&str, &str)] = &[
     ("athletics.clamp(2, 3)", "2"),
     ("wits.clamp(1, 3)", "2"),
     ("wits.clamp(2, 2)", "2"),
-    // Lookup: an option, none out of range
-    ("lookup(1, levels)", "some(20)"),
-    ("lookup(0, levels)", "some(10)"),
-    ("lookup(-1, levels)", "none"),
-    ("lookup(-5, levels)", "none"),
-    ("lookup(3, levels)", "none"),
-    ("lookup(99, levels)", "none"),
-    ("lookup(blood_potency, [10, 11, 12, 13])", "some(12)"),
-    ("lookup(0, [wits])", "some(2)"),
-    ("lookup(9, levels).unwrap_or(0)", "0"),
-    ("lookup(1, levels).unwrap_or(0)", "20"),
-    ("lookup(1, levels).is_some()", "true"),
-    ("lookup(3, levels).is_none()", "true"),
-    ("lookup(0, [true, false])", "some(true)"),
-    ("lookup(2, [true, false])", "none"),
-    ("lookup(0, [levels])", "some([10, 20, 30])"),
-    ("lookup(1, [levels])", "none"),
+    // Get: an option, none out of range
+    ("levels.get(1)", "some(20)"),
+    ("levels.get(0)", "some(10)"),
+    ("levels.get(-1)", "none"),
+    ("levels.get(-5)", "none"),
+    ("levels.get(3)", "none"),
+    ("levels.get(99)", "none"),
+    ("[10, 11, 12, 13].get(blood_potency)", "some(12)"),
+    ("[wits].get(0)", "some(2)"),
+    ("levels.get(9).unwrap_or(0)", "0"),
+    ("levels.get(1).unwrap_or(0)", "20"),
+    ("levels.get(1).is_some()", "true"),
+    ("levels.get(3).is_none()", "true"),
+    ("[true, false].get(0)", "some(true)"),
+    ("[true, false].get(2)", "none"),
+    ("[levels].get(0)", "some([10, 20, 30])"),
+    ("[levels].get(1)", "none"),
     // A list of options gives an option of an option, telling an absent
     // entry from one out of range
-    ("lookup(0, [bonus, label(3)])", "some(some(2))"),
-    ("lookup(1, [bonus, label(3)])", "some(none)"),
-    ("lookup(2, [bonus, label(3)])", "none"),
-    ("lookup(0, [maybe])", "some(none)"),
-    ("lookup(1, [maybe])", "none"),
-    ("lookup(0, [maybe_track])!!.boxes", "5"),
-    (
-        "lookup(0, [[maybe_track]])!",
-        "[some({boxes: 5, count: [5]})]",
-    ),
+    ("[bonus, label(3)].get(0)", "some(some(2))"),
+    ("[bonus, label(3)].get(1)", "some(none)"),
+    ("[bonus, label(3)].get(2)", "none"),
+    ("[maybe].get(0)", "some(none)"),
+    ("[maybe].get(1)", "none"),
+    ("[maybe_track].get(0)!!.boxes", "5"),
+    ("[[maybe_track]].get(0)!", "[some({boxes: 5, count: [5]})]"),
     // Unwrap, `!`
     ("bonus!", "2"),
     ("bonus! + 1", "3"),
     ("-bonus!", "-2"),
     ("specialties.brawl!", "1"),
     ("label(4)!", "4"),
-    ("lookup(1, levels)!", "20"),
+    ("levels.get(1)!", "20"),
     ("maybe_track!.boxes", "5"),
     ("maybe_track!.count[0]", "5"),
     ("[bonus, label(8)][1]!", "8"),
-    ("lookup(0, [true])!", "true"),
-    ("lookup(0, [\"a\"])!", "\"a\""),
+    ("[true].get(0)!", "true"),
+    ("[\"a\"].get(0)!", "\"a\""),
     // UnwrapOr, IsSome, IsNone
     ("bonus.unwrap_or(0)", "2"),
     ("maybe.unwrap_or(true)", "true"),
@@ -420,7 +417,7 @@ fn every_instruction_is_covered() {
         Instr::Max(0),
         Instr::Abs,
         Instr::Clamp,
-        Instr::Lookup(TypeId(0)),
+        Instr::Get(TypeId(0)),
         Instr::UnwrapOr(TypeId(0)),
         Instr::IsSome(TypeId(0)),
         Instr::IsNone(TypeId(0)),
@@ -595,7 +592,7 @@ fn arithmetic_errors() {
 }
 
 #[test]
-fn lookup_errors() {
+fn get_errors() {
     let cases = [
         (
             "levels[3]",
@@ -617,11 +614,11 @@ fn lookup_errors() {
             "`!` found no value: the optional value is none",
         ),
         (
-            "lookup(3, levels)! + 1",
+            "levels.get(3)! + 1",
             "`!` found no value: the optional value is none",
         ),
         (
-            "lookup(1, [maybe_track])!!.boxes",
+            "[maybe_track].get(1)!!.boxes",
             "`!` found no value: the optional value is none",
         ),
     ];
@@ -640,11 +637,11 @@ fn lookup_errors() {
         "index 0 is out of range of a list of 0 entries"
     );
 
-    // `lookup` gives none instead, of an empty list too.
-    let outcome = eval_in("lookup(0, e)", &empty, Limits::new()).unwrap();
+    // `get` gives none instead, of an empty list too.
+    let outcome = eval_in("e.get(0)", &empty, Limits::new()).unwrap();
     assert_eq!(outcome.value, Value::none());
-    assert_eq!(eval("lookup(3, levels)"), Value::none());
-    assert_eq!(eval("lookup(2, levels)"), Value::some(int(30)));
+    assert_eq!(eval("levels.get(3)"), Value::none());
+    assert_eq!(eval("levels.get(2)"), Value::some(int(30)));
 }
 
 #[test]
@@ -832,11 +829,11 @@ fn binding_errors() {
 
 #[test]
 fn memory_budget() {
-    // `lookup(i, [10, 11, 12, 13])` takes 2 stack words, 4 constant words
+    // `[10, 11, 12, 13].get(i)` takes 2 stack words, 4 constant words
     // and a word for `i`.
     let mut env = Environment::with_builtins();
     env.value("i", Type::int()).unwrap();
-    let program = compile("lookup(i, [10, 11, 12, 13])", &env).unwrap();
+    let program = compile("[10, 11, 12, 13].get(i)", &env).unwrap();
     assert_eq!(
         program.memory(),
         Memory {
@@ -1284,9 +1281,9 @@ fn option_layouts() {
                     ("o.unwrap_or(d)", unwrapped.clone()),
                     ("[o, o, o][2]", o.clone()),
                     ("[o, give()]", Value::list(vec![o.clone(), o.clone()])),
-                    ("lookup(1, [give(), o])", Value::some(o.clone())),
-                    ("lookup(1, [give(), o])!", o.clone()),
-                    ("lookup(9, [give(), o])", Value::none()),
+                    ("[give(), o].get(1)", Value::some(o.clone())),
+                    ("[give(), o].get(1)!", o.clone()),
+                    ("[give(), o].get(9)", Value::none()),
                     ("r.o", o.clone()),
                     ("r.z", int(-5)),
                     ("l[1]", o.clone()),
@@ -1365,21 +1362,21 @@ fn list_of_optional_ints() {
         ("l[3].is_some()", "true"),
         ("l[3].unwrap_or(5)", "-1"),
         ("l[0].unwrap_or(5)", "5"),
-        ("lookup(-9, l)", "none"),
-        ("lookup(99, l)", "none"),
-        ("lookup(0, l)", "some(none)"),
-        ("lookup(1, l)", "some(some(-9223372036854775808))"),
-        ("lookup(4, l)", "some(some(0))"),
-        ("lookup(4, l)!", "some(0)"),
-        ("lookup(4, l)!!", "0"),
-        ("lookup(0, l)!.is_none()", "true"),
-        ("lookup(0, l).is_some()", "true"),
-        ("lookup(9, l).is_some()", "false"),
-        ("lookup(0, l).unwrap_or(o)", "none"),
-        ("lookup(9, l).unwrap_or(o)", "some(-1)"),
-        ("lookup(2, l).unwrap_or(o)", "some(9223372036854775807)"),
+        ("l.get(-9)", "none"),
+        ("l.get(99)", "none"),
+        ("l.get(0)", "some(none)"),
+        ("l.get(1)", "some(some(-9223372036854775808))"),
+        ("l.get(4)", "some(some(0))"),
+        ("l.get(4)!", "some(0)"),
+        ("l.get(4)!!", "0"),
+        ("l.get(0)!.is_none()", "true"),
+        ("l.get(0).is_some()", "true"),
+        ("l.get(9).is_some()", "false"),
+        ("l.get(0).unwrap_or(o)", "none"),
+        ("l.get(9).unwrap_or(o)", "some(-1)"),
+        ("l.get(2).unwrap_or(o)", "some(9223372036854775807)"),
         (
-            "[lookup(0, l), lookup(9, l), lookup(3, l)]",
+            "[l.get(0), l.get(9), l.get(3)]",
             "[some(none), none, some(some(-1))]",
         ),
         ("l.len()", "5"),
@@ -1496,7 +1493,7 @@ fn word_budget() {
     }
 
     // A string takes a word per 8 bytes, the empty string none.
-    let program = compile("lookup(0, [s])", &env).unwrap();
+    let program = compile("[s].get(0)", &env).unwrap();
     let base = program.memory().total() as u32;
 
     for (s, words) in [("", 0), ("12345678", 1), ("123456789", 2)] {
@@ -1580,7 +1577,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
         23 => Instr::Max(n(rng)),
         24 => Instr::Abs,
         25 => Instr::Clamp,
-        26 => Instr::Lookup(ty(rng)),
+        26 => Instr::Get(ty(rng)),
         27 => Instr::UnwrapOr(ty(rng)),
         28 => Instr::IsSome(ty(rng)),
         29 => Instr::IsNone(ty(rng)),
@@ -1616,7 +1613,7 @@ fn nudge(rng: &mut Rng, instr: Instr) -> Instr {
         Instr::List { len, entry } => Instr::List { len: d(len), entry },
         Instr::Min(n) => Instr::Min(d(n)),
         Instr::Max(n) => Instr::Max(d(n)),
-        Instr::Lookup(ty) => Instr::Lookup(TypeId(d(ty.0))),
+        Instr::Get(ty) => Instr::Get(TypeId(d(ty.0))),
         Instr::UnwrapOr(ty) => Instr::UnwrapOr(TypeId(d(ty.0))),
         Instr::IsSome(ty) => Instr::IsNone(TypeId(d(ty.0))),
         Instr::IsNone(ty) => Instr::IsSome(TypeId(d(ty.0))),
@@ -1853,12 +1850,12 @@ fn nested_options() {
             );
             assert_eq!(run("[y, y][1]").unwrap().value, value, "{ty} {value}");
             assert_eq!(
-                run("lookup(0, [y])").unwrap().value,
+                run("[y].get(0)").unwrap().value,
                 Value::some(value.clone()),
                 "{ty} {value}"
             );
             assert_eq!(
-                run("lookup(1, [y])").unwrap().value,
+                run("[y].get(1)").unwrap().value,
                 Value::none(),
                 "{ty} {value}"
             );

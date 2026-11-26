@@ -150,15 +150,11 @@ impl Completion {
     /// let ty = |label: &str| all.iter().find(|c| c.label() == label).map(|c| c.ty().cloned());
     /// assert_eq!(ty("bonus.unwrap_or(_)"), Some(Some(Type::int())));
     ///
-    /// // `lookup` gives an option of whatever its list holds: an
-    /// // `Option<Int>` where one is wanted, and not known where anything is.
+    /// // `get` gives an option of whatever its list holds.
+    /// env.value("levels", Type::list(Type::int()))?;
     /// let all = s.complete(&env, s.root(), Some(&Type::option(Type::int())))?;
-    /// let lookup = all.iter().find(|c| c.label() == "lookup(_, _)").ok_or("not offered")?;
-    /// assert_eq!(lookup.ty(), Some(&Type::option(Type::int())));
-    ///
-    /// let all = s.complete(&env, s.root(), None)?;
-    /// let lookup = all.iter().find(|c| c.label() == "lookup(_, _)").ok_or("not offered")?;
-    /// assert_eq!(lookup.ty(), None);
+    /// let get = all.iter().find(|c| c.label() == "levels.get(_)").ok_or("not offered")?;
+    /// assert_eq!(get.ty(), Some(&Type::option(Type::int())));
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn ty(&self) -> Option<&Type> {
@@ -178,7 +174,6 @@ impl Completion {
     /// let s = Structure::from_text("_")?;
     /// let all = s.complete(&env, s.root(), None)?;
     /// let signature = |label: &str| all.iter().find(|c| c.label() == label).and_then(|c| c.signature());
-    /// assert_eq!(signature("lookup(_, _)"), Some("lookup<T>(Int, List<T>) -> Option<T>"));
     /// assert_eq!(signature("min(_, _)"), Some("min(Int, ...) -> Int"));
     /// assert_eq!(signature("rating(_)"), Some("rating(String) -> Int"));
     /// assert_eq!(signature("bonus"), None);
@@ -275,6 +270,18 @@ enum Pattern {
     Method(String),
     /// A record with this field.
     Field(String),
+}
+
+impl Pattern {
+    /// Whether every `List<T>` fits it, whatever its `T`.
+    fn takes_any_list(&self) -> bool {
+        match self {
+            Self::List => true,
+            // A list's methods are generic over its `T`.
+            Self::Method(name) => methods::find(&Type::list(Type::bool()), name).is_some(),
+            _ => false,
+        }
+    }
 }
 
 /// A place between a node and the nearest one whose type is known.
@@ -390,7 +397,7 @@ impl Want {
     fn entry(self) -> Self {
         match self {
             Self::Any => Self::Any,
-            Self::OneOf(patterns) if patterns.contains(&Pattern::List) => Self::Any,
+            Self::OneOf(patterns) if patterns.iter().any(Pattern::takes_any_list) => Self::Any,
             Self::OneOf(patterns) => Self::OneOf(
                 patterns
                     .into_iter()

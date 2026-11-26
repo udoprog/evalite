@@ -77,9 +77,9 @@ pub(crate) enum Instr {
     Abs,
     /// `value.clamp(low, high)`.
     Clamp,
-    /// `lookup(index, list)` of a list of `T`s: an `Option<T>`, absent when
+    /// `list.get(index)` of a list of `T`s: an `Option<T>`, absent when
     /// the index is out of range.
-    Lookup(TypeId),
+    Get(TypeId),
     /// `option.unwrap_or(default)` of this option type.
     UnwrapOr(TypeId),
     /// `option!` of this option type, failing the run when it is absent.
@@ -640,10 +640,10 @@ impl Verifier<'_> {
                         .map_err(|_| fail(Invalid::IndexNonList))?;
                     entry
                 }
-                Instr::Lookup(entry) => {
-                    need(stack.pop().and_then(|l| self.entry(l)), Some(entry))
-                        .map_err(|_| fail(Invalid::LookupNonList))?;
+                Instr::Get(entry) => {
                     need(stack.pop(), int)?;
+                    need(stack.pop().and_then(|l| self.entry(l)), Some(entry))
+                        .map_err(|_| fail(Invalid::GetNonList))?;
 
                     self.find(TypeNode::Option(entry))?
                 }

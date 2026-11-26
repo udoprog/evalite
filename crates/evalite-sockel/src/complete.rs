@@ -13,7 +13,7 @@ pub(crate) struct Offer {
     pub(crate) label: String,
     pub(crate) kind: CompletionKind,
     pub(crate) ty: Option<String>,
-    /// The function's or method's signature, as `lookup<T>(Int, List<T>) -> Option<T>`.
+    /// The function's or method's signature, as `Option<T>.unwrap_or(T) -> T`.
     pub(crate) signature: Option<String>,
 }
 
@@ -216,15 +216,15 @@ mod tests {
 
     #[test]
     fn calls_carry_their_signature() {
-        let at = offers("lo", 2, &env()).unwrap();
-        let lookup = at
+        let at = offers("bonus.un", 8, &env()).unwrap();
+        let unwrap_or = at
             .offers
             .iter()
-            .find(|o| o.label == "lookup(_, _)")
+            .find(|o| o.label == "unwrap_or(_)")
             .unwrap();
         assert_eq!(
-            lookup.signature.as_deref(),
-            Some("lookup<T>(Int, List<T>) -> Option<T>")
+            unwrap_or.signature.as_deref(),
+            Some("Option<T>.unwrap_or(T) -> T")
         );
     }
 

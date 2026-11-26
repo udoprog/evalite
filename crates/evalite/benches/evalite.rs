@@ -93,7 +93,7 @@ fn env() -> Environment {
         .unwrap();
     env.value("feeding", Type::list(Type::int())).unwrap();
     env.value("table", Type::list(Type::int())).unwrap();
-    env.function("lookup", [Type::int(), Type::string()], Type::int())
+    env.function("rating", [Type::string()], Type::int())
         .unwrap();
     env
 }
@@ -161,12 +161,12 @@ fn values() -> BTreeMap<String, Value> {
     values
 }
 
-/// The caller's `lookup(Int, String)`: a named library table.
+/// The caller's `rating(String)`: a trait's rating, by name.
 fn host(name: &str, args: Vec<Value>) -> Result<Value, String> {
     match (name, args.as_slice()) {
-        ("lookup", [n, table]) => match (n.as_int(), table.as_str()) {
-            (Some(n), Some(_)) => Ok(Value::int(n * 2)),
-            _ => Err(format!("wrong arguments to {name}")),
+        ("rating", [name]) => match name.as_str() {
+            Some(_) => Ok(Value::int(3)),
+            None => Err("wrong arguments to rating".to_owned()),
         },
         _ => Err(format!("no function {name}")),
     }
@@ -242,14 +242,14 @@ fn cases() -> Vec<(&'static str, String)> {
         ("unwrap_or_16", unwraps),
         ("is_none_16", tests),
         (
-            "lookup_literal",
-            "lookup(blood_potency, [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5]).unwrap_or(0)".to_owned(),
+            "get_literal",
+            "[0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5].get(blood_potency).unwrap_or(0)".to_owned(),
         ),
         (
-            "lookup_global",
-            "lookup(blood_potency, feeding).unwrap_or(0) + lookup(humanity, table).unwrap_or(0)".to_owned(),
+            "get_global",
+            "feeding.get(blood_potency).unwrap_or(0) + table.get(humanity).unwrap_or(0)".to_owned(),
         ),
-        ("lookup_host", r#"lookup(blood_potency, "Essence")"#.to_owned()),
+        ("host", r#"blood_potency + rating("Essence")"#.to_owned()),
         (
             "track",
             "health.boxes - health.count[1] - health.count[2] - willpower.count[1]".to_owned(),
@@ -301,9 +301,9 @@ fn sheet() -> Vec<String> {
             "min(dexterity, wits) + athletics",
             "min(wits, dexterity) + armor.unwrap_or(0)",
             "size + strength + dexterity",
-            "lookup(blood_potency, [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]).unwrap_or(10)",
-            "lookup(blood_potency, feeding).unwrap_or(0)",
-            "lookup(humanity, table).unwrap_or(0) + 1",
+            "[10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].get(blood_potency).unwrap_or(10)",
+            "feeding.get(blood_potency).unwrap_or(0)",
+            "table.get(humanity).unwrap_or(0) + 1",
             "vitae.boxes - vitae.count[1]",
             "humanity >= 5 || bonus_3.is_some()",
             "merits[0].unwrap_or(0) + merits[1].unwrap_or(0) + merits[2].unwrap_or(0)",

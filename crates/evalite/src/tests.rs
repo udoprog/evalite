@@ -268,7 +268,7 @@ fn postfixes() {
         ("a.b!", "(unwrap (field a b))"),
         ("a!.b", "(field (unwrap a) b)"),
         ("a![0]", "(index (unwrap a) 0)"),
-        ("lookup(1, l)!", "(unwrap (call lookup 1 l))"),
+        ("rating(1, l)!", "(unwrap (call rating 1 l))"),
         ("a!!", "(unwrap (unwrap a))"),
         ("-a!", "(- (unwrap a))"),
         ("!a!", "(! (unwrap a))"),
@@ -362,16 +362,16 @@ fn current_expressions() {
         ),
         ("max (a)", "(call max a)"),
         (
-            "lookup(blood_potency, [10, 11, 12 , 13])",
-            "(call lookup blood_potency [10 11 12 13])",
+            "rating(blood_potency, [10, 11, 12 , 13])",
+            "(call rating blood_potency [10 11 12 13])",
         ),
         (
-            r#"lookup(primal_urge, "Essence (1e)")"#,
-            r#"(call lookup primal_urge "Essence (1e)")"#,
+            r#"rating(primal_urge, "Essence (1e)")"#,
+            r#"(call rating primal_urge "Essence (1e)")"#,
         ),
         (
-            r#"lookup(blood_potency, "Vitae \"2e\"")"#,
-            r#"(call lookup blood_potency "Vitae \"2e\"")"#,
+            r#"rating(blood_potency, "Vitae \"2e\"")"#,
+            r#"(call rating blood_potency "Vitae \"2e\"")"#,
         ),
         (
             r#"specialties.athletics + health[2] + m["Brawl (bar)"]"#,
@@ -389,16 +389,16 @@ fn current_expressions() {
         ("max(dexterity, wits, 7)", "(call max dexterity wits 7)"),
         ("-dexterity + 1", "(+ (- dexterity) 1)"),
         (
-            "lookup(blood_potency + 5, [10, 11, 12, 13])",
-            "(call lookup (+ blood_potency 5) [10 11 12 13])",
+            "rating(blood_potency + 5, [10, 11, 12, 13])",
+            "(call rating (+ blood_potency 5) [10 11 12 13])",
         ),
-        ("lookup(-wits, [10, 11])", "(call lookup (- wits) [10 11])"),
-        ("lookup(0, [wits + 1])", "(call lookup 0 [(+ wits 1)])"),
+        ("rating(-wits, [10, 11])", "(call rating (- wits) [10 11])"),
+        ("rating(0, [wits + 1])", "(call rating 0 [(+ wits 1)])"),
         ("9223372036854775807 + 1", "(+ 9223372036854775807 1)"),
         ("-9223372036854775807 - 2", "(- (- 9223372036854775807) 2)"),
         (
-            "a + min(b, a) + lookup(c, [a, d])",
-            "(+ (+ a (call min b a)) (call lookup c [a d]))",
+            "a + min(b, a) + rating(c, [a, d])",
+            "(+ (+ a (call min b a)) (call rating c [a d]))",
         ),
         (
             "count(t, s) + boxes(u) + count(t)",
@@ -1256,8 +1256,8 @@ fn recover_tokens() {
             ],
         ),
         (
-            "lookup(a, \"x",
-            "(call lookup a (error \"x))",
+            "rating(a, \"x",
+            "(call rating a (error \"x))",
             &[
                 (
                     "expected `)` to close the `(` at byte 6, found the end of the expression",
@@ -1467,7 +1467,7 @@ fn unescapes() {
     assert_eq!(unescape("a"), None);
     assert_eq!(unescape("\""), None);
 
-    let source = r#"lookup(a, "Vitae \"2e\"")"#;
+    let source = r#"rating(a, "Vitae \"2e\"")"#;
     let tree = parse(source).unwrap();
     let string = tree.walk().find(|n| n.value() == Syntax::String).unwrap();
     assert_eq!(
@@ -1712,7 +1712,7 @@ fn generate(rng: &mut Rng, budget: usize) -> (String, usize, bool) {
                 (format!("[{s}{args}{s}]"), nest + 1, false)
             } else {
                 (
-                    format!("{}{s}({args})", rng.pick(&["f", "min", "lookup"])),
+                    format!("{}{s}({args})", rng.pick(&["f", "min", "rating"])),
                     nest + 1,
                     false,
                 )

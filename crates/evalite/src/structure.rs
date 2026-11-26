@@ -640,9 +640,9 @@ impl Node {
     /// ```
     /// use evalite::{Node, Structure};
     ///
-    /// let s = Structure::from_text("lookup(1, dots)!")?;
+    /// let s = Structure::from_text("dots.get(1)!")?;
     /// let operand = s.get(s.root()).and_then(Node::as_unwrap).ok_or("not an unwrap")?;
-    /// assert!(s.get(operand).and_then(Node::as_call).is_some());
+    /// assert!(s.get(operand).and_then(Node::as_method).is_some());
     /// assert_eq!(Node::int(1).as_unwrap(), None);
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```

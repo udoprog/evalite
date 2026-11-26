@@ -185,7 +185,7 @@ impl Signature {
         format!("({})", params.join(", "))
     }
 
-    /// It in full, called `name`: `lookup<T>(Int, List<T>) -> Option<T>`.
+    /// It in full, called `name`: `max(Int, ...) -> Int`.
     pub(crate) fn describe(&self, name: &str) -> String {
         let generic = if self.is_generic() { "<T>" } else { "" };
         format!("{name}{generic}{} -> {}", self.describe_params(), self.ret)

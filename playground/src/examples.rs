@@ -32,8 +32,8 @@ pub const EXAMPLES: &[Example] = &[
         fuel: None,
     },
     Example {
-        title: "Lookup table",
-        source: "lookup(blood_potency, [10, 11, 12, 13, 14])",
+        title: "Table by index",
+        source: "[10, 11, 12, 13, 14].get(blood_potency)",
         vars: &[("blood_potency", "Int", "2")],
         fuel: None,
     },

@@ -14,12 +14,6 @@ pub enum Builtin {
     Min,
     /// `max(a, b, ...)`: the greatest of one or more `Int`s.
     Max,
-    /// `lookup(index, list)`: the `List<T>`'s entry at an `Int` index, from
-    /// 0, or none when the index is out of range, so `lookup(1, [10, 20])`
-    /// is `some(20)` and `lookup(2, [10, 20])` is `none`. Of a list of
-    /// options it is an option of an option, so `none` (out of range) is
-    /// told apart from `some(none)` (an absent entry).
-    Lookup,
 }
 
 impl Builtin {
@@ -29,31 +23,27 @@ impl Builtin {
     /// use evalite::Builtin;
     ///
     /// let names = Builtin::ALL.map(Builtin::name);
-    /// assert_eq!(names, ["min", "max", "lookup"]);
+    /// assert_eq!(names, ["min", "max"]);
     /// ```
-    pub const ALL: [Builtin; 3] = [Self::Min, Self::Max, Self::Lookup];
+    pub const ALL: [Builtin; 2] = [Self::Min, Self::Max];
 
     /// The name it is called by.
     pub fn name(self) -> &'static str {
         match self {
             Self::Min => "min",
             Self::Max => "max",
-            Self::Lookup => "lookup",
         }
     }
 
     /// What it takes and gives.
     pub(crate) fn signature(self) -> Signature {
-        const T: Shape = Shape::Var;
-
         match self {
             Self::Min | Self::Max => Signature::repeating(&[Shape::Int], Shape::Int),
-            Self::Lookup => Signature::new(&[Shape::Int, Shape::List(&T)], Shape::Option(&T)),
         }
     }
 }
 
-/// Its signature, generic over `T` where it takes any type.
+/// Its signature.
 ///
 /// ```
 /// use evalite::Builtin;
@@ -62,7 +52,6 @@ impl Builtin {
 /// assert_eq!(signatures, [
 ///     "min(Int, ...) -> Int",
 ///     "max(Int, ...) -> Int",
-///     "lookup<T>(Int, List<T>) -> Option<T>",
 /// ]);
 /// ```
 impl fmt::Display for Builtin {
@@ -83,7 +72,7 @@ pub(crate) enum Overload {
 }
 
 impl Overload {
-    /// It in full, called `name`: `lookup<T>(Int, List<T>) -> Option<T>`.
+    /// It in full, called `name`: `max(Int, ...) -> Int`.
     pub(crate) fn signature(&self, name: &str) -> String {
         match self {
             Self::Builtin(builtin) => builtin.signature().describe(name),
@@ -91,7 +80,7 @@ impl Overload {
         }
     }
 
-    /// Its parameters as an error lists them, such as `(Int, List<T>)`.
+    /// Its parameters as an error lists them, such as `(Int, ...)`.
     pub(crate) fn describe(&self) -> String {
         match self {
             Self::Builtin(builtin) => builtin.signature().describe_params(),
@@ -287,7 +276,7 @@ impl Environment {
     }
 
     /// Every declared function with each of its overloads written out, such
-    /// as `lookup<T>(Int, List<T>) -> Option<T>`, in name order, and in
+    /// as `max(Int, ...) -> Int`, in name order, and in
     /// declaration order among a name's overloads.
     ///
     /// ```
@@ -297,8 +286,8 @@ impl Environment {
     /// env.function("rating", [Type::string()], Type::int())?;
     ///
     /// let (name, signatures) = env.functions().next().unwrap();
-    /// assert_eq!(name, "lookup");
-    /// assert_eq!(signatures, ["lookup<T>(Int, List<T>) -> Option<T>"]);
+    /// assert_eq!(name, "max");
+    /// assert_eq!(signatures, ["max(Int, ...) -> Int"]);
     ///
     /// let (name, signatures) = env.functions().last().unwrap();
     /// assert_eq!(name, "rating");

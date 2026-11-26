@@ -592,9 +592,9 @@ impl<'a> Run<'a> {
                 self.push_entry(start, at, types.width(entry))?;
                 return Ok(next);
             }
-            Instr::Lookup(entry) => {
-                let (start, len) = self.pop()?.as_reference()?;
+            Instr::Get(entry) => {
                 let i = self.pop_int()?;
+                let (start, len) = self.pop()?.as_reference()?;
                 let at = usize::try_from(i).ok().filter(|at| *at < len);
 
                 // An option of the entry: tagged when the entry has no

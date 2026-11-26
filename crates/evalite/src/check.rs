@@ -782,14 +782,6 @@ impl<'a> Compiler<'a> {
         let instr = match overload {
             Overload::Builtin(Builtin::Min) => Instr::Min(count(n)?),
             Overload::Builtin(Builtin::Max) => Instr::Max(count(n)?),
-            Overload::Builtin(Builtin::Lookup) => {
-                let entry = match found.get(1).and_then(|list| self.types.get(*list)) {
-                    Some(TypeNode::List(entry)) => *entry,
-                    _ => return Err(internal("`lookup` of something other than a list")),
-                };
-
-                Instr::Lookup(entry)
-            }
             Overload::Host { .. } => {
                 let key = (name.to_owned(), found.to_vec());
 
@@ -918,7 +910,17 @@ impl<'a> Compiler<'a> {
             Err(mismatch) => return Err(self.mismatch(mismatch, callee, &values, &args, node)),
         };
 
-        let instr = (method.instr)(receiver.ty);
+        let held = match self.types.get(receiver.ty) {
+            Some(TypeNode::List(held) | TypeNode::Option(held)) => Some(*held),
+            _ => None,
+        };
+        let instr = (method.instr)(receiver.ty, held).ok_or_else(|| {
+            internal(format_args!(
+                "`{}` of a {}",
+                method.name,
+                self.ty(receiver.ty)
+            ))
+        })?;
         self.emit(instr);
         self.push(ret, span);
         Ok(())

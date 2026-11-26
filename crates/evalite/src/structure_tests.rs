@@ -57,7 +57,7 @@ const CONSTRUCTS: &[(&str, &str)] = &[
     ("bonus !", "bonus!"),
     ("_!", "_!"),
     ("m.brawl!", "m.brawl!"),
-    ("lookup(1, dots)!", "lookup(1, dots)!"),
+    ("dots.get(1)!", "dots.get(1)!"),
     ("(-wits)!", "(-wits)!"),
     ("-bonus!", "-bonus!"),
     ("bonus! + 1", "bonus! + 1"),
@@ -106,7 +106,7 @@ const CONSTRUCTS: &[(&str, &str)] = &[
     ("[]", "[]"),
     ("[-1, _]", "[-1, _]"),
     ("[[1], [2]][0][0]", "[[1], [2]][0][0]"),
-    ("lookup(wits, [10, 11])", "lookup(wits, [10, 11])"),
+    ("[10, 11].get(wits)", "[10, 11].get(wits)"),
 ];
 
 #[test]
@@ -258,7 +258,7 @@ fn compiling_a_structure_matches_compiling_its_text() {
     for text in [
         "min(wits, 3) + bonus.unwrap_or(0)",
         "count(health) + count(health, 2)",
-        "lookup(wits, [10, 11, 12])",
+        "[10, 11, 12].get(wits)",
         r#"m["Brawl (bar)"] + m.athletics + m.brawl.unwrap_or(1).clamp(0, 5)"#,
         "dots[wits] * -2 > 3 && !dead || bonus.is_none()",
         "dots.len() % 2 == 0",
@@ -283,11 +283,11 @@ fn compiling_a_structure_matches_compiling_its_text() {
 fn errors_name_the_node_they_are_about() {
     let env = env();
 
-    let structure = s("wits + lookup(true, dots)");
+    let structure = s("wits + dots.get(true)");
     let error = structure.compile(&env).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "argument 1 of `lookup` must be Int, found Bool"
+        "argument 1 of `get` on List<Int> must be Int, found Bool"
     );
     assert_eq!(structure.text_of(error.first().unwrap().node()), "true");
 
@@ -799,7 +799,7 @@ fn random_node(rng: &mut Rng, b: &mut Structure, depth: u32) -> NodeId {
         "health",
         "nope",
     ];
-    const FUNCTIONS: &[&str] = &["min", "max", "lookup", "count", "f"];
+    const FUNCTIONS: &[&str] = &["min", "max", "chart", "count", "f"];
     const MEMBERS: &[&str] = &[
         "abs",
         "min",
@@ -912,7 +912,7 @@ fn random_structures_round_trip() {
 
 /// Every kind of node, stored. The bytes are pinned so the stored form
 /// stays readable as `Node`'s API changes.
-const GOLDEN: &str = r#"-wits + count(health, _) * m.athletics - [1, 2][0] + bonus.unwrap_or(0) + m._ + bonus._(1) + lookup("s", [1]) * (!dead && true)"#;
+const GOLDEN: &str = r#"-wits + count(health, _) * m.athletics - [1, 2][0] + bonus.unwrap_or(0) + m._ + bonus._(1) + chart("s", [1]) * (!dead && true)"#;
 
 #[test]
 fn stored_form_is_stable() {
@@ -927,9 +927,9 @@ fn stored_form_is_stable() {
         9, 117, 110, 119, 114, 97, 112, 95, 111, 114, 2, 1, 16, 6, 3, 0, 0, 1, 14, 2, 17, 4, 1, 0,
         1, 109, 9, 2, 0, 19, 1, 0, 6, 3, 0, 0, 1, 18, 2, 20, 4, 1, 0, 5, 98, 111, 110, 117, 115, 1,
         1, 0, 2, 8, 3, 0, 22, 1, 0, 2, 1, 23, 6, 3, 0, 0, 1, 21, 2, 24, 3, 1, 0, 1, 115, 1, 1, 0,
-        2, 11, 1, 0, 1, 27, 7, 2, 0, 6, 108, 111, 111, 107, 117, 112, 1, 2, 26, 28, 4, 1, 0, 4,
-        100, 101, 97, 100, 5, 2, 0, 1, 1, 30, 2, 1, 0, 1, 6, 3, 0, 11, 1, 31, 2, 32, 6, 3, 0, 2, 1,
-        29, 2, 33, 6, 3, 0, 0, 1, 25, 2, 34, 2, 35,
+        2, 11, 1, 0, 1, 27, 7, 2, 0, 5, 99, 104, 97, 114, 116, 1, 2, 26, 28, 4, 1, 0, 4, 100, 101,
+        97, 100, 5, 2, 0, 1, 1, 30, 2, 1, 0, 1, 6, 3, 0, 11, 1, 31, 2, 32, 6, 3, 0, 2, 1, 29, 2,
+        33, 6, 3, 0, 0, 1, 25, 2, 34, 2, 35,
     ];
     assert_eq!(bytes, golden);
     assert_eq!(Structure::from_bytes(golden).unwrap(), structure);

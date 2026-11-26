@@ -136,7 +136,7 @@ pub(crate) enum Invalid {
     FieldOfNonRecord,
     NoSuchField,
     IndexNonList,
-    LookupNonList,
+    GetNonList,
     EmptyList,
     ListEntriesMissing,
     NoOperands,
@@ -185,9 +185,7 @@ impl fmt::Display for Invalid {
             Self::FieldOfNonRecord => "the instruction reads a field of other than a record",
             Self::NoSuchField => "the instruction reads a field the record does not have",
             Self::IndexNonList => "the instruction indexes other than a list of its entry type",
-            Self::LookupNonList => {
-                "the instruction looks up in other than a list of its entry type"
-            }
+            Self::GetNonList => "the instruction gets from other than a list of its entry type",
             Self::EmptyList => "the instruction makes a list of no entries",
             Self::ListEntriesMissing => "the instruction makes a list of entries it does not find",
             Self::NoOperands => "the instruction takes no operands",

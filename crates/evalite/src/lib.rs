@@ -102,7 +102,7 @@
 //! - Records, such as `{boxes: Int, count: List<Int>}`: a field is read with
 //!   `.boxes`, or with `["Brawl (bar)"]` when its name is not a plain name.
 //! - `Option<T>`: a value that may be absent, which comes from a name or a
-//!   function declared with it, or from `lookup`. It is never used as a `T`:
+//!   function declared with it, or from `list.get(i)`. It is never used as a `T`:
 //!   unwrap it with `x.unwrap_or(0)`, which gives `0` when it is absent, or
 //!   with `x!`, which stops the run with an error when it is absent. Test it
 //!   with `x.is_some()` and `x.is_none()`. Options nest: an
@@ -137,40 +137,43 @@
 //! |-------------|--------------------------------------------------------------|
 //! | `Int`       | `abs() -> Int`, `min(Int) -> Int`, `max(Int) -> Int`, `clamp(Int, Int) -> Int` |
 //! | `Option<T>` | `unwrap_or(T) -> T`, `is_some() -> Bool`, `is_none() -> Bool` |
-//! | `List<T>`   | `len() -> Int`                                               |
+//! | `List<T>`   | `get(Int) -> Option<T>`, `len() -> Int`                      |
+//!
+//! `list.get(i)` is the entry at an index from 0, or `none` when the index
+//! is out of range, so `[10, 20].get(1)` is `some(20)`, an `Option<Int>`,
+//! and `[10, 20].get(2)` is `none`. Unwrap it like any option, as in
+//! `[10, 20, 30].get(rank).unwrap_or(0)`. On a list of options it gives an
+//! option of an option, so an index out of range (`none`) is told apart from
+//! an absent entry (`some(none)`). `list[i]` is the entry itself, and an
+//! error out of range.
 //!
 //! Functions are called by name, `min(a, b)`. The builtins, from
 //! [`Environment::with_builtins`], are:
 //!
-//! | Function                               | Gives                                     |
-//! |----------------------------------------|-------------------------------------------|
-//! | `min(Int, ...) -> Int`                 | the least of one or more `Int`s           |
-//! | `max(Int, ...) -> Int`                 | the greatest of one or more `Int`s        |
-//! | `lookup<T>(Int, List<T>) -> Option<T>` | the entry at an index from 0, or `none` when the index is out of range |
-//!
-//! `lookup` is generic: its `T` is whatever the list holds, so
-//! `lookup(1, [10, 20])` is `some(20)`, an `Option<Int>`, and
-//! `lookup(2, [10, 20])` is `none`. Unwrap it like any option, as in
-//! `lookup(rank, [10, 20, 30]).unwrap_or(0)`. On a list of options it gives
-//! an option of an option, so an index out of range (`none`) is told apart
-//! from an absent entry (`some(none)`).
+//! | Function               | Gives                              |
+//! |------------------------|------------------------------------|
+//! | `min(Int, ...) -> Int` | the least of one or more `Int`s    |
+//! | `max(Int, ...) -> Int` | the greatest of one or more `Int`s |
 //!
 //! Every other name, value or function, is one the caller declares, with its
-//! type. A function name may be declared several ways, and a call takes the
-//! first whose parameters match:
+//! type, and the caller runs its functions when a program calls them. A
+//! function name may be declared several ways, and a call takes the first
+//! whose parameters match. Here `skill` is a character's rating in a skill,
+//! by name, and with a specialty it may add a die for:
 //!
 //! ```
 //! use evalite::{Environment, Type};
 //!
 //! let mut env = Environment::with_builtins();
-//! env.value("health", Type::record([("boxes", Type::int())]))?;
-//! env.function("lookup", [Type::int(), Type::string()], Type::int())?;
+//! env.value("wits", Type::int())?;
+//! env.function("skill", [Type::string()], Type::int())?;
+//! env.function("skill", [Type::string(), Type::string()], Type::int())?;
 //!
-//! let program = evalite::compile(r#"health.boxes + lookup(1, "Essence")"#, &env)?;
+//! let program = evalite::compile(r#"wits + skill("Brawl", "Grappling")"#, &env)?;
 //! assert_eq!(program.result_type(), Type::int());
 //!
-//! let error = evalite::compile("lookup(1, health)", &env).unwrap_err();
-//! assert_eq!(error.to_string(), "no `lookup` takes (Int, {boxes: Int}), it takes (Int, List<T>) or (Int, String)");
+//! let error = evalite::compile("skill(wits)", &env).unwrap_err();
+//! assert_eq!(error.to_string(), "no `skill` takes (Int), it takes (String) or (String, String)");
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
 //!
@@ -213,7 +216,7 @@
 //! more than the machine has. Running out of fuel stops the run. There are no
 //! loops, so most expressions use a few dozen steps. Faults are errors, never
 //! panics: `Int` overflow, division by zero, `list[i]` past either end
-//! (`lookup` gives `none` instead), `x!` of an absent option, `clamp` with its
+//! (`list.get(i)` gives `none` instead), `x!` of an absent option, `clamp` with its
 //! bounds the wrong way round, and a host function's failure or wrongly typed
 //! result.
 //!
@@ -411,10 +414,10 @@
 //!   = while running instruction 2
 //!   = while running the program
 //!
-//! $ evalite eval 'lookup(rank, [10, 20, 30])' --var rank:Int=7
+//! $ evalite eval '[10, 20, 30].get(rank)' --var rank:Int=7
 //! none : Option<Int>
 //!
-//! $ evalite eval 'lookup(rank, [10, 20, 30]).unwrap_or(0) * 2' --var rank:Int=1 --explain
+//! $ evalite eval '[10, 20, 30].get(rank).unwrap_or(0) * 2' --var rank:Int=1 --explain
 //! 40 : Int
 //! type: Int
 //! memory: 7 words at most (stack 3, heap 0, constants 3, values read 1), 7 used

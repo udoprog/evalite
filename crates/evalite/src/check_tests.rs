@@ -70,7 +70,7 @@ pub(crate) fn env() -> Environment {
     env.function("count", [track(), Type::int()], Type::int())
         .unwrap();
     env.function("boxes", [track()], Type::int()).unwrap();
-    env.function("lookup", [Type::int(), Type::string()], Type::int())
+    env.function("chart", [Type::int(), Type::string()], Type::int())
         .unwrap();
     env.function("label", [Type::int()], Type::option(Type::int()))
         .unwrap();
@@ -206,21 +206,18 @@ fn functions() {
         ("min(wits)", "Int"),
         ("min(wits, dexterity)", "Int"),
         ("max(dexterity, wits, 7)", "Int"),
-        ("lookup(wits, [10, 11, 12])", "Option<Int>"),
-        ("lookup(wits, levels)", "Option<Int>"),
-        ("lookup(wits, grid)", "Option<List<Int>>"),
-        ("lookup(1, [true, false])", "Option<Bool>"),
-        (
-            "lookup(1, tracks)",
-            "Option<{boxes: Int, count: List<Int>}>",
-        ),
-        ("lookup(1, [bonus])", "Option<Option<Int>>"),
-        ("lookup(1, [maybe, maybe])", "Option<Option<Bool>>"),
-        ("lookup(1, [bonus])!", "Option<Int>"),
-        ("lookup(1, [bonus])!!", "Int"),
-        ("lookup(1, [bonus]).unwrap_or(label(3))", "Option<Int>"),
-        ("lookup(1, levels).unwrap_or(0)", "Int"),
-        (r#"lookup(primal_urge, "Essence (1e)")"#, "Int"),
+        ("[10, 11, 12].get(wits)", "Option<Int>"),
+        ("levels.get(wits)", "Option<Int>"),
+        ("grid.get(wits)", "Option<List<Int>>"),
+        ("[true, false].get(1)", "Option<Bool>"),
+        ("tracks.get(1)", "Option<{boxes: Int, count: List<Int>}>"),
+        ("[bonus].get(1)", "Option<Option<Int>>"),
+        ("[maybe, maybe].get(1)", "Option<Option<Bool>>"),
+        ("[bonus].get(1)!", "Option<Int>"),
+        ("[bonus].get(1)!!", "Int"),
+        ("[bonus].get(1).unwrap_or(label(3))", "Option<Int>"),
+        ("levels.get(1).unwrap_or(0)", "Int"),
+        (r#"chart(primal_urge, "Essence (1e)")"#, "Int"),
         ("count(health)", "Int"),
         ("count(health, 2)", "Int"),
         ("boxes(health)", "Int"),
@@ -272,12 +269,12 @@ fn current_expressions() {
         ("-dexterity + 1", "Int"),
         ("min(wits, dexterity) + athletics", "Int"),
         ("max (wits)", "Int"),
-        ("lookup(blood_potency, [10, 11, 12 , 13])", "Option<Int>"),
-        ("lookup(blood_potency + 5, [10, 11, 12, 13])", "Option<Int>"),
-        ("lookup(-wits, [10, 11])", "Option<Int>"),
-        ("lookup(0, [wits + 1])", "Option<Int>"),
-        (r#"lookup(primal_urge, "Essence (1e)")"#, "Int"),
-        (r#"lookup(blood_potency, "Vitae \"2e\"")"#, "Int"),
+        ("[10, 11, 12 , 13].get(blood_potency)", "Option<Int>"),
+        ("[10, 11, 12, 13].get(blood_potency + 5)", "Option<Int>"),
+        ("[10, 11].get(-wits)", "Option<Int>"),
+        ("[wits + 1].get(0)", "Option<Int>"),
+        (r#"chart(primal_urge, "Essence (1e)")"#, "Int"),
+        (r#"chart(blood_potency, "Vitae \"2e\"")"#, "Int"),
         (
             r#"specialties.athletics + levels[2] + m["Brawl (bar)"]"#,
             "Int",
@@ -288,7 +285,7 @@ fn current_expressions() {
         // The same, read from the track's record.
         ("health.boxes", "Int"),
         ("health.count[2]", "Int"),
-        ("lookup(-4, health.count)", "Option<Int>"),
+        ("health.count.get(-4)", "Option<Int>"),
         (r#"health.boxes - m["a b"].boxes"#, "Int"),
         ("9223372036854775807 + 1", "Int"),
     ]);
@@ -500,21 +497,7 @@ fn error_calls() {
             "argument 1 of `max` must be Int, found Bool",
             "flag",
         ),
-        (
-            "lookup(1)",
-            "no `lookup` takes (Int), it takes (Int, List<T>) or (Int, String)",
-            "lookup(1)",
-        ),
-        (
-            "lookup(true, [1])",
-            "no `lookup` takes (Bool, List<Int>), it takes (Int, List<T>) or (Int, String)",
-            "lookup(true, [1])",
-        ),
-        (
-            "lookup(1, 2)",
-            "no `lookup` takes (Int, Int), it takes (Int, List<T>) or (Int, String)",
-            "lookup(1, 2)",
-        ),
+        ("chart(1)", "`chart` takes 2 arguments, found 1", "(1)"),
         (
             "count(1)",
             "no `count` takes (Int), it takes ({boxes: Int, count: List<Int>}) or ({boxes: Int, count: List<Int>}, Int)",
@@ -577,8 +560,18 @@ fn error_methods() {
         ),
         (
             "levels.abs()",
-            "List<Int> has no method `abs`, its methods are `len`",
+            "List<Int> has no method `abs`, its methods are `get` and `len`",
             "abs",
+        ),
+        (
+            "levels.get(true)",
+            "argument 1 of `get` on List<Int> must be Int, found Bool",
+            "true",
+        ),
+        (
+            "levels.get()",
+            "`get` on List<Int> takes 1 argument, found 0",
+            "()",
         ),
         (
             "flag.abs()",
@@ -770,7 +763,7 @@ fn error_lists() {
             "[]",
         ),
         (
-            "lookup(1, [])",
+            "[].get(1)",
             "an empty list `[]` has no entry type, give it at least one entry",
             "[]",
         ),
@@ -926,24 +919,16 @@ fn redeclaring() {
     );
 
     // The first matching declaration wins.
-    env.function(
-        "lookup",
-        [Type::int(), Type::list(Type::int())],
-        Type::bool(),
-    )
-    .unwrap();
-    env.builtin(Builtin::Lookup);
+    env.function("max", [Type::int(), Type::int()], Type::bool())
+        .unwrap();
+    env.builtin(Builtin::Max);
     assert_eq!(
-        compile("lookup(1, [1])", &env).unwrap().result_type(),
+        compile("max(1, 2)", &env).unwrap().result_type(),
         Type::bool()
     );
     assert_eq!(
-        compile("lookup(1, [true])", &env).unwrap().result_type(),
-        Type::option(Type::bool())
-    );
-    assert_eq!(
-        compile("lookup(1, [[1]])", &env).unwrap().result_type(),
-        Type::option(Type::list(Type::int()))
+        compile("max(1, 2, 3)", &env).unwrap().result_type(),
+        Type::int()
     );
 }
 
@@ -994,19 +979,16 @@ fn memory_bounds() {
         ("[1, 2, 3]", (1, 0, 3)),
         ("[-1, -2]", (1, 0, 2)),
         ("[true, false]", (1, 0, 2)),
-        ("lookup(wits, [10, 11, 12, 13])", (2, 0, 4)),
+        ("[10, 11, 12, 13].get(wits)", (2, 0, 4)),
         ("[[1, 2], [3]]", (1, 0, 5)),
         ("[wits, 2]", (2, 2, 0)),
         ("[[wits], [3]]", (2, 3, 1)),
-        ("lookup(0, [wits + 1])", (3, 1, 0)),
+        ("[wits + 1].get(0)", (2, 1, 0)),
         // Strings take a word per 8 bytes, and a repeat is stored once.
         (r#""""#, (1, 0, 0)),
         (r#""Essence (1e)""#, (1, 0, 2)),
         (r#"[name, "Essence (1e)", "Essence (1e)"]"#, (3, 3, 2)),
-        (
-            r#"lookup(1, "abcdefgh") + lookup(2, "abcdefgh")"#,
-            (3, 0, 1),
-        ),
+        (r#"chart(1, "abcdefgh") + chart(2, "abcdefgh")"#, (3, 0, 1)),
         // The right operand of `&&` runs on what the left leaves.
         ("flag && wits > 1", (2, 0, 0)),
         ("flag || (wits > 1 && (1 + (2 + 3)) > 0)", (3, 0, 0)),
@@ -1064,7 +1046,7 @@ fn globals_and_functions() {
 
     // Builtins are the machine's own, not the caller's.
     assert!(
-        compile("min(1) + lookup(1, [1]).unwrap_or(0)", &env())
+        compile("min(1) + [1].get(1).unwrap_or(0)", &env())
             .unwrap()
             .functions()
             .is_empty()
@@ -1144,10 +1126,7 @@ fn code() {
             }
         ]
     );
-    assert_eq!(
-        code("lookup(wits, [1])"),
-        [WITS, Const(0), Lookup(TypeId(0))]
-    );
+    assert_eq!(code("[1].get(wits)"), [Const(0), WITS, Get(TypeId(0))]);
     assert_eq!(code("min(1, wits, 3)"), [Int(1), WITS, Int(3), Min(3)]);
     assert_eq!(code("wits.max(2)"), [WITS, Int(2), Max(2)]);
     assert_eq!(code("wits.clamp(1, 2)"), [WITS, Int(1), Int(2), Clamp]);
@@ -1221,8 +1200,8 @@ fn store_round_trip() {
     let sources = [
         "1",
         "min(wits, dexterity) + athletics",
-        "lookup(blood_potency, [10, 11, 12, 13])",
-        r#"lookup(primal_urge, "Essence (1e)")"#,
+        "[10, 11, 12, 13].get(blood_potency)",
+        r#"chart(primal_urge, "Essence (1e)")"#,
         "count(health) + count(health, 2) + boxes(health)",
         "specialties.brawl.unwrap_or(0).max(1)",
         "flag && (wits > 1 || !maybe.unwrap_or(false))",
@@ -1265,7 +1244,7 @@ fn invalid(stored: &Stored) -> String {
 
 #[test]
 fn tampered_programs() {
-    let source = "wits + lookup(1, [2, 3]).unwrap_or(0) + count(health)";
+    let source = "wits + [2, 3].get(1).unwrap_or(0) + count(health)";
 
     // Unchanged, it loads.
     assert!(load(&stored(source)).is_ok());
@@ -1447,9 +1426,9 @@ fn tampered_programs() {
             "the instruction indexes other than a list of its entry type: at instruction 2: while verifying the program",
         ),
         (
-            "lookup(0, levels)",
-            Box::new(|s| s.code[2] = Instr::Lookup(TypeId(1))),
-            "the instruction looks up in other than a list of its entry type: at instruction 2: while verifying the program",
+            "levels.get(0)",
+            Box::new(|s| s.code[2] = Instr::Get(TypeId(1))),
+            "the instruction gets from other than a list of its entry type: at instruction 2: while verifying the program",
         ),
         (
             "specialties.brawl",
@@ -1648,9 +1627,9 @@ fn random_corruption() {
     let env = env();
 
     let sources = [
-        "lookup(blood_potency, [10, 11, 12, 13]).unwrap_or(0) + count(health, 2)",
+        "[10, 11, 12, 13].get(blood_potency).unwrap_or(0) + count(health, 2)",
         "flag && (wits > 1 || !maybe.unwrap_or(false))",
-        r#"[[wits], [1, 2]][0][0] + m["Brawl (bar)"] + lookup(1, "Essence")"#,
+        r#"[[wits], [1, 2]][0][0] + m["Brawl (bar)"] + chart(1, "Essence")"#,
     ];
 
     for source in sources {
@@ -1731,7 +1710,7 @@ pub(crate) fn generate(rng: &mut Rng, ty: &str, budget: usize) -> String {
                     let i = generate(rng, "Int", b / 2);
                     let l = generate(rng, "List<Int>", b / 3);
                     let d = generate(rng, "Int", b / 3);
-                    format!("lookup({i}, {l}).unwrap_or({d})")
+                    format!("{l}.get({i}).unwrap_or({d})")
                 }
                 9 => {
                     let l = generate(rng, "List<Int>", b / 2);
@@ -1740,7 +1719,7 @@ pub(crate) fn generate(rng: &mut Rng, ty: &str, budget: usize) -> String {
                 }
                 10 => format!("({}).len()", generate(rng, "List<Int>", b)),
                 11 => format!("count(health, {})", generate(rng, "Int", b)),
-                12 => format!(r#"lookup({}, "Essence")"#, generate(rng, "Int", b)),
+                12 => format!(r#"chart({}, "Essence")"#, generate(rng, "Int", b)),
                 _ => rng
                     .pick(&["count(health)", "boxes(health)", r#"boxes(m["a b"])"#])
                     .to_owned(),
@@ -1780,7 +1759,7 @@ pub(crate) fn generate(rng: &mut Rng, ty: &str, budget: usize) -> String {
                 let b = budget.saturating_sub(1);
                 let i = generate(rng, "Int", b / 2);
                 let l = generate(rng, "List<Int>", b / 2);
-                format!("lookup({i}, {l})")
+                format!("{l}.get({i})")
             }
         },
         "List<Int>" if leaf => "levels".to_owned(),
@@ -1863,7 +1842,7 @@ fn random_ill_typed() {
         "m",
         "min",
         "max",
-        "lookup",
+        "get",
         "count",
         "boxes",
         "label",
@@ -2057,7 +2036,7 @@ fn one_error_is_reported_once() {
         "[nothing, 1][0] + 1",
         "[1, nothing][0] + 1",
         "levels[nothing] + 1",
-        "lookup(nothing, levels)!",
+        "levels.get(nothing)!",
         "nope(1).abs()",
         "wits.nope(1).abs()",
         "(nothing)",

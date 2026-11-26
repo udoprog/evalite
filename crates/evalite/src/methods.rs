@@ -14,8 +14,10 @@ pub(crate) struct MethodSig {
     pub(crate) receiver: Shape,
     pub(crate) name: &'static str,
     pub(crate) sig: Signature,
-    /// Its instruction, given the receiver's type.
-    pub(crate) instr: fn(TypeId) -> Instr,
+    /// Its instruction, given the receiver's type and the type of what
+    /// it holds, if it is a list or an option; `None` when that is
+    /// missing.
+    pub(crate) instr: fn(TypeId, Option<TypeId>) -> Option<Instr>,
 }
 
 impl MethodSig {
@@ -56,7 +58,7 @@ const fn method(
     receiver: Shape,
     name: &'static str,
     sig: Signature,
-    instr: fn(TypeId) -> Instr,
+    instr: fn(TypeId, Option<TypeId>) -> Option<Instr>,
 ) -> MethodSig {
     MethodSig {
         receiver,
@@ -71,46 +73,54 @@ const LIST: Shape = Shape::List(&T);
 
 /// Every method, by receiver, in name order.
 pub(crate) const METHODS: &[MethodSig] = &[
-    method(Shape::Int, "abs", Signature::new(&[], Shape::Int), |_| {
-        Instr::Abs
-    }),
+    method(
+        Shape::Int,
+        "abs",
+        Signature::new(&[], Shape::Int),
+        |_, _| Some(Instr::Abs),
+    ),
     method(
         Shape::Int,
         "clamp",
         Signature::new(&[Shape::Int, Shape::Int], Shape::Int),
-        |_| Instr::Clamp,
+        |_, _| Some(Instr::Clamp),
     ),
     method(
         Shape::Int,
         "max",
         Signature::new(&[Shape::Int], Shape::Int),
-        |_| Instr::Max(2),
+        |_, _| Some(Instr::Max(2)),
     ),
     method(
         Shape::Int,
         "min",
         Signature::new(&[Shape::Int], Shape::Int),
-        |_| Instr::Min(2),
+        |_, _| Some(Instr::Min(2)),
     ),
     method(
         OPTION,
         "is_none",
         Signature::new(&[], Shape::Bool),
-        Instr::IsNone,
+        |option, _| Some(Instr::IsNone(option)),
     ),
     method(
         OPTION,
         "is_some",
         Signature::new(&[], Shape::Bool),
-        Instr::IsSome,
+        |option, _| Some(Instr::IsSome(option)),
     ),
+    method(OPTION, "unwrap_or", Signature::new(&[T], T), |option, _| {
+        Some(Instr::UnwrapOr(option))
+    }),
     method(
-        OPTION,
-        "unwrap_or",
-        Signature::new(&[T], T),
-        Instr::UnwrapOr,
+        LIST,
+        "get",
+        Signature::new(&[Shape::Int], Shape::Option(&T)),
+        |_, entry| entry.map(Instr::Get),
     ),
-    method(LIST, "len", Signature::new(&[], Shape::Int), |_| Instr::Len),
+    method(LIST, "len", Signature::new(&[], Shape::Int), |_, _| {
+        Some(Instr::Len)
+    }),
 ];
 
 /// The methods a value of type `ty` has, in name order.

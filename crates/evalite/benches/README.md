@@ -2,7 +2,7 @@
 
 [`evalite.rs`](evalite.rs) measures each stage a computed value goes through, on
 expressions shaped like a character sheet's (attributes, skills,
-`specialties`, optional `bonus_N`s, tracks, lookup tables), with
+`specialties`, optional `bonus_N`s, tracks, tables), with
 [criterion](https://docs.rs/criterion).
 
 ```sh
@@ -49,8 +49,9 @@ full run take about five minutes.
 
 The cases, smallest first: `pool` (a dice pool sum), `pool_specialty`
 (attribute + skill + specialty + bonus), `unwrap_or_16` and `is_none_16`
-(sixteen optional globals), `lookup_literal`, `lookup_global` and
-`lookup_host` (tables), `track` (record and track field reads),
+(sixteen optional globals), `get_literal` and `get_global` (tables read
+with `get`), `host` (a host function call), `track` (record and track
+field reads),
 `clamp_chain`, `option_list` (lists of `Option<Int>`), `long` (a 370 term
 sum, near the default fuel) and `deep` (31 nested parentheses, near the
 default `max_depth`).

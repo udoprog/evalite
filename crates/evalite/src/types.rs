@@ -17,7 +17,7 @@ pub const MAX_TYPE_DEPTH: usize = 64;
 /// try-accessors, which give `false` or `None` for any other type.
 ///
 /// Options nest: an `Option<Option<Int>>` is `none`, `some(none)` or
-/// `some(some(n))`, as a lookup in a list of optional values gives.
+/// `some(some(n))`, as `get` on a list of optional values gives.
 ///
 /// ```
 /// use evalite::Type;
