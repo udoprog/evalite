@@ -1,0 +1,20 @@
+[package]
+name = "shex-cli"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "shex"
+path = "src/main.rs"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+arithmetic_side_effects = "deny"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+shex = { path = "../shex" }
