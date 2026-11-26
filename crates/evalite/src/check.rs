@@ -1100,11 +1100,19 @@ fn suggest<'n>(name: &str, names: impl Iterator<Item = &'n String> + Clone) -> O
         return Some(same.clone());
     }
 
-    let limit = (name.chars().count() / 3).clamp(1, 2);
+    let len = name.chars().count();
+    let limit = (len / 3).clamp(1, 2);
     let mut best: Option<(usize, &String)> = None;
     let mut tied = false;
 
     for candidate in names {
+        // The distance is at least the difference in length, so a name far
+        // longer than every candidate costs nothing to rule out: the work
+        // is bounded by the declared names, never by the input.
+        if len.abs_diff(candidate.chars().count()) > limit {
+            continue;
+        }
+
         let d = distance(name, candidate);
 
         if d > limit || d >= name.len() || d >= candidate.len() {

@@ -1930,3 +1930,28 @@ fn field_node_ids() {
         ["athletics", "brawl"]
     );
 }
+
+/// Suggesting a name for an unknown one costs nothing for an input name far
+/// longer than every declared one, however long, so a huge name cannot make
+/// compiling slow. Without the length check this is about 10^10 steps.
+#[test]
+fn long_unknown_names_are_cheap() {
+    let mut env = Environment::with_builtins();
+
+    for n in 0..1_000 {
+        env.value(&format!("name_{n:04}"), Type::int()).unwrap();
+    }
+
+    env.value("strength", Type::int()).unwrap();
+
+    let long = "a".repeat(10_000_000);
+    let error = compile(&long, &env).unwrap_err();
+    assert!(error.to_string().starts_with("unknown name"), "{error}");
+
+    // A near miss is still suggested.
+    let error = compile("strngth", &env).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "unknown name `strngth`, did you mean `strength`?"
+    );
+}
