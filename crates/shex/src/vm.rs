@@ -7,10 +7,10 @@ use std::fmt;
 
 use crate::Type;
 use crate::program::{Constant, Instr, Program, Scalar};
-use crate::types::{TypeId, TypeNode};
+use crate::types::{NONE, TypeId, TypeNode};
 
 /// The memory a [`Machine`] has unless [`Limits::memory`] says otherwise,
-/// in slots of one value each.
+/// in 64-bit words.
 pub const DEFAULT_MEMORY: u32 = 1024;
 
 /// The steps a run may take unless [`Limits::fuel`] says otherwise.
@@ -24,7 +24,7 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// [`DEFAULT_MEMORY`] slots and [`DEFAULT_FUEL`] steps.
+    /// [`DEFAULT_MEMORY`] words and [`DEFAULT_FUEL`] steps.
     pub const fn new() -> Self {
         Self {
             memory: DEFAULT_MEMORY,
@@ -32,11 +32,11 @@ impl Limits {
         }
     }
 
-    /// Allow `slots` slots of memory: a program's stack, lists and
-    /// constants, one slot per value it reads, and the parts of the values
-    /// bound to it and returned by the caller's functions.
-    pub const fn memory(mut self, slots: u32) -> Self {
-        self.memory = slots;
+    /// Allow `words` words of memory: a program's stack, lists, constants
+    /// and the values it reads, and the parts of the values bound to it
+    /// and returned by the caller's functions.
+    pub const fn memory(mut self, words: u32) -> Self {
+        self.memory = words;
         self
     }
 
@@ -46,8 +46,8 @@ impl Limits {
         self
     }
 
-    /// The memory allowed, in slots.
-    pub const fn memory_slots(&self) -> u32 {
+    /// The memory allowed, in words.
+    pub const fn memory_words(&self) -> u32 {
         self.memory
     }
 
@@ -80,12 +80,6 @@ pub enum Value {
     None,
     /// A present `Option<T>`.
     Some(Box<Value>),
-    /// A value of the caller's opaque type `ty`, which the caller's
-    /// functions know by `handle`.
-    Opaque {
-        ty: String,
-        handle: u64,
-    },
 }
 
 impl Value {
@@ -102,14 +96,6 @@ impl Value {
         Self::Record(fields.into_iter().map(|(k, v)| (k.into(), v)).collect())
     }
 
-    /// A value of the caller's opaque type.
-    pub fn opaque(ty: impl Into<String>, handle: u64) -> Self {
-        Self::Opaque {
-            ty: ty.into(),
-            handle,
-        }
-    }
-
     /// What it is, as an error names it.
     fn describe(&self) -> String {
         match self {
@@ -120,7 +106,6 @@ impl Value {
             Self::Record(_) => "a record".to_owned(),
             Self::None => "none".to_owned(),
             Self::Some(_) => "some(..)".to_owned(),
-            Self::Opaque { ty, .. } => ty.clone(),
         }
     }
 }
@@ -157,8 +142,7 @@ enum Piece<'a> {
 
 impl fmt::Display for Value {
     /// Values as shex writes them: `3`, `true`, `"Brawl"`, `[1, 2]`,
-    /// `{athletics: 2, "Brawl (bar)": 1}`, `none`, `some(2)`, and an opaque
-    /// value as `<Track 3>`.
+    /// `{athletics: 2, "Brawl (bar)": 1}`, `none` and `some(2)`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut stack = vec![Piece::Value(self)];
 
@@ -175,7 +159,6 @@ impl fmt::Display for Value {
                     Value::Bool(b) => write!(f, "{b}")?,
                     Value::String(s) => write_string(f, s)?,
                     Value::None => f.write_str("none")?,
-                    Value::Opaque { ty, handle } => write!(f, "<{ty} {handle}>")?,
                     Value::Some(value) => {
                         f.write_str("some(")?;
                         stack.push(Piece::Text(")"));
@@ -302,7 +285,7 @@ impl fmt::Display for RunError {
         match self {
             Self::TooMuchMemory { needed, allowed } => write!(
                 f,
-                "the program needs {needed} slots of memory, more than the {allowed} the machine allows"
+                "the program needs {needed} words of memory, more than the {allowed} the machine allows"
             ),
             Self::UnknownValue { name } => write!(f, "the program reads no value `{name}`"),
             Self::AlreadyBound { name } => write!(f, "`{name}` is already bound"),
@@ -313,7 +296,7 @@ impl fmt::Display for RunError {
             } => write!(f, "`{path}` must be {expected}, found {found}"),
             Self::BindingTooLarge { name, needed, left } => write!(
                 f,
-                "binding `{name}` needs {needed} slots of memory, {left} are left"
+                "binding `{name}` needs {needed} words of memory, {left} are left"
             ),
             Self::Unbound { name, ty } => {
                 write!(f, "`{name}` is not bound, bind a {ty} before running")
@@ -354,7 +337,7 @@ impl fmt::Display for RunError {
             }
             Self::HostResultTooLarge { name, needed, left } => write!(
                 f,
-                "the value `{name}` returned needs {needed} slots of memory, {left} are left"
+                "the value `{name}` returned needs {needed} words of memory, {left} are left"
             ),
             Self::Fault(what) => write!(f, "the program is faulty: {what}"),
         }
@@ -401,43 +384,21 @@ pub struct Outcome {
     pub value: Value,
     /// The steps it took.
     pub steps: u64,
-    /// The most memory it used at once, in slots, bindings included.
+    /// The most memory it used at once, in words, bindings included.
     pub memory: u64,
 }
 
-/// One machine value. Every value takes one slot; strings, lists and
-/// records refer to their parts elsewhere in the machine or in the
-/// program's constants. An `Option<T>` is `None` or the `T` itself, since
-/// options do not nest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Slot {
-    Unbound,
-    Int(i64),
-    Bool(bool),
-    None,
-    /// A constant string or list of the program's.
-    Const(u32),
-    /// A string of `len` bytes, packed 8 to a slot from `at`.
-    Str {
-        at: u32,
-        len: u32,
-    },
-    List {
-        at: u32,
-        len: u32,
-    },
-    /// A record's fields in name order.
-    Record {
-        at: u32,
-        len: u32,
-    },
-    Opaque(u64),
-    /// 8 bytes of a string.
-    Bytes([u8; 8]),
-}
-
-/// A machine with a fixed memory, reserved when it is made, which runs
-/// programs one at a time.
+/// A machine with a fixed memory of 64-bit words, reserved when it is
+/// made, which runs programs one at a time.
+///
+/// Memory is untyped: the verifier has proved what every word is, so the
+/// machine checks only that each access is inside memory. A word is an
+/// `Int` as `i64`, a `Bool` as 0 or 1, or a reference packing where a
+/// string's, list's or record's parts start (the low 32 bits) and how many
+/// there are (the high 32: a string's bytes, a list's entries or a
+/// record's words). An `Option<Int>` is two words, 1 or 0 for present or
+/// absent then the `Int`; every other option is one word, [`NONE`] when
+/// absent. A string's bytes are packed 8 to a word.
 ///
 /// ```
 /// use shex::{Environment, Limits, Machine, Type, Value};
@@ -462,7 +423,9 @@ enum Slot {
 #[derive(Debug)]
 pub struct Machine {
     limits: Limits,
-    slots: Box<[Slot]>,
+    words: Box<[u64]>,
+    /// Which of a loaded program's globals are bound.
+    bound: Vec<bool>,
 }
 
 impl Machine {
@@ -472,7 +435,8 @@ impl Machine {
 
         Self {
             limits,
-            slots: vec![Slot::Unbound; len].into_boxed_slice(),
+            words: vec![0; len].into_boxed_slice(),
+            bound: Vec::new(),
         }
     }
 
@@ -481,15 +445,12 @@ impl Machine {
         self.limits
     }
 
-    /// Get ready to run `program`, refusing it when its memory, with a
-    /// slot per value it reads, is more than the machine has.
+    /// Get ready to run `program`, refusing it when its memory, the words
+    /// of the values it reads included, is more than the machine has, and
+    /// copying its constants into memory.
     pub fn load<'a>(&'a mut self, program: &'a Program) -> Result<Run<'a>, RunError> {
         let memory = program.memory();
-        let globals = program.globals.len();
-
-        let needed = memory
-            .total()
-            .saturating_add(u64::try_from(globals).unwrap_or(u64::MAX));
+        let needed = memory.total();
 
         if needed > u64::from(self.limits.memory) {
             return Err(RunError::TooMuchMemory {
@@ -498,10 +459,9 @@ impl Machine {
             });
         }
 
-        let size = |n: u32| usize::try_from(n).map_err(|_| fault("memory past the address space"));
         let stack_cap = size(memory.stack)?;
         let stack_base = self
-            .slots
+            .words
             .len()
             .checked_sub(stack_cap)
             .ok_or_else(|| fault("a stack larger than the machine"))?;
@@ -509,16 +469,14 @@ impl Machine {
             .checked_sub(size(memory.constants)?)
             .ok_or_else(|| fault("constants larger than the machine"))?;
 
-        for slot in self
-            .slots
-            .get_mut(..globals)
-            .ok_or_else(|| fault("more values than the machine has slots"))?
-        {
-            *slot = Slot::Unbound;
-        }
+        self.bound.clear();
+        self.bound.resize(program.globals.len(), false);
 
-        Ok(Run {
-            slots: &mut self.slots,
+        let globals = size(memory.globals)?;
+
+        let mut run = Run {
+            words: &mut self.words,
+            bound: &mut self.bound,
             program,
             fuel: self.limits.fuel,
             left: self.limits.fuel,
@@ -530,7 +488,10 @@ impl Machine {
             sp: 0,
             peak_len: globals,
             peak_sp: 0,
-        })
+        };
+
+        run.load_constants()?;
+        Ok(run)
     }
 }
 
@@ -543,18 +504,19 @@ impl Default for Machine {
 /// A program loaded on a [`Machine`], taking its bindings.
 #[derive(Debug)]
 pub struct Run<'a> {
-    slots: &'a mut [Slot],
+    words: &'a mut [u64],
+    bound: &'a mut [bool],
     program: &'a Program,
     fuel: u64,
     left: u64,
-    /// Slots `..len` hold the values read, then the parts of bound values,
-    /// lists and returned values, up to `limit`.
+    /// Words `..len` hold the values read, then the parts of bound values,
+    /// lists and returned values, up to `limit`, where the constants are.
     len: usize,
     limit: usize,
-    /// The slots kept for the lists the program has yet to build, which
+    /// The words kept for the lists the program has yet to build, which
     /// bound and returned values may not take.
     heap: usize,
-    /// The stack is the `stack_cap` slots from `stack_base`, `sp` deep.
+    /// The stack is the `stack_cap` words from `stack_base`, `sp` deep.
     stack_base: usize,
     stack_cap: usize,
     sp: usize,
@@ -570,7 +532,7 @@ enum Seg<'v> {
 }
 
 enum Read {
-    Visit(Slot, TypeId),
+    Visit(usize, TypeId),
     List(usize),
     Record(TypeId),
     Some,
@@ -594,7 +556,7 @@ impl<'a> Run<'a> {
     pub fn bind(&mut self, name: &str, value: Value) -> Result<(), RunError> {
         let program = self.program;
 
-        let (at, global) = program
+        let (n, global) = program
             .globals
             .iter()
             .enumerate()
@@ -603,7 +565,7 @@ impl<'a> Run<'a> {
                 name: name.to_owned(),
             })?;
 
-        if self.slots.get(at) != Some(&Slot::Unbound) {
+        if self.bound.get(n).copied().unwrap_or(true) {
             return Err(RunError::AlreadyBound {
                 name: name.to_owned(),
             });
@@ -627,11 +589,17 @@ impl<'a> Run<'a> {
             });
         }
 
-        let slot = self.write(&value, global.ty)?;
-        *self
-            .slots
-            .get_mut(at)
-            .ok_or_else(|| fault("a value outside memory"))? = slot;
+        let at = program
+            .global_at
+            .get(n)
+            .copied()
+            .ok_or_else(|| fault("a value outside memory"))?;
+        self.write(&value, global.ty, size(at)?)?;
+
+        if let Some(bound) = self.bound.get_mut(n) {
+            *bound = true;
+        }
+
         Ok(())
     }
 
@@ -644,8 +612,8 @@ impl<'a> Run<'a> {
     pub fn run_with(mut self, host: &mut dyn Host) -> Result<Outcome, RunError> {
         let program = self.program;
 
-        for (at, global) in program.globals.iter().enumerate() {
-            if self.slots.get(at) == Some(&Slot::Unbound) {
+        for (global, bound) in program.globals.iter().zip(self.bound.iter()) {
+            if !bound {
                 return Err(RunError::Unbound {
                     name: global.name.clone(),
                     ty: program.type_of(global.ty),
@@ -661,13 +629,11 @@ impl<'a> Run<'a> {
             pc = self.step(*instr, pc, host)?;
         }
 
-        let result = self.pop()?;
-
-        if self.sp != 0 {
-            return Err(fault("values are left on the stack"));
+        if self.sp != program.types.width(program.result) {
+            return Err(fault("not one value is left on the stack"));
         }
 
-        let value = self.read(result, program.result)?;
+        let value = self.read(self.stack_base, program.result)?;
 
         Ok(Outcome {
             value,
@@ -678,40 +644,80 @@ impl<'a> Run<'a> {
         })
     }
 
+    /// Copy the program's constants into memory from `limit`.
+    fn load_constants(&mut self) -> Result<(), RunError> {
+        let program = self.program;
+
+        for (constant, (at, _)) in program.constants.iter().zip(&program.constant_at) {
+            let at = self.limit.checked_add(size(*at)?);
+            let at = at.ok_or_else(|| fault("a constant outside memory"))?;
+
+            match constant {
+                Constant::String(s) => self.put_bytes(at, s.as_bytes())?,
+                Constant::List { items, .. } => {
+                    for (n, item) in items.iter().enumerate() {
+                        let word = match *item {
+                            Scalar::Int(n) => n as u64,
+                            Scalar::Bool(b) => u64::from(b),
+                            Scalar::Const(c) => self.constant(c)?,
+                        };
+
+                        self.put(at.checked_add(n), word)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// The reference to the constant `c`.
+    fn constant(&self, c: u32) -> Result<u64, RunError> {
+        let (at, len) = index(&self.program.constant_at, c)
+            .copied()
+            .ok_or_else(|| fault("no such constant"))?;
+        let at = self
+            .limit
+            .checked_add(size(at)?)
+            .ok_or_else(|| fault("a constant outside memory"))?;
+        reference(at, size(len)?)
+    }
+
     /// Run one instruction at `pc`, giving the next.
     fn step(&mut self, instr: Instr, pc: usize, host: &mut dyn Host) -> Result<usize, RunError> {
         let next = pc.checked_add(1).ok_or_else(|| fault("code too long"))?;
+        let types = &self.program.types;
 
         let push = match instr {
-            Instr::Int(n) => Slot::Int(n),
-            Instr::Bool(b) => Slot::Bool(b),
-            Instr::Const(c) => Slot::Const(c),
-            Instr::Global(g) => {
-                index(&self.program.globals, g).ok_or_else(|| fault("no such value"))?;
-                *index(self.slots, g).ok_or_else(|| fault("no such value"))?
+            Instr::Int(n) => n as u64,
+            Instr::Bool(b) => u64::from(b),
+            Instr::Const(c) => self.constant(c)?,
+            Instr::Global { at, ty } => {
+                self.push_from(size(at)?, types.width(ty))?;
+                return Ok(next);
             }
             Instr::Neg => {
                 let a = self.pop_int()?;
-                Slot::Int(a.checked_neg().ok_or_else(|| overflow(format!("-({a})")))?)
+                int_word(a.checked_neg().ok_or_else(|| overflow(format!("-({a})")))?)
             }
             Instr::Abs => {
                 let a = self.pop_int()?;
-                Slot::Int(
+                int_word(
                     a.checked_abs()
                         .ok_or_else(|| overflow(format!("({a}).abs()")))?,
                 )
             }
-            Instr::Not => Slot::Bool(!self.pop_bool()?),
+            Instr::Not => u64::from(!self.pop_bool()?),
             Instr::Add | Instr::Sub | Instr::Mul | Instr::Div | Instr::Rem => {
                 let b = self.pop_int()?;
                 let a = self.pop_int()?;
-                Slot::Int(arithmetic(instr, a, b)?)
+                int_word(arithmetic(instr, a, b)?)
             }
             Instr::Lt | Instr::Le | Instr::Gt | Instr::Ge => {
                 let b = self.pop_int()?;
                 let a = self.pop_int()?;
 
-                Slot::Bool(match instr {
+                u64::from(match instr {
                     Instr::Lt => a < b,
                     Instr::Le => a <= b,
                     Instr::Gt => a > b,
@@ -721,14 +727,7 @@ impl<'a> Run<'a> {
             Instr::Eq | Instr::Ne => {
                 let b = self.pop()?;
                 let a = self.pop()?;
-
-                let equal = match (a, b) {
-                    (Slot::Int(a), Slot::Int(b)) => a == b,
-                    (Slot::Bool(a), Slot::Bool(b)) => a == b,
-                    _ => return Err(fault("compares other than two Ints or two Bools")),
-                };
-
-                Slot::Bool(equal == matches!(instr, Instr::Eq))
+                u64::from((a == b) == matches!(instr, Instr::Eq))
             }
             Instr::And(skip) | Instr::Or(skip) => {
                 let top = self.pop_bool()?;
@@ -738,73 +737,76 @@ impl<'a> Run<'a> {
                     return Ok(next);
                 }
 
-                self.push(Slot::Bool(top))?;
+                self.push(u64::from(top))?;
 
                 return usize::try_from(skip)
                     .ok()
                     .and_then(|skip| next.checked_add(skip))
                     .ok_or_else(|| fault("jumps past the end"));
             }
-            Instr::Field(n) => {
-                let Slot::Record { at, len } = self.pop()? else {
-                    return Err(fault("reads a field of other than a record"));
-                };
+            Instr::Field { at, ty } => {
+                let (start, len) = unpack(self.pop()?)?;
+                let width = types.width(ty);
+                let at = size(at)?;
 
-                if n >= len {
+                if at.checked_add(width).is_none_or(|end| end > len) {
                     return Err(fault("reads a field the record does not have"));
                 }
 
-                self.slot(at, n)?
+                let from = start
+                    .checked_add(at)
+                    .ok_or_else(|| fault("a value outside memory"))?;
+                self.push_from(from, width)?;
+                return Ok(next);
             }
-            Instr::Index => {
+            Instr::Index(entry) => {
                 let i = self.pop_int()?;
-                let list = self.pop()?;
-                let len = self.len_of(list)?;
+                let (start, len) = unpack(self.pop()?)?;
 
                 let at = usize::try_from(i)
                     .ok()
                     .filter(|at| *at < len)
                     .ok_or(RunError::IndexOutOfRange { index: i, len })?;
 
-                self.entry(list, at)?
+                self.push_entry(start, at, types.width(entry))?;
+                return Ok(next);
             }
-            Instr::Lookup => {
-                let list = self.pop()?;
+            Instr::Lookup(entry) => {
+                let (start, len) = unpack(self.pop()?)?;
                 let i = self.pop_int()?;
-                let len = self.len_of(list)?;
                 let last = len.checked_sub(1).ok_or(RunError::EmptyLookup)?;
                 let at = usize::try_from(i.max(0)).unwrap_or(usize::MAX).min(last);
-                self.entry(list, at)?
+                self.push_entry(start, at, types.width(entry))?;
+                return Ok(next);
             }
-            Instr::List(n) => {
-                let len = size(n)?;
-                self.spend(len)?;
+            Instr::List { len, entry } => {
+                let n = size(len)?;
+                self.spend(n)?;
 
+                let words = n
+                    .checked_mul(types.width(entry))
+                    .ok_or_else(|| fault("a list too large"))?;
                 let top = self
                     .sp
-                    .checked_sub(len)
+                    .checked_sub(words)
                     .ok_or_else(|| fault("makes a list of more entries than the stack has"))?;
                 let from = self
                     .stack_base
                     .checked_add(top)
                     .ok_or_else(|| fault("a stack outside memory"))?;
                 let end = from
-                    .checked_add(len)
-                    .filter(|end| *end <= self.slots.len())
+                    .checked_add(words)
+                    .filter(|end| *end <= self.words.len())
                     .ok_or_else(|| fault("a stack outside memory"))?;
                 self.heap = self
                     .heap
-                    .checked_sub(len)
+                    .checked_sub(words)
                     .ok_or_else(|| fault("builds more lists than it declares"))?;
-                let at = self.alloc(len)?;
+                let at = self.alloc(words)?;
 
-                self.slots.copy_within(from..end, at);
+                self.words.copy_within(from..end, at);
                 self.sp = top;
-
-                Slot::List {
-                    at: slot_index(at)?,
-                    len: n,
-                }
+                reference(at, n)?
             }
             Instr::Min(n) | Instr::Max(n) => {
                 self.spend(size(n)?)?;
@@ -820,7 +822,7 @@ impl<'a> Run<'a> {
                     };
                 }
 
-                Slot::Int(best)
+                int_word(best)
             }
             Instr::Clamp => {
                 let high = self.pop_int()?;
@@ -831,56 +833,66 @@ impl<'a> Run<'a> {
                     return Err(RunError::ClampBounds { low, high });
                 }
 
-                Slot::Int(value.clamp(low, high))
+                int_word(value.clamp(low, high))
             }
-            Instr::UnwrapOr => {
+            Instr::UnwrapOr(option) => {
                 let default = self.pop()?;
-                let option = self.pop()?;
 
-                if option == Slot::None {
-                    default
+                if types.is_option_int(option) {
+                    let value = self.pop()?;
+                    let present = self.pop()?;
+                    if present != 0 { value } else { default }
                 } else {
-                    option
+                    let value = self.pop()?;
+                    if value != NONE { value } else { default }
                 }
             }
-            Instr::IsSome | Instr::IsNone => {
-                let none = self.pop()? == Slot::None;
-                Slot::Bool(none == matches!(instr, Instr::IsNone))
+            Instr::IsSome(option) | Instr::IsNone(option) => {
+                let none = if types.is_option_int(option) {
+                    self.pop()?;
+                    self.pop()? == 0
+                } else {
+                    self.pop()? == NONE
+                };
+
+                u64::from(none == matches!(instr, Instr::IsNone(..)))
             }
             Instr::Len => {
-                let list = self.pop()?;
-                let len = self.len_of(list)?;
-                Slot::Int(i64::try_from(len).map_err(|_| fault("a list too long to count"))?)
+                let (_, len) = unpack(self.pop()?)?;
+                i64::try_from(len).map_err(|_| fault("a list too long to count"))? as u64
             }
-            Instr::Call(f) => self.call(f, host)?,
+            Instr::Call(f) => {
+                self.call(f, host)?;
+                return Ok(next);
+            }
         };
 
         self.push(push)?;
         Ok(next)
     }
 
-    fn call(&mut self, f: u32, host: &mut dyn Host) -> Result<Slot, RunError> {
+    fn call(&mut self, f: u32, host: &mut dyn Host) -> Result<(), RunError> {
         let program = self.program;
         let function = index(&program.functions, f).ok_or_else(|| fault("no such function"))?;
 
+        let words = function
+            .params
+            .iter()
+            .fold(0usize, |n, ty| n.saturating_add(program.types.width(*ty)));
         let top = self
             .sp
-            .checked_sub(function.params.len())
-            .ok_or_else(|| fault("calls with fewer arguments than the stack has"))?;
+            .checked_sub(words)
+            .ok_or_else(|| fault("calls with more arguments than the stack has"))?;
 
         let mut args = Vec::with_capacity(function.params.len());
+        let mut at = self
+            .stack_base
+            .checked_add(top)
+            .ok_or_else(|| fault("a stack outside memory"))?;
 
-        for (n, ty) in function.params.iter().enumerate() {
-            let at = self
-                .stack_base
-                .checked_add(top)
-                .and_then(|at| at.checked_add(n))
-                .ok_or_else(|| fault("a stack outside memory"))?;
-            let slot = *self
-                .slots
-                .get(at)
-                .ok_or_else(|| fault("a stack outside memory"))?;
-            args.push(self.read(slot, *ty)?);
+        for ty in &function.params {
+            args.push(self.read(at, *ty)?);
+            at = at.saturating_add(program.types.width(*ty));
         }
 
         self.sp = top;
@@ -912,10 +924,12 @@ impl<'a> Run<'a> {
             });
         }
 
-        self.write(&value, function.ret)
+        let width = program.types.width(function.ret);
+        let dest = self.reserve(width)?;
+        self.write(&value, function.ret, dest)
     }
 
-    /// The slots left for bound and returned values.
+    /// The words left for bound and returned values.
     fn left(&self) -> usize {
         self.limit
             .saturating_sub(self.len)
@@ -930,56 +944,95 @@ impl<'a> Run<'a> {
         Ok(())
     }
 
-    fn push(&mut self, slot: Slot) -> Result<(), RunError> {
-        if self.sp >= self.stack_cap {
-            return Err(fault("the stack grows past the depth it declares"));
-        }
-
+    /// Take `n` words on top of the stack, giving where they start.
+    fn reserve(&mut self, n: usize) -> Result<usize, RunError> {
+        let sp = self
+            .sp
+            .checked_add(n)
+            .filter(|sp| *sp <= self.stack_cap)
+            .ok_or_else(|| fault("the stack grows past the depth it declares"))?;
         let at = self
             .stack_base
             .checked_add(self.sp)
             .ok_or_else(|| fault("a stack outside memory"))?;
-        *self
-            .slots
-            .get_mut(at)
-            .ok_or_else(|| fault("a stack outside memory"))? = slot;
-        self.sp = self.sp.saturating_add(1);
-        self.peak_sp = self.peak_sp.max(self.sp);
+        self.sp = sp;
+        self.peak_sp = self.peak_sp.max(sp);
+        Ok(at)
+    }
+
+    fn push(&mut self, word: u64) -> Result<(), RunError> {
+        let at = self.reserve(1)?;
+        self.put(Some(at), word)
+    }
+
+    /// Push the `n` words from `from`.
+    fn push_from(&mut self, from: usize, n: usize) -> Result<(), RunError> {
+        let end = from
+            .checked_add(n)
+            .filter(|end| *end <= self.words.len())
+            .ok_or_else(|| fault("a value outside memory"))?;
+        let at = self.reserve(n)?;
+        self.words.copy_within(from..end, at);
         Ok(())
     }
 
-    fn pop(&mut self) -> Result<Slot, RunError> {
+    /// Push entry `at` of the list from `start` whose entries are `width`
+    /// words.
+    fn push_entry(&mut self, start: usize, at: usize, width: usize) -> Result<(), RunError> {
+        let from = at
+            .checked_mul(width)
+            .and_then(|at| at.checked_add(start))
+            .ok_or_else(|| fault("a value outside memory"))?;
+        self.push_from(from, width)
+    }
+
+    fn pop(&mut self) -> Result<u64, RunError> {
         let sp = self
             .sp
             .checked_sub(1)
             .ok_or_else(|| fault("pops an empty stack"))?;
-        let at = self
-            .stack_base
-            .checked_add(sp)
-            .ok_or_else(|| fault("a stack outside memory"))?;
-        let slot = *self
-            .slots
-            .get(at)
-            .ok_or_else(|| fault("a stack outside memory"))?;
+        let word = self.get(self.stack_base.checked_add(sp))?;
         self.sp = sp;
-        Ok(slot)
+        Ok(word)
     }
 
     fn pop_int(&mut self) -> Result<i64, RunError> {
-        match self.pop()? {
-            Slot::Int(n) => Ok(n),
-            _ => Err(fault("finds other than an Int")),
-        }
+        Ok(self.pop()? as i64)
     }
 
     fn pop_bool(&mut self) -> Result<bool, RunError> {
-        match self.pop()? {
-            Slot::Bool(b) => Ok(b),
-            _ => Err(fault("finds other than a Bool")),
-        }
+        Ok(self.pop()? != 0)
     }
 
-    /// Take `n` slots of memory.
+    /// The word at `at`.
+    fn get(&self, at: Option<usize>) -> Result<u64, RunError> {
+        at.and_then(|at| self.words.get(at))
+            .copied()
+            .ok_or_else(|| fault("a value outside memory"))
+    }
+
+    fn put(&mut self, at: Option<usize>, word: u64) -> Result<(), RunError> {
+        *at.and_then(|at| self.words.get_mut(at))
+            .ok_or_else(|| fault("a value outside memory"))? = word;
+        Ok(())
+    }
+
+    /// Pack `bytes` 8 to a word from `at`.
+    fn put_bytes(&mut self, at: usize, bytes: &[u8]) -> Result<(), RunError> {
+        for (n, chunk) in bytes.chunks(8).enumerate() {
+            let mut word = [0u8; 8];
+
+            for (b, c) in word.iter_mut().zip(chunk) {
+                *b = *c;
+            }
+
+            self.put(at.checked_add(n), u64::from_le_bytes(word))?;
+        }
+
+        Ok(())
+    }
+
+    /// Take `n` words of memory.
     fn alloc(&mut self, n: usize) -> Result<usize, RunError> {
         let at = self.len;
         let len = at
@@ -991,44 +1044,7 @@ impl<'a> Run<'a> {
         Ok(at)
     }
 
-    fn slot(&self, at: u32, n: u32) -> Result<Slot, RunError> {
-        at.checked_add(n)
-            .and_then(|at| index(self.slots, at))
-            .copied()
-            .ok_or_else(|| fault("a value outside memory"))
-    }
-
-    fn constant(&self, c: u32) -> Result<&'a Constant, RunError> {
-        let program = self.program;
-        index(&program.constants, c).ok_or_else(|| fault("no such constant"))
-    }
-
-    fn len_of(&self, list: Slot) -> Result<usize, RunError> {
-        match list {
-            Slot::List { len, .. } => size(len),
-            Slot::Const(c) => match self.constant(c)? {
-                Constant::List { items, .. } => Ok(items.len()),
-                Constant::String(_) => Err(fault("a string used as a list")),
-            },
-            _ => Err(fault("finds other than a list")),
-        }
-    }
-
-    fn entry(&self, list: Slot, at: usize) -> Result<Slot, RunError> {
-        match list {
-            Slot::List { at: start, .. } => self.slot(start, slot_index(at)?),
-            Slot::Const(c) => match self.constant(c)? {
-                Constant::List { items, .. } => items
-                    .get(at)
-                    .map(scalar)
-                    .ok_or_else(|| fault("an entry past the end")),
-                Constant::String(_) => Err(fault("a string used as a list")),
-            },
-            _ => Err(fault("finds other than a list")),
-        }
-    }
-
-    /// Check `value` is of type `ty`, giving the slots its parts take.
+    /// Check `value` is of type `ty`, giving the words its parts take.
     fn measure(
         &self,
         value: &Value,
@@ -1036,12 +1052,13 @@ impl<'a> Run<'a> {
         root: &str,
     ) -> Result<Result<usize, Mismatch>, RunError> {
         let program = self.program;
+        let types = &program.types;
         let mut nodes = vec![(0usize, Seg::Root)];
         let mut work = vec![(value, ty, 0usize, None)];
         let mut total = 0usize;
 
         while let Some((value, ty, node, option)) = work.pop() {
-            let ty_node = program.types.get(ty).ok_or_else(|| fault("no such type"))?;
+            let ty_node = types.get(ty).ok_or_else(|| fault("no such type"))?;
 
             let found = match (ty_node, value) {
                 (TypeNode::Option(_), Value::None)
@@ -1051,13 +1068,13 @@ impl<'a> Run<'a> {
                     work.push((value, *inner, node, Some(ty)));
                     continue;
                 }
-                (TypeNode::Opaque(name), Value::Opaque { ty, .. }) if name == ty => continue,
                 (TypeNode::String, Value::String(s)) => {
                     total = total.saturating_add(s.len().div_ceil(8));
                     continue;
                 }
                 (TypeNode::List(entry), Value::List(items)) => {
-                    total = total.saturating_add(items.len());
+                    let width = types.width(*entry);
+                    total = total.saturating_add(items.len().saturating_mul(width));
 
                     for (i, item) in items.iter().enumerate() {
                         work.push((item, *entry, nodes.len(), None));
@@ -1074,7 +1091,7 @@ impl<'a> Run<'a> {
                         (Some(field), _) => format!("a record without `{}`", field.name),
                         (None, Some(key)) => format!("a record with an extra field `{key}`"),
                         (None, None) => {
-                            total = total.saturating_add(fields.len());
+                            total = total.saturating_add(types.record_words(fields));
 
                             for field in fields {
                                 if let Some(value) = map.get(&field.name) {
@@ -1103,154 +1120,153 @@ impl<'a> Run<'a> {
         Ok(Ok(total))
     }
 
-    /// Write `value`, already measured against `ty`, into memory, giving
-    /// its slot.
-    fn write(&mut self, value: &Value, ty: TypeId) -> Result<Slot, RunError> {
-        let mut work = Vec::new();
-        let root = self.place(value, ty, &mut work)?;
+    /// Write `value`, already measured against `ty`, at `dest`, taking
+    /// memory for its parts.
+    fn write(&mut self, value: &Value, ty: TypeId, dest: usize) -> Result<(), RunError> {
+        let program = self.program;
+        let types = &program.types;
+        let mut work = vec![(value, ty, dest)];
 
         while let Some((value, ty, dest)) = work.pop() {
-            let slot = self.place(value, ty, &mut work)?;
-            *self
-                .slots
-                .get_mut(dest)
-                .ok_or_else(|| fault("a value outside memory"))? = slot;
-        }
+            let ty_node = types.get(ty).ok_or_else(|| fault("no such type"))?;
 
-        Ok(root)
-    }
-
-    fn place<'v>(
-        &mut self,
-        mut value: &'v Value,
-        mut ty: TypeId,
-        work: &mut Vec<(&'v Value, TypeId, usize)>,
-    ) -> Result<Slot, RunError> {
-        let program = self.program;
-
-        loop {
-            let ty_node = program.types.get(ty).ok_or_else(|| fault("no such type"))?;
-
-            return Ok(match (ty_node, value) {
-                (TypeNode::Option(_), Value::None) => Slot::None,
-                (TypeNode::Option(inner), Value::Some(inner_value)) => {
-                    value = inner_value;
-                    ty = *inner;
+            let word = match (ty_node, value) {
+                (TypeNode::Option(_), Value::None) if types.is_option_int(ty) => {
+                    self.put(Some(dest), 0)?;
+                    self.put(dest.checked_add(1), 0)?;
                     continue;
                 }
-                (TypeNode::Int, Value::Int(n)) => Slot::Int(*n),
-                (TypeNode::Bool, Value::Bool(b)) => Slot::Bool(*b),
-                (TypeNode::Opaque(_), Value::Opaque { handle, .. }) => Slot::Opaque(*handle),
+                (TypeNode::Option(_), Value::None) => NONE,
+                (TypeNode::Option(inner), Value::Some(value)) => {
+                    let dest = if types.is_option_int(ty) {
+                        self.put(Some(dest), 1)?;
+                        dest.checked_add(1)
+                            .ok_or_else(|| fault("a value outside memory"))?
+                    } else {
+                        dest
+                    };
+
+                    work.push((value, *inner, dest));
+                    continue;
+                }
+                (TypeNode::Int, Value::Int(n)) => *n as u64,
+                (TypeNode::Bool, Value::Bool(b)) => u64::from(*b),
                 (TypeNode::String, Value::String(s)) => {
                     let at = self.alloc(s.len().div_ceil(8))?;
-
-                    for (n, chunk) in s.as_bytes().chunks(8).enumerate() {
-                        let mut bytes = [0u8; 8];
-
-                        for (b, c) in bytes.iter_mut().zip(chunk) {
-                            *b = *c;
-                        }
-
-                        *at.checked_add(n)
-                            .and_then(|at| self.slots.get_mut(at))
-                            .ok_or_else(|| fault("a string outside memory"))? = Slot::Bytes(bytes);
-                    }
-
-                    Slot::Str {
-                        at: slot_index(at)?,
-                        len: u32::try_from(s.len()).map_err(|_| fault("a string too long"))?,
-                    }
+                    self.put_bytes(at, s.as_bytes())?;
+                    reference(at, s.len())?
                 }
                 (TypeNode::List(entry), Value::List(items)) => {
-                    let at = self.alloc(items.len())?;
+                    let width = types.width(*entry);
+                    let words = items
+                        .len()
+                        .checked_mul(width)
+                        .ok_or_else(|| fault("a list too large"))?;
+                    let at = self.alloc(words)?;
 
                     for (n, item) in items.iter().enumerate() {
-                        work.push((item, *entry, at.saturating_add(n)));
+                        let dest = n
+                            .checked_mul(width)
+                            .and_then(|n| n.checked_add(at))
+                            .ok_or_else(|| fault("a value outside memory"))?;
+                        work.push((item, *entry, dest));
                     }
 
-                    Slot::List {
-                        at: slot_index(at)?,
-                        len: slot_index(items.len())?,
-                    }
+                    reference(at, items.len())?
                 }
                 (TypeNode::Record(fields), Value::Record(map)) => {
-                    let at = self.alloc(fields.len())?;
+                    let words = types.record_words(fields);
+                    let at = self.alloc(words)?;
 
-                    for (n, field) in fields.iter().enumerate() {
+                    for (offset, field) in types.field_offsets(fields) {
                         let value = map
                             .get(&field.name)
                             .ok_or_else(|| fault("a record lost a field"))?;
-                        work.push((value, field.ty, at.saturating_add(n)));
+                        let dest = at
+                            .checked_add(offset)
+                            .ok_or_else(|| fault("a value outside memory"))?;
+                        work.push((value, field.ty, dest));
                     }
 
-                    Slot::Record {
-                        at: slot_index(at)?,
-                        len: slot_index(fields.len())?,
-                    }
+                    reference(at, words)?
                 }
                 _ => return Err(fault("a value changed type")),
-            });
+            };
+
+            self.put(Some(dest), word)?;
         }
+
+        Ok(())
     }
 
-    /// The value in `slot`, of type `ty`.
-    fn read(&self, slot: Slot, ty: TypeId) -> Result<Value, RunError> {
+    /// The value of type `ty` held at `at`.
+    fn read(&self, at: usize, ty: TypeId) -> Result<Value, RunError> {
         let program = self.program;
-        let mut steps = vec![Read::Visit(slot, ty)];
+        let types = &program.types;
+        let mut steps = vec![Read::Visit(at, ty)];
         let mut out = Vec::<Value>::new();
 
         while let Some(step) = steps.pop() {
             match step {
-                Read::Visit(slot, ty) => {
-                    let ty_node = program.types.get(ty).ok_or_else(|| fault("no such type"))?;
+                Read::Visit(at, ty) => {
+                    let word = self.get(Some(at))?;
 
-                    match (ty_node, slot) {
-                        (TypeNode::Option(_), Slot::None) => out.push(Value::None),
-                        (TypeNode::Option(inner), slot) => {
+                    match types.get(ty).ok_or_else(|| fault("no such type"))? {
+                        TypeNode::Option(inner) => {
+                            let at = if types.is_option_int(ty) {
+                                if word == 0 {
+                                    out.push(Value::None);
+                                    continue;
+                                }
+
+                                at.checked_add(1)
+                                    .ok_or_else(|| fault("a value outside memory"))?
+                            } else if word == NONE {
+                                out.push(Value::None);
+                                continue;
+                            } else {
+                                at
+                            };
+
                             steps.push(Read::Some);
-                            steps.push(Read::Visit(slot, *inner));
+                            steps.push(Read::Visit(at, *inner));
                         }
-                        (TypeNode::Int, Slot::Int(n)) => out.push(Value::Int(n)),
-                        (TypeNode::Bool, Slot::Bool(b)) => out.push(Value::Bool(b)),
-                        (TypeNode::Opaque(name), Slot::Opaque(handle)) => out.push(Value::Opaque {
-                            ty: name.clone(),
-                            handle,
-                        }),
-                        (TypeNode::String, Slot::Const(c)) => match self.constant(c)? {
-                            Constant::String(s) => out.push(Value::String(s.clone())),
-                            Constant::List { .. } => return Err(fault("a list used as a string")),
-                        },
-                        (TypeNode::String, Slot::Str { at, len }) => {
+                        TypeNode::Int => out.push(Value::Int(word as i64)),
+                        TypeNode::Bool => out.push(Value::Bool(word != 0)),
+                        TypeNode::String => {
+                            let (at, len) = unpack(word)?;
                             out.push(Value::String(self.string(at, len)?));
                         }
-                        (TypeNode::List(entry), Slot::Const(c)) => match self.constant(c)? {
-                            Constant::List { items, .. } => {
-                                steps.push(Read::List(items.len()));
-                                steps.extend(
-                                    items.iter().rev().map(|i| Read::Visit(scalar(i), *entry)),
-                                );
-                            }
-                            Constant::String(_) => return Err(fault("a string used as a list")),
-                        },
-                        (TypeNode::List(entry), Slot::List { at, len }) => {
-                            steps.push(Read::List(size(len)?));
+                        TypeNode::List(entry) => {
+                            let (start, len) = unpack(word)?;
+                            let width = types.width(*entry);
+                            self.inside(start, len.checked_mul(width))?;
+                            steps.push(Read::List(len));
 
                             for n in (0..len).rev() {
-                                steps.push(Read::Visit(self.slot(at, n)?, *entry));
+                                let at = n.saturating_mul(width).saturating_add(start);
+                                steps.push(Read::Visit(at, *entry));
                             }
                         }
-                        (TypeNode::Record(fields), Slot::Record { at, len }) => {
-                            if size(len)? != fields.len() {
+                        TypeNode::Record(fields) => {
+                            let (start, len) = unpack(word)?;
+
+                            if len != types.record_words(fields) {
                                 return Err(fault("a record of the wrong size"));
                             }
 
+                            self.inside(start, Some(len))?;
                             steps.push(Read::Record(ty));
 
-                            for (n, field) in (0..len).zip(fields).rev() {
-                                steps.push(Read::Visit(self.slot(at, n)?, field.ty));
+                            for (offset, field) in types
+                                .field_offsets(fields)
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                            {
+                                steps.push(Read::Visit(start.saturating_add(offset), field.ty));
                             }
                         }
-                        _ => return Err(fault("a value is not of its type")),
                     }
                 }
                 Read::List(n) => {
@@ -1262,7 +1278,7 @@ impl<'a> Run<'a> {
                     out.push(Value::List(items));
                 }
                 Read::Record(ty) => {
-                    let Some(TypeNode::Record(fields)) = program.types.get(ty) else {
+                    let Some(TypeNode::Record(fields)) = types.get(ty) else {
                         return Err(fault("a record of other than a record type"));
                     };
 
@@ -1289,15 +1305,21 @@ impl<'a> Run<'a> {
         }
     }
 
-    fn string(&self, at: u32, len: u32) -> Result<String, RunError> {
-        let len = size(len)?;
+    /// Check the `len` words from `at` are inside memory.
+    fn inside(&self, at: usize, len: Option<usize>) -> Result<(), RunError> {
+        len.and_then(|len| at.checked_add(len))
+            .filter(|end| *end <= self.words.len())
+            .map(|_| ())
+            .ok_or_else(|| fault("a value outside memory"))
+    }
+
+    /// The string of `len` bytes packed from `at`.
+    fn string(&self, at: usize, len: usize) -> Result<String, RunError> {
+        self.inside(at, Some(len.div_ceil(8)))?;
         let mut bytes = Vec::with_capacity(len);
 
         for n in 0..len.div_ceil(8) {
-            match self.slot(at, slot_index(n)?)? {
-                Slot::Bytes(chunk) => bytes.extend_from_slice(&chunk),
-                _ => return Err(fault("a string's bytes are missing")),
-            }
+            bytes.extend_from_slice(&self.get(at.checked_add(n))?.to_le_bytes());
         }
 
         bytes.truncate(len);
@@ -1327,12 +1349,23 @@ fn overflow(expr: String) -> RunError {
     RunError::Overflow { expr }
 }
 
-fn scalar(item: &Scalar) -> Slot {
-    match *item {
-        Scalar::Int(n) => Slot::Int(n),
-        Scalar::Bool(b) => Slot::Bool(b),
-        Scalar::Const(c) => Slot::Const(c),
-    }
+fn int_word(n: i64) -> u64 {
+    n as u64
+}
+
+/// A reference to the `len` parts from `at`: `at` in the low 32 bits,
+/// `len` in the high.
+fn reference(at: usize, len: usize) -> Result<u64, RunError> {
+    let at = u32::try_from(at).map_err(|_| fault("memory past what a word can address"))?;
+    let len = u32::try_from(len).map_err(|_| fault("a value too long for a word"))?;
+    Ok(u64::from(at) | u64::from(len).wrapping_shl(32))
+}
+
+/// Where a reference's parts start, and how many there are.
+fn unpack(word: u64) -> Result<(usize, usize), RunError> {
+    let at = u32::try_from(word & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+    let len = u32::try_from(word.wrapping_shr(32)).unwrap_or(u32::MAX);
+    Ok((size(at)?, size(len)?))
 }
 
 fn path(root: &str, nodes: &[(usize, Seg<'_>)], mut node: usize) -> String {
@@ -1373,10 +1406,6 @@ fn index<T>(items: &[T], at: u32) -> Option<&T> {
 
 fn size(n: u32) -> Result<usize, RunError> {
     usize::try_from(n).map_err(|_| fault("a size past the address space"))
-}
-
-fn slot_index(n: usize) -> Result<u32, RunError> {
-    u32::try_from(n).map_err(|_| fault("memory past what a slot can address"))
 }
 
 fn count(n: usize) -> u64 {

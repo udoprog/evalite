@@ -26,9 +26,6 @@ pub enum Type {
     Option(Box<Type>),
     /// Named fields, read with `.name` or `["name"]`.
     Record(BTreeMap<String, Type>),
-    /// A value of the caller's that only its functions use, such as a
-    /// `Track` that `count` reads. Its name starts with an uppercase letter.
-    Opaque(String),
 }
 
 impl Type {
@@ -50,27 +47,9 @@ impl Type {
         Self::Record(fields.into_iter().map(|(k, t)| (k.into(), t)).collect())
     }
 
-    /// An opaque type of the caller's.
-    pub fn opaque(name: impl Into<String>) -> Self {
-        Self::Opaque(name.into())
-    }
-
     pub(crate) fn is_option(&self) -> bool {
         matches!(self, Self::Option(..))
     }
-}
-
-/// Type names a caller's opaque type may not take.
-const RESERVED: &[&str] = &["Int", "Bool", "String", "List", "Option"];
-
-/// Whether `name` can name an opaque type: an uppercase letter, then
-/// letters, digits and `_`, and not a built-in type's name.
-pub(crate) fn is_type_name(name: &str) -> bool {
-    let mut chars = name.chars();
-
-    chars.next().is_some_and(|c| c.is_ascii_uppercase())
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !RESERVED.contains(&name)
 }
 
 /// Whether `name` is written as a name in an expression: a lowercase
@@ -99,11 +78,10 @@ pub(crate) fn is_field_name(name: &str) -> bool {
 pub(crate) enum TypeFault {
     NestedOption,
     TooDeep,
-    TypeName(String),
 }
 
-/// Check that `ty` is a type shex has: no `Option<Option<T>>`, opaque
-/// names well formed, at most [`MAX_TYPE_DEPTH`] deep.
+/// Check that `ty` is a type shex has: no `Option<Option<T>>`, at most
+/// [`MAX_TYPE_DEPTH`] deep.
 pub(crate) fn check_type(ty: &Type) -> Result<(), TypeFault> {
     let mut stack = vec![(ty, 1usize)];
 
@@ -125,11 +103,6 @@ pub(crate) fn check_type(ty: &Type) -> Result<(), TypeFault> {
                 stack.push((value, next));
             }
             Type::Record(fields) => stack.extend(fields.values().map(|t| (t, next))),
-            Type::Opaque(name) => {
-                if !is_type_name(name) {
-                    return Err(TypeFault::TypeName(name.clone()));
-                }
-            }
         }
     }
 
@@ -143,7 +116,7 @@ enum Piece<'a> {
 }
 
 impl fmt::Display for Type {
-    /// Types as written in shex: `Int`, `List<Int>`, `Option<Track>`, and
+    /// Types as written in shex: `Int`, `List<Int>`, `Option<Int>`, and
     /// records as `{athletics: Int, "Brawl (bar)": Option<Int>}`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut stack = vec![Piece::Type(self)];
@@ -157,7 +130,6 @@ impl fmt::Display for Type {
                     Type::Int => f.write_str("Int")?,
                     Type::Bool => f.write_str("Bool")?,
                     Type::String => f.write_str("String")?,
-                    Type::Opaque(name) => f.write_str(name)?,
                     Type::List(entry) => {
                         f.write_str("List<")?;
                         stack.push(Piece::Text(">"));
@@ -189,6 +161,11 @@ impl fmt::Display for Type {
     }
 }
 
+/// The word of an absent option, other than an `Option<Int>`: no `Bool`
+/// (0 or 1) or reference (an address and a length that fit in memory
+/// together) is ever all ones.
+pub(crate) const NONE: u64 = u64::MAX;
+
 /// A type in a program's type table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Encode, Decode)]
 #[musli(transparent)]
@@ -218,7 +195,6 @@ pub(crate) enum TypeNode {
     Option(TypeId),
     /// Fields sorted by name, each name once.
     Record(Vec<FieldNode>),
-    Opaque(String),
 }
 
 /// The types a program uses, each once, every part before what holds it.
@@ -247,6 +223,43 @@ impl Types {
         self.ids.get(node).copied()
     }
 
+    /// Whether `id` is `Option<Int>`, the one type two words wide.
+    pub(crate) fn is_option_int(&self, id: TypeId) -> bool {
+        match self.get(id) {
+            Some(TypeNode::Option(inner)) => self.get(*inner) == Some(&TypeNode::Int),
+            _ => false,
+        }
+    }
+
+    /// The words a value of type `id` takes where it is held: two for an
+    /// `Option<Int>` (whether it is present, then the `Int`), one for
+    /// every other type. Strings, lists and records are a word referring
+    /// to their parts, and every other option is one word with
+    /// [`NONE`] for absent.
+    pub(crate) fn width(&self, id: TypeId) -> usize {
+        if self.is_option_int(id) { 2 } else { 1 }
+    }
+
+    /// The word offset of each field of the record `fields` from its
+    /// start, in name order, and the words they take together.
+    pub(crate) fn field_offsets<'f>(
+        &'f self,
+        fields: &'f [FieldNode],
+    ) -> impl Iterator<Item = (usize, &'f FieldNode)> + 'f {
+        fields.iter().scan(0usize, move |at, field| {
+            let here = *at;
+            *at = at.saturating_add(self.width(field.ty));
+            Some((here, field))
+        })
+    }
+
+    /// The words the fields of a record take.
+    pub(crate) fn record_words(&self, fields: &[FieldNode]) -> usize {
+        fields
+            .iter()
+            .fold(0usize, |n, f| n.saturating_add(self.width(f.ty)))
+    }
+
     fn depth(&self, id: TypeId) -> usize {
         self.depths.get(id.index()).copied().unwrap_or(usize::MAX)
     }
@@ -259,7 +272,7 @@ impl Types {
         }
 
         let depth = match &node {
-            TypeNode::Int | TypeNode::Bool | TypeNode::String | TypeNode::Opaque(..) => 0,
+            TypeNode::Int | TypeNode::Bool | TypeNode::String => 0,
             TypeNode::List(id) | TypeNode::Option(id) => self.depth(*id),
             TypeNode::Record(fields) => fields.iter().map(|f| self.depth(f.ty)).max().unwrap_or(0),
         }
@@ -297,7 +310,7 @@ impl Types {
                         Type::Record(fields) => {
                             steps.extend(fields.values().rev().map(Step::Visit));
                         }
-                        Type::Int | Type::Bool | Type::String | Type::Opaque(..) => {}
+                        Type::Int | Type::Bool | Type::String => {}
                     }
                 }
                 Step::Build(ty) => {
@@ -305,7 +318,6 @@ impl Types {
                         Type::Int => TypeNode::Int,
                         Type::Bool => TypeNode::Bool,
                         Type::String => TypeNode::String,
-                        Type::Opaque(name) => TypeNode::Opaque(name.clone()),
                         Type::List(_) => TypeNode::List(done.pop()?),
                         Type::Option(_) => TypeNode::Option(done.pop()?),
                         Type::Record(fields) => {
@@ -360,7 +372,6 @@ impl Types {
                 TypeNode::Int => Type::Int,
                 TypeNode::Bool => Type::Bool,
                 TypeNode::String => Type::String,
-                TypeNode::Opaque(name) => Type::Opaque(name.clone()),
                 TypeNode::List(t) => Type::list(built.get(&t.index())?.clone()),
                 TypeNode::Option(t) => Type::option(built.get(&t.index())?.clone()),
                 TypeNode::Record(fields) => {
@@ -381,8 +392,8 @@ impl Types {
     }
 
     /// Check a stored table: each part before what holds it, each node
-    /// once, records sorted, no `Option<Option<T>>`, opaque names well
-    /// formed and nothing nested past [`MAX_TYPE_DEPTH`].
+    /// once, records sorted, no `Option<Option<T>>` and nothing nested
+    /// past [`MAX_TYPE_DEPTH`].
     pub(crate) fn from_stored(nodes: Vec<TypeNode>) -> Result<Self, String> {
         let mut types = Self::new();
 
@@ -397,18 +408,15 @@ impl Types {
                 TypeNode::Option(t) if matches!(types.get(*t), Some(TypeNode::Option(..))) => {
                     return Err(format!("type {at} is an option of an option"));
                 }
-                TypeNode::Record(fields) => {
+                TypeNode::Record(fields)
                     if !fields.windows(2).all(|w| match w {
                         [a, b] => a.name < b.name,
                         _ => true,
-                    }) {
-                        return Err(format!(
-                            "type {at} has fields that are not sorted and unique"
-                        ));
-                    }
-                }
-                TypeNode::Opaque(name) if !is_type_name(name) => {
-                    return Err(format!("type {at} has an invalid name {name:?}"));
+                    }) =>
+                {
+                    return Err(format!(
+                        "type {at} has fields that are not sorted and unique"
+                    ));
                 }
                 _ => {}
             }
@@ -429,7 +437,7 @@ impl Types {
 /// The ids a node refers to.
 fn parts(node: &TypeNode) -> Vec<TypeId> {
     match node {
-        TypeNode::Int | TypeNode::Bool | TypeNode::String | TypeNode::Opaque(..) => Vec::new(),
+        TypeNode::Int | TypeNode::Bool | TypeNode::String => Vec::new(),
         TypeNode::List(t) | TypeNode::Option(t) => vec![*t],
         TypeNode::Record(fields) => fields.iter().map(|f| f.ty).collect(),
     }

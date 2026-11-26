@@ -10,7 +10,7 @@ use crate::env::{Builtin, Environment, Overload};
 use crate::error::{Arity, Callee, Error, ErrorKind};
 use crate::methods::{self, MethodSig, Receiver, Slot};
 use crate::parser::{Options, Tree, parse_with};
-use crate::program::{Constant, Global, HostFunction, Instr, Memory, Program, Scalar};
+use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
 use crate::syntax::{Syntax, unescape};
 use crate::types::{TypeId, TypeNode, Types};
 
@@ -81,12 +81,10 @@ enum Work<'a> {
     Index(N<'a>),
     /// After a list index's index.
     IndexExit(N<'a>),
-    /// After a list's entries, whose code starts at `start`, with the
-    /// stack's deepest before them.
+    /// After a list's entries, whose code starts at `start`.
     List {
         node: N<'a>,
         start: usize,
-        max: usize,
     },
 }
 
@@ -110,10 +108,8 @@ struct Compiler<'a> {
     functions: Vec<HostFunction>,
     function_ids: HashMap<(String, Vec<TypeId>), u32>,
     code: Vec<Instr>,
-    /// The stack's depth after the code so far, and its deepest.
-    depth: usize,
-    max: usize,
-    heap: usize,
+    /// The words the globals so far take.
+    global_words: usize,
     values: Vec<Value>,
     /// `&&` and `||` jumps waiting for their right operands.
     jumps: Vec<usize>,
@@ -140,9 +136,7 @@ impl<'a> Compiler<'a> {
             functions: Vec::new(),
             function_ids: HashMap::new(),
             code: Vec::new(),
-            depth: 0,
-            max: 0,
-            heap: 0,
+            global_words: 0,
             values: Vec::new(),
             jumps: Vec::new(),
         })
@@ -153,9 +147,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn ty(&self, id: TypeId) -> Type {
-        self.types
-            .to_type(id)
-            .unwrap_or_else(|| Type::opaque("Unknown"))
+        self.types.to_type(id).unwrap_or(Type::Int)
     }
 
     fn node(&mut self, node: TypeNode, at: Span<u32>) -> Result<TypeId, Error> {
@@ -170,16 +162,10 @@ impl<'a> Compiler<'a> {
             .ok_or_else(|| Error::new(at, ErrorKind::TypeTooDeep))
     }
 
-    /// Emit `instr`, which pops `pops` values and pushes `pushes`.
-    fn emit(&mut self, instr: Instr, pops: usize, pushes: usize) -> Result<(), Error> {
-        self.depth = self
-            .depth
-            .checked_sub(pops)
-            .and_then(|d| d.checked_add(pushes))
-            .ok_or_else(|| internal("the stack's depth went wrong"))?;
-        self.max = self.max.max(self.depth);
+    /// Emit `instr`. The memory the code uses is the verifier's to count
+    /// when the program is finished.
+    fn emit(&mut self, instr: Instr) {
         self.code.push(instr);
-        Ok(())
     }
 
     fn push(&mut self, ty: TypeId, span: Span<u32>) {
@@ -217,7 +203,7 @@ impl<'a> Compiler<'a> {
                     };
 
                     self.jumps.push(self.code.len());
-                    self.emit(instr, 1, 0)?;
+                    self.emit(instr);
                 }
                 Work::LogicExit(node) => self.logic(node)?,
                 Work::Paren(node) => {
@@ -235,7 +221,7 @@ impl<'a> Compiler<'a> {
                 Work::Field(node) => self.field(node)?,
                 Work::Index(node) => self.index(node, &mut work)?,
                 Work::IndexExit(node) => self.index_exit(node)?,
-                Work::List { node, start, max } => self.list(node, start, max)?,
+                Work::List { node, start } => self.list(node, start)?,
             }
         }
 
@@ -252,12 +238,12 @@ impl<'a> Compiler<'a> {
                     .text(node)
                     .parse::<i64>()
                     .map_err(|_| Error::new(span, ErrorKind::IntegerTooLarge))?;
-                self.emit(Instr::Int(value), 0, 1)?;
+                self.emit(Instr::Int(value));
                 self.push(self.int, span);
             }
             Syntax::Bool => {
                 let value = self.text(node) == "true";
-                self.emit(Instr::Bool(value), 0, 1)?;
+                self.emit(Instr::Bool(value));
                 self.push(self.bool, span);
             }
             Syntax::String => {
@@ -265,13 +251,13 @@ impl<'a> Compiler<'a> {
                     .ok_or_else(|| internal("a malformed string literal"))?;
                 let c = self.string(text)?;
                 let ty = self.node(TypeNode::String, span)?;
-                self.emit(Instr::Const(c), 0, 1)?;
+                self.emit(Instr::Const(c));
                 self.push(ty, span);
             }
             Syntax::Name => {
                 let name = self.text(node);
-                let (g, ty) = self.global(name, span)?;
-                self.emit(Instr::Global(g), 0, 1)?;
+                let (at, ty) = self.global(name, span)?;
+                self.emit(Instr::Global { at, ty });
                 self.push(ty, span);
             }
             Syntax::Paren => {
@@ -324,7 +310,6 @@ impl<'a> Compiler<'a> {
                 work.push(Work::List {
                     node,
                     start: self.code.len(),
-                    max: self.max,
                 });
                 let entries = parts.collect::<Vec<_>>();
                 work.extend(entries.into_iter().rev().map(Work::Enter));
@@ -346,7 +331,7 @@ impl<'a> Compiler<'a> {
         Ok(c)
     }
 
-    /// The global `name` and its type.
+    /// Where the global `name` is held, in words, and its type.
     fn global(&mut self, name: &str, at: Span<u32>) -> Result<(u32, TypeId), Error> {
         let Some(ty) = self.env.values.get(name) else {
             let kind = if self.env.functions.contains_key(name) {
@@ -367,7 +352,8 @@ impl<'a> Compiler<'a> {
             return Ok((*g, ty));
         }
 
-        let g = count(self.globals.len())?;
+        let g = count(self.global_words)?;
+        self.global_words = self.global_words.saturating_add(self.types.width(ty));
         self.globals.push(Global {
             name: name.to_owned(),
             ty,
@@ -425,7 +411,7 @@ impl<'a> Compiler<'a> {
                 self.code.truncate(start);
                 self.code.push(Instr::Int(n));
             }
-            None => self.emit(instr, 1, 1)?,
+            None => self.emit(instr),
         }
 
         self.push(want, span);
@@ -470,7 +456,7 @@ impl<'a> Compiler<'a> {
             ));
         }
 
-        self.emit(instr, 2, 1)?;
+        self.emit(instr);
         self.push(result, span);
         Ok(())
     }
@@ -618,7 +604,7 @@ impl<'a> Compiler<'a> {
         let instr = match overload {
             Overload::Builtin(Builtin::Min) => Instr::Min(count(n)?),
             Overload::Builtin(Builtin::Max) => Instr::Max(count(n)?),
-            Overload::Builtin(Builtin::Lookup) => Instr::Lookup,
+            Overload::Builtin(Builtin::Lookup) => Instr::Lookup(ret),
             Overload::Host { .. } => {
                 let key = (name.to_owned(), found.to_vec());
 
@@ -640,7 +626,7 @@ impl<'a> Compiler<'a> {
             }
         };
 
-        self.emit(instr, n, 1)?;
+        self.emit(instr);
         self.push(ret, span);
         Ok(())
     }
@@ -733,7 +719,7 @@ impl<'a> Compiler<'a> {
     ) -> Result<(), Error> {
         let args = args_of(node);
         let values = self.pop_n(args.len())?;
-        self.pop()?;
+        let receiver = self.pop()?;
         let span = *node.span();
 
         let resolve = |slot: Slot| slot.resolve(&self.int, &self.bool, &inner);
@@ -742,7 +728,7 @@ impl<'a> Compiler<'a> {
             .iter()
             .map(|p| resolve(*p))
             .collect::<Vec<_>>();
-        let (instr, ret) = (method.instr, resolve(method.ret));
+        let (instr, ret) = ((method.instr)(receiver.ty), resolve(method.ret));
 
         if params.len() != values.len() {
             let mismatch = Mismatch::Count(Arity::Exactly(params.len()));
@@ -756,7 +742,7 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        self.emit(instr, params.len().saturating_add(1), 1)?;
+        self.emit(instr);
         self.push(ret, span);
         Ok(())
     }
@@ -792,7 +778,11 @@ impl<'a> Compiler<'a> {
             return Err(Error::new(at, kind));
         };
 
-        let Some((n, field)) = fields.iter().enumerate().find(|(_, f)| f.name == name) else {
+        let Some((at_word, field)) = self
+            .types
+            .field_offsets(fields)
+            .find(|(_, f)| f.name == name)
+        else {
             return Err(Error::new(
                 at,
                 ErrorKind::UnknownField {
@@ -803,7 +793,10 @@ impl<'a> Compiler<'a> {
         };
 
         let ty = field.ty;
-        self.emit(Instr::Field(count(n)?), 1, 1)?;
+        self.emit(Instr::Field {
+            at: count(at_word)?,
+            ty,
+        });
         self.push(ty, span);
         Ok(())
     }
@@ -863,12 +856,12 @@ impl<'a> Compiler<'a> {
             ));
         }
 
-        self.emit(Instr::Index, 2, 1)?;
+        self.emit(Instr::Index(entry));
         self.push(entry, *node.span());
         Ok(())
     }
 
-    fn list(&mut self, node: N<'a>, start: usize, max: usize) -> Result<(), Error> {
+    fn list(&mut self, node: N<'a>, start: usize) -> Result<(), Error> {
         let n = exprs(node).count();
         let values = self.pop_n(n)?;
         let span = *node.span();
@@ -909,21 +902,16 @@ impl<'a> Compiler<'a> {
         match items {
             Some(items) if items.len() == n => {
                 self.code.truncate(start);
-                self.depth = self
-                    .depth
-                    .checked_sub(n)
-                    .ok_or_else(|| internal("folded more than the stack holds"))?;
-                // The entries' pushes are gone, and so is the depth they
-                // reached.
-                self.max = max;
 
                 let c = count(self.constants.len())?;
                 self.constants.push(Constant::List { entry, items });
-                self.emit(Instr::Const(c), 0, 1)?;
+                self.emit(Instr::Const(c));
             }
             _ => {
-                self.emit(Instr::List(count(n)?), n, 1)?;
-                self.heap = self.heap.saturating_add(n);
+                self.emit(Instr::List {
+                    len: count(n)?,
+                    entry,
+                });
             }
         }
 
@@ -936,12 +924,6 @@ impl<'a> Compiler<'a> {
             return Err(internal("not one value at the end"));
         };
 
-        let memory = Memory {
-            stack: count(self.max)?,
-            heap: count(self.heap)?,
-            constants: 0,
-        };
-
         let program = Program::verify(
             self.types,
             self.constants,
@@ -951,13 +933,6 @@ impl<'a> Compiler<'a> {
             value.ty,
         )
         .map_err(|e| internal(format!("the compiled program is invalid: {e}")))?;
-
-        if (program.memory.stack, program.memory.heap) != (memory.stack, memory.heap) {
-            return Err(internal(format!(
-                "the compiler counted {memory:?} of memory, the program uses {:?}",
-                program.memory
-            )));
-        }
 
         Ok(program)
     }

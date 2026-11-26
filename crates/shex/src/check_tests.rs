@@ -13,8 +13,10 @@ use crate::tests::Rng;
 use crate::types::{FieldNode, TypeId, TypeNode};
 use crate::*;
 
-fn track() -> Type {
-    Type::opaque("Track")
+/// A track as the sheet's environment declares one: a record of its
+/// boxes and how many are at each state or worse.
+pub(crate) fn track() -> Type {
+    Type::record([("boxes", Type::Int), ("count", Type::list(Type::Int))])
 }
 
 /// The environment most tests compile against.
@@ -123,11 +125,11 @@ fn literals_and_names() {
         ("bonus", "Option<Int>"),
         ("levels", "List<Int>"),
         ("grid", "List<List<Int>>"),
-        ("health", "Track"),
+        ("health", "{boxes: Int, count: List<Int>}"),
         ("specialties", "{athletics: Int, brawl: Option<Int>}"),
         (
             "m",
-            r#"{"Brawl (bar)": Int, "a b": Track, inner: {deep: Bool}}"#,
+            r#"{"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}"#,
         ),
         // Values and functions are named apart: `min` is a value here.
         ("min + 1", "Int"),
@@ -176,7 +178,10 @@ fn every_method() {
         ("bonus.is_none()", "Bool"),
         ("maybe.unwrap_or(false)", "Bool"),
         ("maybe.is_some()", "Bool"),
-        ("maybe_track.unwrap_or(health)", "Track"),
+        (
+            "maybe_track.unwrap_or(health)",
+            "{boxes: Int, count: List<Int>}",
+        ),
         ("levels.len()", "Int"),
         ("grid.len()", "Int"),
         ("tracks.len()", "Int"),
@@ -196,7 +201,7 @@ fn functions() {
         ("lookup(wits, levels)", "Int"),
         ("lookup(wits, grid)", "List<Int>"),
         ("lookup(1, [true, false])", "Bool"),
-        ("lookup(1, tracks)", "Track"),
+        ("lookup(1, tracks)", "{boxes: Int, count: List<Int>}"),
         (r#"lookup(primal_urge, "Essence (1e)")"#, "Int"),
         ("count(health)", "Int"),
         ("count(health, 2)", "Int"),
@@ -215,7 +220,7 @@ fn fields_indices_and_lists() {
         ("specialties.brawl", "Option<Int>"),
         (r#"specialties["athletics"]"#, "Int"),
         (r#"m["Brawl (bar)"]"#, "Int"),
-        (r#"m["a b"]"#, "Track"),
+        (r#"m["a b"]"#, "{boxes: Int, count: List<Int>}"),
         ("m.inner.deep", "Bool"),
         (r#"m["inner"].deep"#, "Bool"),
         ("levels[2]", "Int"),
@@ -228,7 +233,7 @@ fn fields_indices_and_lists() {
         (r#"["a", "b"]"#, "List<String>"),
         ("[[1], [2, 3]]", "List<List<Int>>"),
         ("[levels, [1]]", "List<List<Int>>"),
-        ("[health]", "List<Track>"),
+        ("[health]", "List<{boxes: Int, count: List<Int>}>"),
         ("[bonus, label(1)]", "List<Option<Int>>"),
         ("[1, 2][0]", "Int"),
         (
@@ -239,7 +244,8 @@ fn fields_indices_and_lists() {
 }
 
 /// Every form `crates/api/src/expr.rs` accepts type checks, with a track
-/// declared as a `Track` and its boxes read with `count` and `boxes`.
+/// declared as a record and its boxes read with the functions `count` and
+/// `boxes` the sheet declares today.
 #[test]
 fn current_expressions() {
     types(&[
@@ -261,6 +267,11 @@ fn current_expressions() {
         ("count(health) + count( health , 1 + 1)", "Int"),
         (r#"boxes(health) - boxes(m["a b"])"#, "Int"),
         ("count(health, -4)", "Int"),
+        // The same, read from the track's record.
+        ("health.boxes", "Int"),
+        ("health.count[2]", "Int"),
+        ("lookup(-4, health.count)", "Int"),
+        (r#"health.boxes - m["a b"].boxes"#, "Int"),
         ("9223372036854775807 + 1", "Int"),
     ]);
 }
@@ -407,7 +418,7 @@ fn error_operators() {
         ),
         (
             "health >= 1",
-            "`>=` takes Int and Int, found Track and Int",
+            "`>=` takes Int and Int, found {boxes: Int, count: List<Int>} and Int",
             "health >= 1",
         ),
         (
@@ -484,17 +495,17 @@ fn error_calls() {
         ),
         (
             "count(1)",
-            "no `count` takes (Int), it takes (Track) or (Track, Int)",
+            "no `count` takes (Int), it takes ({boxes: Int, count: List<Int>}) or ({boxes: Int, count: List<Int>}, Int)",
             "count(1)",
         ),
         (
             "count()",
-            "no `count` takes (), it takes (Track) or (Track, Int)",
+            "no `count` takes (), it takes ({boxes: Int, count: List<Int>}) or ({boxes: Int, count: List<Int>}, Int)",
             "count()",
         ),
         (
             "count(health, flag)",
-            "no `count` takes (Track, Bool), it takes (Track) or (Track, Int)",
+            "no `count` takes ({boxes: Int, count: List<Int>}, Bool), it takes ({boxes: Int, count: List<Int>}) or ({boxes: Int, count: List<Int>}, Int)",
             "count(health, flag)",
         ),
         ("boxes()", "`boxes` takes 1 argument, found 0", "()"),
@@ -505,12 +516,12 @@ fn error_calls() {
         ),
         (
             "boxes(1)",
-            "argument 1 of `boxes` must be Track, found Int",
+            "argument 1 of `boxes` must be {boxes: Int, count: List<Int>}, found Int",
             "1",
         ),
         (
             "boxes(maybe_track)",
-            "argument 1 of `boxes` must be Track, found Option<Track>, unwrap the optional value first with `.unwrap_or(...)`",
+            "argument 1 of `boxes` must be {boxes: Int, count: List<Int>}, found Option<{boxes: Int, count: List<Int>}>, unwrap the optional value first with `.unwrap_or(...)`",
             "maybe_track",
         ),
         ("pick(1)", "`pick` takes no arguments, found 1", "(1)"),
@@ -559,7 +570,7 @@ fn error_methods() {
         ),
         (
             "health.count()",
-            "Track has no method `count`, it has no methods",
+            "{boxes: Int, count: List<Int>} has no method `count`, it has no methods",
             "count",
         ),
         (
@@ -796,16 +807,6 @@ fn declarations() {
         );
     }
 
-    for name in [
-        "Int", "Bool", "String", "List", "Option", "track", "", "T-1",
-    ] {
-        assert_eq!(
-            env.value("x", Type::opaque(name)),
-            Err(DeclareError::InvalidTypeName(name.to_owned())),
-            "{name}"
-        );
-    }
-
     assert_eq!(
         env.value("x", Type::option(Type::option(Type::Int))),
         Err(DeclareError::NestedOption("x".to_owned()))
@@ -842,10 +843,6 @@ fn declarations() {
         (
             DeclareError::InvalidName("A".into()),
             "`A` is not a valid name, names are lowercase letters, digits and `_`, starting with a letter or `_`",
-        ),
-        (
-            DeclareError::InvalidTypeName("Int".into()),
-            "`Int` is not a valid type name, it must start with an uppercase letter and not be a built-in type",
         ),
         (
             DeclareError::NestedOption("x".into()),
@@ -921,7 +918,6 @@ fn type_display() {
             Type::record([("x y", Type::Int), ("_1", Type::Int), ("1", Type::Int)]),
             r#"{"1": Int, _1: Int, "x y": Int}"#,
         ),
-        (Type::opaque("Track"), "Track"),
     ];
 
     for (ty, text) in cases {
@@ -947,7 +943,7 @@ fn memory_bounds() {
         ("min(1, 2, 3, 4)", (4, 0, 0)),
         ("max(wits)", (1, 0, 0)),
         ("wits.clamp(1, 2)", (3, 0, 0)),
-        ("bonus.unwrap_or(0) + 1", (2, 0, 0)),
+        ("bonus.unwrap_or(0) + 1", (3, 0, 0)),
         ("[1, 2, 3]", (1, 0, 3)),
         ("[-1, -2]", (1, 0, 2)),
         ("[true, false]", (1, 0, 2)),
@@ -956,8 +952,8 @@ fn memory_bounds() {
         ("[wits, 2]", (2, 2, 0)),
         ("[[wits], [3]]", (2, 3, 1)),
         ("lookup(0, [wits + 1])", (3, 1, 0)),
-        // Strings take a slot per 8 bytes, and a repeat is stored once.
-        (r#""""#, (1, 0, 1)),
+        // Strings take a word per 8 bytes, and a repeat is stored once.
+        (r#""""#, (1, 0, 0)),
         (r#""Essence (1e)""#, (1, 0, 2)),
         (r#"[name, "Essence (1e)", "Essence (1e)"]"#, (3, 3, 2)),
         (
@@ -967,7 +963,13 @@ fn memory_bounds() {
         // The right operand of `&&` runs on what the left leaves.
         ("flag && wits > 1", (2, 0, 0)),
         ("flag || (wits > 1 && (1 + (2 + 3)) > 0)", (3, 0, 0)),
-        ("specialties.brawl.unwrap_or(0)", (2, 0, 0)),
+        // An `Option<Int>` is two words wherever it is held.
+        ("specialties.brawl.unwrap_or(0)", (3, 0, 0)),
+        ("bonus", (2, 0, 0)),
+        ("bonus.is_some()", (2, 0, 0)),
+        ("[bonus]", (2, 2, 0)),
+        ("[bonus, bonus, bonus][2]", (6, 6, 0)),
+        ("maybe.unwrap_or(true)", (2, 0, 0)),
         (r#"m["Brawl (bar)"]"#, (1, 0, 0)),
         ("levels[wits]", (2, 0, 0)),
         ("count(health, 1 + 2)", (3, 0, 0)),
@@ -977,7 +979,15 @@ fn memory_bounds() {
         assert_eq!(memory(source), expected, "{source:?}");
     }
 
-    assert_eq!(compile("[wits, 2]", &env()).unwrap().memory().total(), 4);
+    // The values a program reads are counted as they are held.
+    assert_eq!(compile("[wits, 2]", &env()).unwrap().memory().total(), 5);
+    assert_eq!(
+        compile("bonus.unwrap_or(wits)", &env())
+            .unwrap()
+            .memory()
+            .globals,
+        3
+    );
 }
 
 #[test]
@@ -1020,31 +1030,143 @@ fn code() {
 
     use Instr::*;
 
+    const WITS: Instr = Global {
+        at: 0,
+        ty: TypeId(0),
+    };
+
     assert_eq!(code("1 + 2 * 3"), [Int(1), Int(2), Int(3), Mul, Add]);
     assert_eq!(code("-5"), [Int(-5)]);
     assert_eq!(code("-(5)"), [Int(-5)]);
     assert_eq!(code("--5"), [Int(5)]);
-    assert_eq!(code("-wits"), [Global(0), Neg]);
+    assert_eq!(
+        code("-wits"),
+        [
+            Global {
+                at: 0,
+                ty: TypeId(0)
+            },
+            Neg
+        ]
+    );
     assert_eq!(code("!true"), [Bool(true), Not]);
     assert_eq!(
         code("flag && wits > 1"),
-        [Global(0), And(3), Global(1), Int(1), Gt]
+        [
+            Global {
+                at: 0,
+                ty: TypeId(1)
+            },
+            And(3),
+            Global {
+                at: 1,
+                ty: TypeId(0)
+            },
+            Int(1),
+            Gt
+        ]
     );
     assert_eq!(
         code("flag || flag && flag"),
-        [Global(0), Or(3), Global(0), And(1), Global(0)]
+        [
+            Global {
+                at: 0,
+                ty: TypeId(1)
+            },
+            Or(3),
+            Global {
+                at: 0,
+                ty: TypeId(1)
+            },
+            And(1),
+            Global {
+                at: 0,
+                ty: TypeId(1)
+            }
+        ]
     );
     assert_eq!(code("[1, 2]"), [Const(0)]);
-    assert_eq!(code("[wits, 2]"), [Global(0), Int(2), List(2)]);
-    assert_eq!(code("lookup(wits, [1])"), [Global(0), Const(0), Lookup]);
-    assert_eq!(code("min(1, wits, 3)"), [Int(1), Global(0), Int(3), Min(3)]);
-    assert_eq!(code("wits.max(2)"), [Global(0), Int(2), Max(2)]);
-    assert_eq!(code("wits.clamp(1, 2)"), [Global(0), Int(1), Int(2), Clamp]);
-    assert_eq!(code("bonus.unwrap_or(3)"), [Global(0), Int(3), UnwrapOr]);
-    assert_eq!(code("specialties.brawl"), [Global(0), Field(1)]);
-    assert_eq!(code(r#"m["inner"].deep"#), [Global(0), Field(2), Field(0)]);
-    assert_eq!(code("levels[1]"), [Global(0), Int(1), Index]);
-    assert_eq!(code("count(health, 1)"), [Global(0), Int(1), Call(0)]);
+    assert_eq!(
+        code("[wits, 2]"),
+        [
+            WITS,
+            Int(2),
+            List {
+                len: 2,
+                entry: TypeId(0)
+            }
+        ]
+    );
+    assert_eq!(
+        code("lookup(wits, [1])"),
+        [WITS, Const(0), Lookup(TypeId(0))]
+    );
+    assert_eq!(code("min(1, wits, 3)"), [Int(1), WITS, Int(3), Min(3)]);
+    assert_eq!(code("wits.max(2)"), [WITS, Int(2), Max(2)]);
+    assert_eq!(code("wits.clamp(1, 2)"), [WITS, Int(1), Int(2), Clamp]);
+    assert_eq!(
+        code("bonus.unwrap_or(3)"),
+        [
+            Global {
+                at: 0,
+                ty: TypeId(2)
+            },
+            Int(3),
+            UnwrapOr(TypeId(2))
+        ]
+    );
+    assert_eq!(
+        code("specialties.brawl"),
+        [
+            Global {
+                at: 0,
+                ty: TypeId(3)
+            },
+            Field {
+                at: 1,
+                ty: TypeId(2)
+            }
+        ]
+    );
+    assert_eq!(
+        code(r#"m["inner"].deep"#),
+        [
+            Global {
+                at: 0,
+                ty: TypeId(5)
+            },
+            Field {
+                at: 2,
+                ty: TypeId(4)
+            },
+            Field {
+                at: 0,
+                ty: TypeId(1)
+            }
+        ]
+    );
+    assert_eq!(
+        code("levels[1]"),
+        [
+            Global {
+                at: 0,
+                ty: TypeId(2)
+            },
+            Int(1),
+            Index(TypeId(0))
+        ]
+    );
+    assert_eq!(
+        code("count(health, 1)"),
+        [
+            Global {
+                at: 0,
+                ty: TypeId(3)
+            },
+            Int(1),
+            Call(0)
+        ]
+    );
 }
 
 #[test]
@@ -1107,22 +1229,27 @@ fn tampered_programs() {
         (
             source,
             Box::new(|s| s.memory.stack -= 1),
-            "it declares Memory { stack: 2, heap: 0, constants: 2 } of memory but uses Memory { stack: 3, heap: 0, constants: 2 }",
+            "it declares Memory { stack: 2, heap: 0, constants: 2, globals: 2 } of memory but uses Memory { stack: 3, heap: 0, constants: 2, globals: 2 }",
         ),
         (
             source,
             Box::new(|s| s.memory.stack += 1),
-            "it declares Memory { stack: 4, heap: 0, constants: 2 } of memory but uses Memory { stack: 3, heap: 0, constants: 2 }",
+            "it declares Memory { stack: 4, heap: 0, constants: 2, globals: 2 } of memory but uses Memory { stack: 3, heap: 0, constants: 2, globals: 2 }",
         ),
         (
             source,
             Box::new(|s| s.memory.constants = 0),
-            "it declares Memory { stack: 3, heap: 0, constants: 0 } of memory but uses Memory { stack: 3, heap: 0, constants: 2 }",
+            "it declares Memory { stack: 3, heap: 0, constants: 0, globals: 2 } of memory but uses Memory { stack: 3, heap: 0, constants: 2, globals: 2 }",
+        ),
+        (
+            "bonus",
+            Box::new(|s| s.memory.globals = 1),
+            "it declares Memory { stack: 2, heap: 0, constants: 0, globals: 1 } of memory but uses Memory { stack: 2, heap: 0, constants: 0, globals: 2 }",
         ),
         (
             "[wits]",
             Box::new(|s| s.memory.heap = 0),
-            "it declares Memory { stack: 1, heap: 0, constants: 0 } of memory but uses Memory { stack: 1, heap: 1, constants: 0 }",
+            "it declares Memory { stack: 1, heap: 0, constants: 0, globals: 1 } of memory but uses Memory { stack: 1, heap: 1, constants: 0, globals: 1 }",
         ),
         (
             "1 + 2",
@@ -1146,8 +1273,23 @@ fn tampered_programs() {
         ),
         (
             "wits",
-            Box::new(|s| s.code[0] = Instr::Global(1)),
-            "instruction 0 (Global(1)) names a global there is not",
+            Box::new(|s| {
+                s.code[0] = Instr::Global {
+                    at: 1,
+                    ty: TypeId(0),
+                }
+            }),
+            "instruction 0 (Global { at: 1, ty: TypeId(0) }) names a global there is not",
+        ),
+        (
+            "wits",
+            Box::new(|s| {
+                s.code[0] = Instr::Global {
+                    at: 0,
+                    ty: TypeId(1),
+                }
+            }),
+            "instruction 0 (Global { at: 0, ty: TypeId(1) }) names a global there is not",
         ),
         (
             "[1]",
@@ -1167,7 +1309,7 @@ fn tampered_programs() {
         (
             "flag && flag && flag",
             Box::new(|s| s.code[1] = Instr::And(0)),
-            "instruction 2 (Global(0)) is reached with two different stacks",
+            "instruction 2 (Global { at: 0, ty: TypeId(1) }) is reached with two different stacks",
         ),
         (
             "1 + 2",
@@ -1176,23 +1318,53 @@ fn tampered_programs() {
         ),
         (
             "[wits]",
-            Box::new(|s| s.code[1] = Instr::List(0)),
-            "instruction 1 (List(0)) makes a list of more entries than the stack has",
+            Box::new(|s| {
+                s.code[1] = Instr::List {
+                    len: 0,
+                    entry: TypeId(0),
+                }
+            }),
+            "instruction 1 (List { len: 0, entry: TypeId(0) }) makes a list of no entries",
         ),
         (
             "[wits]",
-            Box::new(|s| s.code[1] = Instr::List(2)),
-            "instruction 1 (List(2)) makes a list of more entries than the stack has",
+            Box::new(|s| {
+                s.code[1] = Instr::List {
+                    len: 2,
+                    entry: TypeId(0),
+                }
+            }),
+            "instruction 1 (List { len: 2, entry: TypeId(0) }) makes a list of entries it does not find",
+        ),
+        (
+            "[wits]",
+            Box::new(|s| {
+                s.code[1] = Instr::List {
+                    len: 1,
+                    entry: TypeId(1),
+                }
+            }),
+            "instruction 1 (List { len: 1, entry: TypeId(1) }) makes a list of entries it does not find",
         ),
         (
             "specialties.athletics",
-            Box::new(|s| s.code[1] = Instr::Field(2)),
-            "instruction 1 (Field(2)) reads a field the record does not have",
+            Box::new(|s| {
+                s.code[1] = Instr::Field {
+                    at: 9,
+                    ty: TypeId(0),
+                }
+            }),
+            "instruction 1 (Field { at: 9, ty: TypeId(0) }) reads a field the record does not have",
         ),
         (
             "wits.abs()",
-            Box::new(|s| s.code[1] = Instr::Field(0)),
-            "instruction 1 (Field(0)) reads a field of other than a record",
+            Box::new(|s| {
+                s.code[1] = Instr::Field {
+                    at: 0,
+                    ty: TypeId(0),
+                }
+            }),
+            "instruction 1 (Field { at: 0, ty: TypeId(0) }) reads a field of other than a record",
         ),
         (
             "1 + 2",
@@ -1202,12 +1374,45 @@ fn tampered_programs() {
         (
             "bonus.unwrap_or(1)",
             Box::new(|s| s.code[1] = Instr::Bool(true)),
-            "instruction 2 (UnwrapOr) unwraps other than an option of its default's type",
+            "instruction 2 (UnwrapOr(TypeId(2))) finds an operand of the wrong type",
+        ),
+        (
+            "bonus.unwrap_or(1)",
+            Box::new(|s| s.code[2] = Instr::UnwrapOr(TypeId(0))),
+            "instruction 2 (UnwrapOr(TypeId(0))) unwraps other than an option type",
+        ),
+        (
+            "bonus.is_none()",
+            Box::new(|s| {
+                s.types.push(TypeNode::Option(TypeId(1)));
+                s.code[1] = Instr::IsNone(TypeId(3));
+            }),
+            "instruction 1 (IsNone(TypeId(3))) finds an operand of the wrong type",
+        ),
+        (
+            "levels[0]",
+            Box::new(|s| s.code[2] = Instr::Index(TypeId(1))),
+            "instruction 2 (Index(TypeId(1))) indexes other than a list of its entry type",
+        ),
+        (
+            "lookup(0, levels)",
+            Box::new(|s| s.code[2] = Instr::Lookup(TypeId(1))),
+            "instruction 2 (Lookup(TypeId(1))) looks up in other than a list of its entry type",
+        ),
+        (
+            "specialties.brawl",
+            Box::new(|s| {
+                s.code[1] = Instr::Field {
+                    at: 1,
+                    ty: TypeId(0),
+                }
+            }),
+            "instruction 1 (Field { at: 1, ty: TypeId(0) }) reads a field the record does not have",
         ),
         (
             "levels.len()",
-            Box::new(|s| s.code[1] = Instr::IsSome),
-            "instruction 1 (IsSome) tests other than an option",
+            Box::new(|s| s.code[1] = Instr::IsSome(TypeId(2))),
+            "instruction 1 (IsSome(TypeId(2))) tests other than an option type",
         ),
         (
             "1 == 1",
@@ -1301,11 +1506,6 @@ fn tampered_programs() {
             "type 3 is an option of an option",
         ),
         (
-            "health",
-            Box::new(|s| s.types[2] = TypeNode::Opaque("track".into())),
-            "type 2 has an invalid name \"track\"",
-        ),
-        (
             "specialties",
             Box::new(|s| {
                 if let Some(TypeNode::Record(fields)) = s.types.last_mut() {
@@ -1353,7 +1553,7 @@ fn stored_bytes_errors() {
 
     assert_eq!(
         load(&stored).unwrap_err().to_string(),
-        "the program was stored in format 2, this shex reads format 1"
+        "the program was stored in format 3, this shex reads format 2"
     );
 
     assert!(
@@ -1367,7 +1567,7 @@ fn stored_bytes_errors() {
     stored.memory.stack = 0;
     assert_eq!(
         load(&stored).unwrap_err().to_string(),
-        "the stored program is not valid: it declares Memory { stack: 0, heap: 0, constants: 0 } of memory but uses Memory { stack: 2, heap: 0, constants: 0 }"
+        "the stored program is not valid: it declares Memory { stack: 0, heap: 0, constants: 0, globals: 1 } of memory but uses Memory { stack: 2, heap: 0, constants: 0, globals: 1 }"
     );
 }
 
@@ -1550,8 +1750,8 @@ fn random_well_typed() {
 
         assert_eq!(program.result_type().to_string(), ty, "{source:?}");
 
-        // The bound is no more than one slot per token of the source, plus
-        // a constant string's bytes.
+        // The bound is no more than two words per token of the source (an
+        // `Option<Int>` takes two), plus a constant string's bytes.
         let tokens = source
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '"')
             .filter(|t| !t.is_empty())
@@ -1559,7 +1759,7 @@ fn random_well_typed() {
             + source.matches(['(', '[', '-', '!']).count();
         let memory = program.memory();
         assert!(
-            memory.stack as usize <= tokens && (memory.heap as usize) <= tokens,
+            memory.stack as usize <= 2 * tokens && (memory.heap as usize) <= 2 * tokens,
             "{source:?}: {memory:?} for {tokens} tokens"
         );
         assert!(memory.stack >= 1);

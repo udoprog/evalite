@@ -39,9 +39,8 @@
 //!   type.
 //! - Records, written `{athletics: Int, "Brawl (bar)": Int}`: fields read
 //!   with `.athletics` or `["Brawl (bar)"]`, the latter only with a string
-//!   literal.
-//! - Opaque types such as `Track`: the caller's values, which only the
-//!   caller's functions take.
+//!   literal. A sheet's track is one, such as
+//!   `health: {boxes: Int, count: List<Int>}`, read as `health.boxes`.
 //!
 //! The rules:
 //!
@@ -63,24 +62,23 @@
 //! The [`Builtin`] functions are `min(Int, ...)` and `max(Int, ...)`, of
 //! one or more `Int`s, and `lookup(Int, List<T>)`, a list's entry at an
 //! index clamped to its ends. The caller declares the rest, such as
-//! `count(Track)`, `count(Track, Int)` and `lookup(Int, String)` for a
-//! named table; a name declared several ways calls the first whose
-//! parameters the arguments match.
+//! `lookup(Int, String)` for a named table; a name declared several ways
+//! calls the first whose parameters the arguments match.
 //!
 //! ```
 //! use shex::{Environment, Type};
 //!
 //! let mut env = Environment::with_builtins();
-//! env.value("health", Type::opaque("Track"))?;
+//! env.value("health", Type::record([("boxes", Type::Int)]))?;
 //! env.value("specialties", Type::record([("brawl", Type::option(Type::Int))]))?;
-//! env.function("count", [Type::opaque("Track")], Type::Int)?;
+//! env.function("lookup", [Type::Int, Type::String], Type::Int)?;
 //!
-//! let program = shex::compile("count(health) + specialties.brawl.unwrap_or(0)", &env)?;
+//! let program = shex::compile("health.boxes + specialties.brawl.unwrap_or(0)", &env)?;
 //! assert_eq!(program.result_type(), Type::Int);
 //!
-//! let error = shex::compile("count(1)", &env).unwrap_err();
-//! assert_eq!(error.to_string(), "argument 1 of `count` must be Track, found Int");
-//! assert_eq!(error.span().range(), 6..7);
+//! let error = shex::compile("lookup(1, health)", &env).unwrap_err();
+//! assert_eq!(error.to_string(), "no `lookup` takes (Int, {boxes: Int}), it takes (Int, List<T>) or (Int, String)");
+//! assert_eq!(error.span().range(), 0..17);
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
 //!
@@ -90,18 +88,24 @@
 //! values it reads and the caller's functions it calls, each with its
 //! type, so it runs without the environment.
 //!
-//! Every value takes one slot: an `Int`, a `Bool`, an absent option, or a
-//! reference to a string, list or record held elsewhere. A program's
-//! [`Memory`] is the deepest its stack gets, the entries of the lists it
-//! builds as it runs, and its constants (a slot per entry of a constant
-//! list, a slot per 8 bytes of a string). There are no loops, so each
-//! instruction runs at most once.
+//! Memory is 64-bit words, and each type's layout is fixed when the
+//! program is compiled. An `Int` is a word, a `Bool` a word of 0 or 1, and
+//! a string, list or record a word referring to its parts: a string's
+//! bytes 8 to a word, a list's entries one after another, a record's
+//! fields in name order. An `Option<Int>` is two words, whether it is
+//! present and then the `Int`; every other option is one word, with a
+//! value no `Bool` or reference has for absent. A program's [`Memory`] is
+//! the deepest its stack gets, the entries of the lists it builds as it
+//! runs, its constants and the values it reads, all in words. There are
+//! no loops, so each instruction runs at most once.
 //!
 //! [`Program::to_bytes`] stores a program with `musli`, and
 //! [`Program::from_bytes`] reads it back. Stored bytes are not trusted: a
 //! loaded program is checked by running its code over types instead of
 //! values, and is refused unless it is well typed and uses exactly the
-//! memory it declares.
+//! memory it declares. That check is what lets the machine run on untyped
+//! words: nothing it runs looks at what a word is, and every name and
+//! field is an offset fixed when the program was compiled.
 //!
 //! ```
 //! use shex::{Environment, Program, Type};
@@ -120,18 +124,19 @@
 //!
 //! ## Running
 //!
-//! A [`Machine`] runs programs in a fixed memory, [`DEFAULT_MEMORY`] slots
+//! A [`Machine`] runs programs in a fixed memory, [`DEFAULT_MEMORY`] words
 //! unless [`Limits::memory`] says otherwise, reserved when it is made.
-//! [`Machine::load`] refuses a program whose memory, with a slot per value
-//! it reads, is more than that, saying how much it needs. Each value the
-//! program reads is then bound with [`Run::bind`], which checks it against
-//! the value's declared type and that its parts fit in the memory left; a
-//! missing or mistyped binding is an error, never a default. The caller's
-//! functions are a [`Host`].
+//! [`Machine::load`] refuses a program whose memory is more than that,
+//! saying how much it needs, and copies the program's constants in. Each
+//! value the program reads is then bound with [`Run::bind`], which checks
+//! it against the value's declared type and that its parts fit in the
+//! memory left; a missing or mistyped binding is an error, never a
+//! default. The caller's functions are a [`Host`], taking and giving
+//! [`Value`]s.
 //!
 //! A run takes at most [`DEFAULT_FUEL`] steps unless [`Limits::fuel`]
 //! says otherwise: one per instruction, one more per entry of a list,
-//! `min` or `max` it makes, and one per slot of a value a function
+//! `min` or `max` it makes, and one per word of a value a function
 //! returns. Faults are errors, never panics: `Int` arithmetic that
 //! overflows, dividing by zero, `list[i]` past either end (`lookup`
 //! clamps instead), `clamp` with its bounds the wrong way round, and a
@@ -141,28 +146,31 @@
 //! use shex::{Environment, Limits, Machine, Type, Value};
 //!
 //! let mut env = Environment::with_builtins();
-//! env.value("health", Type::opaque("Track"))?;
+//! env.value("health", Type::record([("boxes", Type::Int), ("count", Type::list(Type::Int))]))?;
 //! env.value("brawl", Type::option(Type::Int))?;
-//! env.function("count", [Type::opaque("Track")], Type::Int)?;
+//! env.function("lookup", [Type::Int, Type::String], Type::Int)?;
 //!
-//! let program = shex::compile("count(health) + brawl.unwrap_or(0)", &env)?;
+//! let program = shex::compile(r#"health.count[1] + brawl.unwrap_or(0) + lookup(1, "Essence")"#, &env)?;
 //!
 //! let mut machine = Machine::new(Limits::new().fuel(100));
 //! let mut run = machine.load(&program)?;
-//! run.bind("health", Value::opaque("Track", 7))?;
+//! run.bind("health", Value::record([
+//!     ("boxes", Value::Int(7)),
+//!     ("count", Value::List(vec![Value::Int(3), Value::Int(1)])),
+//! ]))?;
 //! run.bind("brawl", Value::None)?;
 //!
 //! let mut host = |name: &str, args: Vec<Value>| match (name, args.as_slice()) {
-//!     ("count", [Value::Opaque { handle: 7, .. }]) => Ok(Value::Int(3)),
+//!     ("lookup", [Value::Int(1), Value::String(table)]) if table == "Essence" => Ok(Value::Int(10)),
 //!     _ => Err(format!("no function {name}")),
 //! };
 //!
 //! let outcome = run.run_with(&mut host)?;
-//! assert_eq!(outcome.value, Value::Int(3));
-//! assert_eq!(outcome.steps, 6);
+//! assert_eq!(outcome.value, Value::Int(11));
+//! assert_eq!(outcome.steps, 12);
 //!
 //! let error = Machine::new(Limits::new().memory(2)).load(&program).unwrap_err();
-//! assert_eq!(error.to_string(), "the program needs 5 slots of memory, more than the 2 the machine allows");
+//! assert_eq!(error.to_string(), "the program needs 8 words of memory, more than the 2 the machine allows");
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
 //!

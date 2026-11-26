@@ -1,19 +1,25 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use musli::{Decode, Encode};
 
 use crate::Type;
-use crate::types::{FieldNode, TypeId, TypeNode, Types, is_value_name};
+use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 1;
+pub(crate) const FORMAT: u32 = 2;
 
-/// One instruction of a stack machine. Every value takes one slot: an
-/// `Int`, a `Bool`, an absent option, or a reference to a string, list or
-/// record held elsewhere (in the program's constants, the caller's
-/// bindings or the machine's heap). Operands are pushed in source order,
-/// so a binary operator finds its right operand on top.
+/// One instruction of a stack machine over words of memory. A value takes
+/// the words its type's layout gives it: one for an `Int`, a `Bool` (0 or
+/// 1), and a string, list or record (a reference packing where its parts
+/// are and how many there are); an option is one word with
+/// [`NONE`](crate::types::NONE) for absent, except an `Option<Int>`,
+/// which is two (present or not, then the `Int`). Operands are pushed in
+/// source order, so a binary operator finds its right operand on top.
+///
+/// Instructions whose work depends on a type carry it, and the verifier
+/// checks it against its model of the stack, so the machine never looks
+/// at what a word is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub(crate) enum Instr {
     /// Push an integer.
@@ -22,8 +28,12 @@ pub(crate) enum Instr {
     Bool(bool),
     /// Push a reference to a constant.
     Const(u32),
-    /// Push the value bound to a global.
-    Global(u32),
+    /// Push the value of type `ty` bound to the global `at` words into the
+    /// globals.
+    Global {
+        at: u32,
+        ty: TypeId,
+    },
     /// `-a`, `!a`.
     Neg,
     Not,
@@ -33,7 +43,7 @@ pub(crate) enum Instr {
     Mul,
     Div,
     Rem,
-    /// `a == b`, `a != b` on two `Int`s or two `Bool`s.
+    /// `a == b`, `a != b` on two `Int`s or two `Bool`s, one word each.
     Eq,
     Ne,
     /// Orderings on `Int`s.
@@ -46,24 +56,31 @@ pub(crate) enum Instr {
     And(u32),
     /// `a || b`: the same, skipping on `true`.
     Or(u32),
-    /// A record's field, by its place in name order.
-    Field(u32),
-    /// `list[index]`, an error out of range.
-    Index,
-    /// Make a list of this many entries, at least one, on the heap.
-    List(u32),
+    /// A record's field of type `ty`, `at` words from the record's start.
+    Field {
+        at: u32,
+        ty: TypeId,
+    },
+    /// `list[index]` of a list of `T`s, an error out of range.
+    Index(TypeId),
+    /// Make a list of `len` entries of type `entry`, at least one, on the
+    /// heap.
+    List {
+        len: u32,
+        entry: TypeId,
+    },
     /// The least or greatest of this many `Int`s, at least one.
     Min(u32),
     Max(u32),
     Abs,
     /// `value.clamp(low, high)`.
     Clamp,
-    /// `lookup(index, list)`, clamped to the list's ends.
-    Lookup,
-    /// `option.unwrap_or(default)`.
-    UnwrapOr,
-    IsSome,
-    IsNone,
+    /// `lookup(index, list)` of a list of `T`s, clamped to its ends.
+    Lookup(TypeId),
+    /// `option.unwrap_or(default)` of this option type.
+    UnwrapOr(TypeId),
+    IsSome(TypeId),
+    IsNone(TypeId),
     /// A list's length.
     Len,
     /// Call one of the program's host functions.
@@ -90,11 +107,21 @@ pub(crate) enum Constant {
 }
 
 impl Constant {
-    /// The slots it takes: one per entry, or one per 8 bytes of a string
-    /// and at least one.
-    fn slots(&self) -> usize {
+    /// The words it takes in memory: one per entry (constant entries are
+    /// `Int`s, `Bool`s, strings and lists, a word each), or one per 8
+    /// bytes of a string.
+    fn words(&self) -> usize {
         match self {
-            Self::String(s) => s.len().div_ceil(8).max(1),
+            Self::String(s) => s.len().div_ceil(8),
+            Self::List { items, .. } => items.len(),
+        }
+    }
+
+    /// The length its reference holds: a string's bytes or a list's
+    /// entries.
+    fn len(&self) -> usize {
+        match self {
+            Self::String(s) => s.len(),
             Self::List { items, .. } => items.len(),
         }
     }
@@ -115,23 +142,29 @@ pub(crate) struct HostFunction {
     pub(crate) ret: TypeId,
 }
 
-/// The most memory a program uses as it runs, in slots of one value each.
+/// The most memory a program uses as it runs, in 64-bit words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Encode, Decode)]
 pub struct Memory {
     /// The deepest the stack gets.
     pub stack: u32,
     /// The entries of lists built as it runs.
     pub heap: u32,
-    /// The program's constant lists and strings.
+    /// The program's constant lists and strings, copied into the machine
+    /// when the program is loaded.
     pub constants: u32,
+    /// The values it reads, as they are held: a word each, two for an
+    /// `Option<Int>`. Their parts, such as a bound list's entries, are
+    /// the bindings' to fit in the memory left.
+    pub globals: u32,
 }
 
 impl Memory {
-    /// Every slot, the caller's bindings aside.
+    /// Every word, the parts of bound and returned values aside.
     pub fn total(&self) -> u64 {
         u64::from(self.stack)
             .saturating_add(u64::from(self.heap))
             .saturating_add(u64::from(self.constants))
+            .saturating_add(u64::from(self.globals))
     }
 }
 
@@ -162,6 +195,11 @@ pub struct Program {
     pub(crate) code: Vec<Instr>,
     pub(crate) result: TypeId,
     pub(crate) memory: Memory,
+    /// Where each global is held, in words from the first.
+    pub(crate) global_at: Vec<u32>,
+    /// Where each constant is, in words from the first, and the length
+    /// its reference holds.
+    pub(crate) constant_at: Vec<(u32, u32)>,
 }
 
 /// Why a program could not be stored or loaded.
@@ -294,15 +332,19 @@ impl Program {
             constant_types: Vec::new(),
         };
 
-        let mut constant_slots = 0usize;
+        let mut constant_at = Vec::with_capacity(constants.len());
+        let mut constant_words = 0usize;
 
         for (at, constant) in constants.iter().enumerate() {
             let ty = verifier.constant(at, constant)?;
             verifier.constant_types.push(ty);
-            constant_slots = constant_slots.saturating_add(constant.slots());
+            constant_at.push((words(constant_words)?, words(constant.len())?));
+            constant_words = constant_words.saturating_add(constant.words());
         }
 
         let mut names = HashSet::new();
+        let mut global_at = Vec::with_capacity(globals.len());
+        let mut global_words = 0usize;
 
         for global in &globals {
             if !is_value_name(&global.name) || !names.insert(global.name.as_str()) {
@@ -310,6 +352,8 @@ impl Program {
             }
 
             verifier.known(global.ty)?;
+            global_at.push(words(global_words)?);
+            global_words = global_words.saturating_add(types.width(global.ty));
         }
 
         let mut signatures = HashSet::new();
@@ -330,11 +374,19 @@ impl Program {
         }
 
         verifier.known(result)?;
-        let memory = verifier.code(&code, &globals, &functions, result)?;
+
+        let global_types = global_at
+            .iter()
+            .copied()
+            .zip(globals.iter().map(|g| g.ty))
+            .collect::<HashMap<_, _>>();
+
+        let memory = verifier.code(&code, &global_types, &functions, result)?;
 
         Ok(Self {
             memory: Memory {
-                constants: slots(constant_slots)?,
+                constants: words(constant_words)?,
+                globals: words(global_words)?,
                 ..memory
             },
             types,
@@ -343,11 +395,13 @@ impl Program {
             functions,
             code,
             result,
+            global_at,
+            constant_at,
         })
     }
 }
 
-fn slots(n: usize) -> Result<u32, String> {
+fn words(n: usize) -> Result<u32, String> {
     u32::try_from(n).map_err(|_| "it uses too much memory to count".to_owned())
 }
 
@@ -402,15 +456,19 @@ impl Verifier<'_> {
     fn code(
         &self,
         code: &[Instr],
-        globals: &[Global],
+        globals: &HashMap<u32, TypeId>,
         functions: &[HostFunction],
         result: TypeId,
     ) -> Result<Memory, String> {
-        let int = self.types.find(&TypeNode::Int);
-        let bool = self.types.find(&TypeNode::Bool);
+        let int = self.find(TypeNode::Int).ok();
+        let bool = self.find(TypeNode::Bool).ok();
 
-        let mut stack = Vec::<TypeId>::new();
-        let mut max = 0usize;
+        let mut stack = Model {
+            types: self.types,
+            stack: Vec::new(),
+            words: 0,
+            max: 0,
+        };
         let mut heap = 0usize;
         // The stack each pending jump expects where it lands.
         let mut targets = BTreeMap::<usize, Vec<TypeId>>::new();
@@ -419,20 +477,15 @@ impl Verifier<'_> {
             let fail = |what: &str| format!("instruction {at} ({instr:?}) {what}");
 
             if let Some(expected) = targets.remove(&at)
-                && expected != stack
+                && expected != stack.stack
             {
                 return Err(fail("is reached with two different stacks"));
             }
 
-            let pop =
-                |stack: &mut Vec<TypeId>| stack.pop().ok_or_else(|| fail("pops an empty stack"));
-
-            let need = |ty: TypeId, want: Option<TypeId>| {
-                if Some(ty) == want {
-                    Ok(())
-                } else {
-                    Err(fail("finds an operand of the wrong type"))
-                }
+            let need = |ty: Option<TypeId>, want: Option<TypeId>| match ty {
+                None => Err(fail("pops an empty stack")),
+                Some(ty) if Some(ty) == want => Ok(()),
+                Some(_) => Err(fail("finds an operand of the wrong type")),
             };
 
             let push = match *instr {
@@ -440,41 +493,43 @@ impl Verifier<'_> {
                 Instr::Bool(_) => self.find(TypeNode::Bool)?,
                 Instr::Const(c) => *index(&self.constant_types, c)
                     .ok_or_else(|| fail("names a constant there is not"))?,
-                Instr::Global(g) => {
-                    index(globals, g)
-                        .ok_or_else(|| fail("names a global there is not"))?
-                        .ty
+                Instr::Global { at, ty } => {
+                    if globals.get(&at) != Some(&ty) {
+                        return Err(fail("names a global there is not"));
+                    }
+
+                    ty
                 }
                 Instr::Neg | Instr::Abs => {
-                    need(pop(&mut stack)?, int)?;
+                    need(stack.pop(), int)?;
                     self.find(TypeNode::Int)?
                 }
                 Instr::Not => {
-                    need(pop(&mut stack)?, bool)?;
+                    need(stack.pop(), bool)?;
                     self.find(TypeNode::Bool)?
                 }
                 Instr::Add | Instr::Sub | Instr::Mul | Instr::Div | Instr::Rem => {
-                    need(pop(&mut stack)?, int)?;
-                    need(pop(&mut stack)?, int)?;
+                    need(stack.pop(), int)?;
+                    need(stack.pop(), int)?;
                     self.find(TypeNode::Int)?
                 }
                 Instr::Lt | Instr::Le | Instr::Gt | Instr::Ge => {
-                    need(pop(&mut stack)?, int)?;
-                    need(pop(&mut stack)?, int)?;
+                    need(stack.pop(), int)?;
+                    need(stack.pop(), int)?;
                     self.find(TypeNode::Bool)?
                 }
                 Instr::Eq | Instr::Ne => {
-                    let right = pop(&mut stack)?;
-                    let left = pop(&mut stack)?;
+                    let right = stack.pop();
+                    let left = stack.pop();
 
-                    if left != right || (Some(left) != int && Some(left) != bool) {
+                    if left.is_none() || left != right || (left != int && left != bool) {
                         return Err(fail("compares other than two Ints or two Bools"));
                     }
 
                     self.find(TypeNode::Bool)?
                 }
                 Instr::And(skip) | Instr::Or(skip) => {
-                    let top = pop(&mut stack)?;
+                    let top = stack.pop();
                     need(top, bool)?;
 
                     let target = usize::try_from(skip)
@@ -483,8 +538,8 @@ impl Verifier<'_> {
                         .filter(|target| *target <= code.len())
                         .ok_or_else(|| fail("jumps past the end"))?;
 
-                    let mut landing = stack.clone();
-                    landing.push(top);
+                    let mut landing = stack.stack.clone();
+                    landing.extend(top);
 
                     if targets.get(&target).is_some_and(|other| *other != landing) {
                         return Err(fail("jumps where another jump lands with another stack"));
@@ -493,45 +548,51 @@ impl Verifier<'_> {
                     targets.insert(target, landing);
                     continue;
                 }
-                Instr::Field(n) => {
-                    let record = pop(&mut stack)?;
+                Instr::Field { at, ty } => {
+                    let record = stack.pop().ok_or_else(|| fail("pops an empty stack"))?;
 
                     let Some(TypeNode::Record(fields)) = self.types.get(record) else {
                         return Err(fail("reads a field of other than a record"));
                     };
 
-                    index::<FieldNode>(fields, n)
-                        .ok_or_else(|| fail("reads a field the record does not have"))?
-                        .ty
-                }
-                Instr::Index => {
-                    need(pop(&mut stack)?, int)?;
-                    self.entry(pop(&mut stack)?)
-                        .ok_or_else(|| fail("indexes other than a list"))?
-                }
-                Instr::Lookup => {
-                    let entry = self
-                        .entry(pop(&mut stack)?)
-                        .ok_or_else(|| fail("looks up in other than a list"))?;
-                    need(pop(&mut stack)?, int)?;
-                    entry
-                }
-                Instr::List(n) => {
-                    let n = usize::try_from(n).unwrap_or(usize::MAX);
-                    let at = stack
-                        .len()
-                        .checked_sub(n)
-                        .filter(|_| n > 0)
-                        .ok_or_else(|| fail("makes a list of more entries than the stack has"))?;
+                    let at = usize::try_from(at).unwrap_or(usize::MAX);
 
-                    let entries = stack.split_off(at);
-                    let entry = entries.first().copied().unwrap_or(TypeId(u32::MAX));
-
-                    if entries.iter().any(|e| *e != entry) {
-                        return Err(fail("makes a list of entries of two types"));
+                    if !self
+                        .types
+                        .field_offsets(fields)
+                        .any(|(offset, field)| offset == at && field.ty == ty)
+                    {
+                        return Err(fail("reads a field the record does not have"));
                     }
 
-                    heap = heap.saturating_add(n);
+                    ty
+                }
+                Instr::Index(entry) => {
+                    need(stack.pop(), int)?;
+                    need(stack.pop().and_then(|l| self.entry(l)), Some(entry))
+                        .map_err(|_| fail("indexes other than a list of its entry type"))?;
+                    entry
+                }
+                Instr::Lookup(entry) => {
+                    need(stack.pop().and_then(|l| self.entry(l)), Some(entry))
+                        .map_err(|_| fail("looks up in other than a list of its entry type"))?;
+                    need(stack.pop(), int)?;
+                    entry
+                }
+                Instr::List { len, entry } => {
+                    self.known(entry)?;
+
+                    if len == 0 {
+                        return Err(fail("makes a list of no entries"));
+                    }
+
+                    for _ in 0..len {
+                        need(stack.pop(), Some(entry))
+                            .map_err(|_| fail("makes a list of entries it does not find"))?;
+                    }
+
+                    let n = usize::try_from(len).unwrap_or(usize::MAX);
+                    heap = heap.saturating_add(n.saturating_mul(self.types.width(entry)));
                     self.find(TypeNode::List(entry))?
                 }
                 Instr::Min(n) | Instr::Max(n) => {
@@ -540,39 +601,39 @@ impl Verifier<'_> {
                     }
 
                     for _ in 0..n {
-                        need(pop(&mut stack)?, int)?;
+                        need(stack.pop(), int)?;
                     }
 
                     self.find(TypeNode::Int)?
                 }
                 Instr::Clamp => {
                     for _ in 0..3 {
-                        need(pop(&mut stack)?, int)?;
+                        need(stack.pop(), int)?;
                     }
 
                     self.find(TypeNode::Int)?
                 }
-                Instr::UnwrapOr => {
-                    let default = pop(&mut stack)?;
-                    let option = pop(&mut stack)?;
+                Instr::UnwrapOr(option) => {
+                    let Some(TypeNode::Option(value)) = self.types.get(option) else {
+                        return Err(fail("unwraps other than an option type"));
+                    };
 
-                    if self.types.get(option) != Some(&TypeNode::Option(default)) {
-                        return Err(fail("unwraps other than an option of its default's type"));
-                    }
-
-                    default
+                    need(stack.pop(), Some(*value))?;
+                    need(stack.pop(), Some(option))?;
+                    *value
                 }
-                Instr::IsSome | Instr::IsNone => {
-                    let option = pop(&mut stack)?;
-
+                Instr::IsSome(option) | Instr::IsNone(option) => {
                     if !matches!(self.types.get(option), Some(TypeNode::Option(..))) {
-                        return Err(fail("tests other than an option"));
+                        return Err(fail("tests other than an option type"));
                     }
 
+                    need(stack.pop(), Some(option))?;
                     self.find(TypeNode::Bool)?
                 }
                 Instr::Len => {
-                    self.entry(pop(&mut stack)?)
+                    stack
+                        .pop()
+                        .and_then(|l| self.entry(l))
                         .ok_or_else(|| fail("takes the length of other than a list"))?;
                     self.find(TypeNode::Int)?
                 }
@@ -581,7 +642,7 @@ impl Verifier<'_> {
                         index(functions, f).ok_or_else(|| fail("calls a function there is not"))?;
 
                     for param in function.params.iter().rev() {
-                        need(pop(&mut stack)?, Some(*param))?;
+                        need(stack.pop(), Some(*param))?;
                     }
 
                     function.ret
@@ -589,11 +650,10 @@ impl Verifier<'_> {
             };
 
             stack.push(push);
-            max = max.max(stack.len());
         }
 
         if let Some(expected) = targets.remove(&code.len())
-            && expected != stack
+            && expected != stack.stack
         {
             return Err("a jump lands at the end with another stack".to_owned());
         }
@@ -602,17 +662,18 @@ impl Verifier<'_> {
             return Err("a jump lands inside nothing".to_owned());
         }
 
-        if stack != [result] {
+        if stack.stack != [result] {
             return Err(format!(
                 "it ends with {} values on the stack, not one of its result type",
-                stack.len()
+                stack.stack.len()
             ));
         }
 
         Ok(Memory {
-            stack: slots(max)?,
-            heap: slots(heap)?,
+            stack: words(stack.max)?,
+            heap: words(heap)?,
             constants: 0,
+            globals: 0,
         })
     }
 
@@ -621,6 +682,29 @@ impl Verifier<'_> {
             TypeNode::List(entry) => Some(*entry),
             _ => None,
         }
+    }
+}
+
+/// The verifier's model of the stack: the type of each value on it, and
+/// the words they take.
+struct Model<'a> {
+    types: &'a Types,
+    stack: Vec<TypeId>,
+    words: usize,
+    max: usize,
+}
+
+impl Model<'_> {
+    fn pop(&mut self) -> Option<TypeId> {
+        let ty = self.stack.pop()?;
+        self.words = self.words.saturating_sub(self.types.width(ty));
+        Some(ty)
+    }
+
+    fn push(&mut self, ty: TypeId) {
+        self.stack.push(ty);
+        self.words = self.words.saturating_add(self.types.width(ty));
+        self.max = self.max.max(self.words);
     }
 }
 

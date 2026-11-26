@@ -69,9 +69,6 @@ pub enum DeclareError {
     /// A name other than a lowercase letter or `_` followed by lowercase
     /// letters, digits and `_`.
     InvalidName(String),
-    /// An opaque type's name other than an uppercase letter followed by
-    /// letters, digits and `_`, or the name of a built-in type.
-    InvalidTypeName(String),
     /// `Option<Option<T>>`, which is not a type.
     NestedOption(String),
     /// A type nesting more than [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH)
@@ -85,10 +82,6 @@ impl fmt::Display for DeclareError {
             Self::InvalidName(name) => write!(
                 f,
                 "`{name}` is not a valid name, names are lowercase letters, digits and `_`, starting with a letter or `_`"
-            ),
-            Self::InvalidTypeName(name) => write!(
-                f,
-                "`{name}` is not a valid type name, it must start with an uppercase letter and not be a built-in type"
             ),
             Self::NestedOption(name) => write!(
                 f,
@@ -115,7 +108,7 @@ impl std::error::Error for DeclareError {}
 /// env.value("strength", Type::Int)?;
 /// env.value("bonus", Type::option(Type::Int))?;
 /// env.builtin(Builtin::Min);
-/// env.function("count", [Type::opaque("Track")], Type::Int)?;
+/// env.function("rating", [Type::String], Type::Int)?;
 /// # Ok::<_, shex::DeclareError>(())
 /// ```
 #[derive(Debug, Clone, Default)]
@@ -161,7 +154,7 @@ impl Environment {
 
     /// Declare a function of the caller's, which takes `params` and gives
     /// a `ret`. A function may be declared again with other parameters,
-    /// such as `count(Track)` and `count(Track, Int)`; a call takes the
+    /// such as `rating(String)` and `rating(String, Int)`; a call takes the
     /// first declaration its arguments' types match. Declaring the same
     /// parameters again replaces the return type.
     pub fn function(
@@ -210,6 +203,5 @@ fn check(name: &str, ty: &Type) -> Result<(), DeclareError> {
     check_type(ty).map_err(|fault| match fault {
         TypeFault::NestedOption => DeclareError::NestedOption(name.to_owned()),
         TypeFault::TooDeep => DeclareError::TypeTooDeep(name.to_owned()),
-        TypeFault::TypeName(ty) => DeclareError::InvalidTypeName(ty),
     })
 }

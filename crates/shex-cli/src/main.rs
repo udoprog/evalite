@@ -17,7 +17,7 @@
 //! 6 : Int
 //! ```
 //!
-//! Limits are `--max-depth` (nesting), `--memory` (slots) and `--fuel`
+//! Limits are `--max-depth` (nesting), `--memory` (64-bit words) and `--fuel`
 //! (steps); `--explain` also prints the type, memory and steps. Errors
 //! print the expression with a caret under what is wrong and exit non-zero.
 //! With no expression, `shex` reads expressions from stdin until the end.
@@ -43,7 +43,7 @@ struct Cli {
     /// The deepest an expression may nest.
     #[arg(long, default_value_t = DEFAULT_MAX_DEPTH, global = true)]
     max_depth: usize,
-    /// The memory the machine has, in slots.
+    /// The memory the machine has, in 64-bit words.
     #[arg(long, default_value_t = DEFAULT_MEMORY, global = true)]
     memory: u32,
     /// The steps an expression may take.
@@ -139,11 +139,12 @@ impl Session<'_> {
         if self.cli.explain {
             let memory = program.memory();
             out.push_str(&format!(
-                "\ntype: {ty}\nmemory: {} slots at most (stack {}, heap {}, constants {}), {} used\nsteps: {}",
+                "\ntype: {ty}\nmemory: {} words at most (stack {}, heap {}, constants {}, values read {}), {} used\nsteps: {}",
                 memory.total(),
                 memory.stack,
                 memory.heap,
                 memory.constants,
+                memory.globals,
                 outcome.memory,
                 outcome.steps,
             ));

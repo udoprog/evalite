@@ -3,6 +3,7 @@
 
 use crate::Type;
 use crate::program::Instr;
+use crate::types::TypeId;
 
 /// The kinds of value that have methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +53,8 @@ pub(crate) struct MethodSig {
     pub(crate) name: &'static str,
     pub(crate) params: &'static [Slot],
     pub(crate) ret: Slot,
-    pub(crate) instr: Instr,
+    /// Its instruction, given the receiver's type.
+    pub(crate) instr: fn(TypeId) -> Instr,
 }
 
 impl MethodSig {
@@ -74,7 +76,7 @@ const fn method(
     name: &'static str,
     params: &'static [Slot],
     ret: Slot,
-    instr: Instr,
+    instr: fn(TypeId) -> Instr,
 ) -> MethodSig {
     MethodSig {
         receiver,
@@ -87,16 +89,20 @@ const fn method(
 
 /// Every method, by receiver, in name order.
 pub(crate) const METHODS: &[MethodSig] = &[
-    method(Receiver::Int, "abs", &[], Slot::Int, Instr::Abs),
+    method(Receiver::Int, "abs", &[], Slot::Int, |_| Instr::Abs),
     method(
         Receiver::Int,
         "clamp",
         &[Slot::Int, Slot::Int],
         Slot::Int,
-        Instr::Clamp,
+        |_| Instr::Clamp,
     ),
-    method(Receiver::Int, "max", &[Slot::Int], Slot::Int, Instr::Max(2)),
-    method(Receiver::Int, "min", &[Slot::Int], Slot::Int, Instr::Min(2)),
+    method(Receiver::Int, "max", &[Slot::Int], Slot::Int, |_| {
+        Instr::Max(2)
+    }),
+    method(Receiver::Int, "min", &[Slot::Int], Slot::Int, |_| {
+        Instr::Min(2)
+    }),
     method(Receiver::Option, "is_none", &[], Slot::Bool, Instr::IsNone),
     method(Receiver::Option, "is_some", &[], Slot::Bool, Instr::IsSome),
     method(
@@ -106,7 +112,7 @@ pub(crate) const METHODS: &[MethodSig] = &[
         Slot::Inner,
         Instr::UnwrapOr,
     ),
-    method(Receiver::List, "len", &[], Slot::Int, Instr::Len),
+    method(Receiver::List, "len", &[], Slot::Int, |_| Instr::Len),
 ];
 
 /// The methods of a `receiver`, in name order.

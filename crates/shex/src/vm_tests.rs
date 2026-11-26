@@ -13,16 +13,20 @@ use std::collections::HashSet;
 use std::mem::discriminant;
 
 use crate::check_tests::{env, generate};
-use crate::program::{Instr, Memory};
+use crate::program::{Instr, Memory, Stored};
 use crate::tests::Rng;
-use crate::types::{TypeNode, Types};
+use crate::types::{TypeId, TypeNode, Types};
 use crate::*;
 
-fn track(handle: u64) -> Value {
-    Value::opaque("Track", handle)
+/// A track of `boxes` boxes, `boxes` of them at the first state.
+fn track(boxes: i64) -> Value {
+    Value::record([
+        ("boxes", Value::Int(boxes)),
+        ("count", Value::List(vec![Value::Int(boxes)])),
+    ])
 }
 
-/// The value bound to each of [`env`]'s names, and the slots its parts
+/// The value bound to each of [`env`]'s names, and the words its parts
 /// take.
 fn binding(name: &str) -> (Value, usize) {
     match name {
@@ -48,14 +52,14 @@ fn binding(name: &str) -> (Value, usize) {
             5,
         ),
         "name" => (Value::from("Essence"), 1),
-        "health" => (track(1), 0),
-        "tracks" => (Value::List(vec![track(2), track(3)]), 2),
+        "health" => (track(1), 3),
+        "tracks" => (Value::List(vec![track(2), track(3)]), 8),
         "specialties" => (
             Value::record([
                 ("athletics", Value::Int(2)),
                 ("brawl", Value::some(Value::Int(1))),
             ]),
-            2,
+            3,
         ),
         "m" => (
             Value::record([
@@ -63,21 +67,21 @@ fn binding(name: &str) -> (Value, usize) {
                 ("a b", track(4)),
                 ("inner", Value::record([("deep", Value::Bool(false))])),
             ]),
-            4,
+            7,
         ),
-        "maybe_track" => (Value::some(track(5)), 0),
+        "maybe_track" => (Value::some(track(5)), 3),
         _ => panic!("no binding for {name}"),
     }
 }
 
-/// [`env`]'s functions: `count(t)` is its handle, `count(t, n)` is `n`,
+/// [`env`]'s functions: `count(t)` is its boxes, `count(t, n)` is `n`,
 /// `boxes` is 5, `lookup(i, table)` is `i`, `label(i)` is `some(i)` for
 /// even `i`, `pick()` is `true`.
 fn host(name: &str, args: Vec<Value>) -> Result<Value, String> {
     Ok(match (name, args.as_slice()) {
-        ("count", [Value::Opaque { handle, .. }]) => Value::Int(*handle as i64),
-        ("count", [Value::Opaque { .. }, Value::Int(n)]) => Value::Int(*n),
-        ("boxes", [Value::Opaque { .. }]) => Value::Int(5),
+        ("count", [Value::Record(t)]) => t["boxes"].clone(),
+        ("count", [Value::Record(_), Value::Int(n)]) => Value::Int(*n),
+        ("boxes", [Value::Record(_)]) => Value::Int(5),
         ("lookup", [Value::Int(i), Value::String(table)]) => {
             assert_eq!(table, "Essence");
             Value::Int(*i)
@@ -273,7 +277,7 @@ const CASES: &[(&str, &str)] = &[
     ("bonus", "some(2)"),
     ("maybe", "none"),
     ("label(3)", "none"),
-    ("maybe_track", "some(<Track 5>)"),
+    ("maybe_track", "some({boxes: 5, count: [5]})"),
     // Len
     ("levels.len()", "3"),
     ("[1].len()", "1"),
@@ -284,12 +288,12 @@ const CASES: &[(&str, &str)] = &[
     ("count(health, 9)", "9"),
     ("boxes(m[\"a b\"])", "5"),
     ("pick()", "true"),
-    ("health", "<Track 1>"),
-    ("tracks", "[<Track 2>, <Track 3>]"),
+    ("health", "{boxes: 1, count: [1]}"),
+    ("tracks", "[{boxes: 2, count: [2]}, {boxes: 3, count: [3]}]"),
     ("specialties", "{athletics: 2, brawl: some(1)}"),
     (
         "m",
-        r#"{"Brawl (bar)": 4, "a b": <Track 4>, inner: {deep: false}}"#,
+        r#"{"Brawl (bar)": 4, "a b": {boxes: 4, count: [4]}, inner: {deep: false}}"#,
     ),
     ("name", r#""Essence""#),
 ];
@@ -311,7 +315,10 @@ fn every_instruction_is_covered() {
         Instr::Int(0),
         Instr::Bool(false),
         Instr::Const(0),
-        Instr::Global(0),
+        Instr::Global {
+            at: 0,
+            ty: TypeId(0),
+        },
         Instr::Neg,
         Instr::Not,
         Instr::Add,
@@ -327,17 +334,23 @@ fn every_instruction_is_covered() {
         Instr::Ge,
         Instr::And(0),
         Instr::Or(0),
-        Instr::Field(0),
-        Instr::Index,
-        Instr::List(0),
+        Instr::Field {
+            at: 0,
+            ty: TypeId(0),
+        },
+        Instr::Index(TypeId(0)),
+        Instr::List {
+            len: 0,
+            entry: TypeId(0),
+        },
         Instr::Min(0),
         Instr::Max(0),
         Instr::Abs,
         Instr::Clamp,
-        Instr::Lookup,
-        Instr::UnwrapOr,
-        Instr::IsSome,
-        Instr::IsNone,
+        Instr::Lookup(TypeId(0)),
+        Instr::UnwrapOr(TypeId(0)),
+        Instr::IsSome(TypeId(0)),
+        Instr::IsNone(TypeId(0)),
         Instr::Len,
         Instr::Call(0),
     ];
@@ -567,8 +580,8 @@ fn host_errors() {
 
 #[test]
 fn host_result_memory() {
-    // `many(n)` returns n slots of parts; the program needs 1 stack slot
-    // and nothing else, so a machine of 1 + k slots takes a list of k.
+    // `many(n)` returns n words of parts; the program needs 1 stack word
+    // and nothing else, so a machine of 1 + k words takes a list of k.
     let program = compile_in("many(3).len()", &[]);
     assert_eq!(program.memory().total(), 1);
 
@@ -581,7 +594,7 @@ fn host_result_memory() {
     assert_eq!(run(4).unwrap().memory, 4);
     assert_eq!(
         run(3).unwrap_err().to_string(),
-        "the value `many` returned needs 3 slots of memory, 2 are left"
+        "the value `many` returned needs 3 words of memory, 2 are left"
     );
 }
 
@@ -621,7 +634,7 @@ fn binding_errors() {
         (
             "m",
             Value::record([("Brawl (bar)", int(1)), ("a b", track(1))]),
-            r#"`m` must be {"Brawl (bar)": Int, "a b": Track, inner: {deep: Bool}}, found a record without `inner`"#,
+            r#"`m` must be {"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}, found a record without `inner`"#,
         ),
         (
             "m",
@@ -631,7 +644,7 @@ fn binding_errors() {
                 ("inner", Value::record([("deep", Value::Bool(true))])),
                 ("zzz", int(0)),
             ]),
-            r#"`m` must be {"Brawl (bar)": Int, "a b": Track, inner: {deep: Bool}}, found a record with an extra field `zzz`"#,
+            r#"`m` must be {"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}, found a record with an extra field `zzz`"#,
         ),
         (
             "m",
@@ -653,13 +666,18 @@ fn binding_errors() {
         ),
         (
             "health",
-            Value::opaque("Box", 1),
-            "`health` must be Track, found Box",
+            Value::record([("boxes", int(1))]),
+            "`health` must be {boxes: Int, count: List<Int>}, found a record without `count`",
+        ),
+        (
+            "health",
+            Value::record([("boxes", int(1)), ("count", Value::List(vec![Value::None]))]),
+            "`health.count[0]` must be Int, found none",
         ),
         (
             "maybe_track",
             track(1),
-            "`maybe_track` must be Option<Track>, found Track",
+            "`maybe_track` must be Option<{boxes: Int, count: List<Int>}>, found a record",
         ),
         ("strength", int(1), "the program reads no value `strength`"),
         ("nothing", int(1), "the program reads no value `nothing`"),
@@ -694,8 +712,8 @@ fn binding_errors() {
 
 #[test]
 fn memory_budget() {
-    // `lookup(i, [10, 11, 12, 13])` takes 2 stack slots, 4 constant slots
-    // and a slot for `i`.
+    // `lookup(i, [10, 11, 12, 13])` takes 2 stack words, 4 constant words
+    // and a word for `i`.
     let mut env = Environment::with_builtins();
     env.value("i", Type::Int).unwrap();
     let program = compile("lookup(i, [10, 11, 12, 13])", &env).unwrap();
@@ -704,7 +722,8 @@ fn memory_budget() {
         Memory {
             stack: 2,
             heap: 0,
-            constants: 4
+            constants: 4,
+            globals: 1,
         }
     );
 
@@ -718,13 +737,13 @@ fn memory_budget() {
     let mut machine = Machine::new(Limits::new().memory(6));
     assert_eq!(
         machine.load(&program).unwrap_err().to_string(),
-        "the program needs 7 slots of memory, more than the 6 the machine allows"
+        "the program needs 7 words of memory, more than the 6 the machine allows"
     );
 
     // Lists built as the program runs take heap: `[i, i, i]` is 3 stack, 3
     // heap and 1 for `i`.
     let program = compile("[i, i, i]", &env).unwrap();
-    assert_eq!(program.memory().total(), 6);
+    assert_eq!(program.memory().total(), 7);
     assert!(Machine::new(Limits::new().memory(7)).load(&program).is_ok());
     assert!(
         Machine::new(Limits::new().memory(6))
@@ -753,13 +772,13 @@ fn memory_budget() {
 
 #[test]
 fn binding_memory() {
-    // `l.len()` takes 1 stack slot and 1 for `l`, so a machine of 2 + k
-    // slots takes a bound list of k entries, and no more.
+    // `l.len()` takes 1 stack word and 1 for `l`, so a machine of 2 + k
+    // words takes a bound list of k entries, and no more.
     let mut env = Environment::with_builtins();
     env.value("l", Type::list(Type::Int)).unwrap();
     env.value("s", Type::String).unwrap();
     let program = compile("l.len()", &env).unwrap();
-    assert_eq!(program.memory().total(), 1);
+    assert_eq!(program.memory().total(), 2);
 
     let mut machine = Machine::new(Limits::new().memory(5));
     let mut run = machine.load(&program).unwrap();
@@ -771,12 +790,12 @@ fn binding_memory() {
     let mut run = machine.load(&program).unwrap();
     assert_eq!(
         run.bind("l", ints(&[1, 2, 3, 4])).unwrap_err().to_string(),
-        "binding `l` needs 4 slots of memory, 3 are left"
+        "binding `l` needs 4 words of memory, 3 are left"
     );
 
-    // A string takes a slot per 8 bytes.
+    // A string takes a word per 8 bytes.
     let program = compile(r#"[s, s].len()"#, &env).unwrap();
-    let needed = program.memory().total() + 1;
+    let needed = program.memory().total();
     let mut machine = Machine::new(Limits::new().memory(needed as u32 + 2));
     let mut run = machine.load(&program).unwrap();
     run.bind("s", Value::from("0123456789abcdef")).unwrap();
@@ -787,7 +806,7 @@ fn binding_memory() {
         run.bind("s", Value::from("0123456789abcdef!"))
             .unwrap_err()
             .to_string(),
-        "binding `s` needs 3 slots of memory, 2 are left"
+        "binding `s` needs 3 words of memory, 2 are left"
     );
 }
 
@@ -809,7 +828,7 @@ fn fuel() {
     );
 
     // A list of n entries, `min` and `max` of n take n more steps, and a
-    // call one more per slot it returns.
+    // call one more per word it returns.
     for (source, steps) in [
         ("[wits, wits, wits]", 7),
         ("min(wits, wits, wits)", 7),
@@ -872,7 +891,9 @@ fn machines_are_reused() {
     }
 }
 
-/// A program that shex would not make gives a fault, not a panic.
+/// A program that shex would not make gives a fault or a wrong value,
+/// never a panic: memory is untyped, so what the verifier would refuse
+/// but stays inside memory runs on whatever words it finds.
 #[test]
 fn faulty_programs() {
     let mut types = Types::new();
@@ -889,27 +910,56 @@ fn faulty_programs() {
             stack,
             heap: 0,
             constants: 0,
+            globals: 0,
         },
+        global_at: Vec::new(),
+        constant_at: Vec::new(),
     };
 
-    for (code, stack) in [
+    let global = Instr::Global { at: 0, ty: int };
+
+    let faults = [
         (vec![Instr::Add], 2),
         (vec![Instr::Int(1), Instr::Int(2)], 1),
         (vec![Instr::Int(1), Instr::Int(2)], 2),
-        (vec![Instr::Bool(true), Instr::Neg], 1),
         (vec![Instr::Const(3)], 1),
-        (vec![Instr::Global(0)], 1),
-        (vec![Instr::Int(1), Instr::Field(0)], 1),
-        (vec![Instr::Int(1), Instr::Len], 1),
-        (vec![Instr::Int(1), Instr::List(1)], 1),
+        (vec![Instr::Int(1), Instr::Field { at: 0, ty: int }], 1),
+        (vec![Instr::Int(1), Instr::List { len: 1, entry: int }], 1),
         (vec![Instr::Call(0)], 1),
-        (vec![Instr::Bool(true), Instr::Or(u32::MAX)], 1),
         (vec![], 0),
-    ] {
+        (vec![Instr::Int(-1), Instr::Int(0), Instr::Index(int)], 2),
+        (
+            vec![Instr::Global {
+                at: u32::MAX,
+                ty: int,
+            }],
+            1,
+        ),
+    ];
+
+    for (code, stack) in faults {
         let program = faulty(code.clone(), stack);
         let mut machine = Machine::default();
         let error = machine.load(&program).unwrap().run().unwrap_err();
         assert!(matches!(error, RunError::Fault(..)), "{code:?}: {error}");
+    }
+
+    let wrong = [
+        (vec![Instr::Bool(true), Instr::Neg], 1, Value::Int(-1)),
+        (vec![global], 1, Value::Int(0)),
+        (vec![Instr::Int(1), Instr::Len], 1, Value::Int(0)),
+        (
+            vec![Instr::Bool(true), Instr::Or(u32::MAX)],
+            1,
+            Value::Int(1),
+        ),
+    ];
+
+    for (code, stack, value) in wrong {
+        let program = faulty(code.clone(), stack);
+        let mut machine = Machine::default();
+        let outcome = machine.load(&program).unwrap().run().unwrap();
+        assert_eq!(outcome.value, value, "{code:?}");
     }
 }
 
@@ -929,14 +979,14 @@ fn random_programs() {
         let source = generate(&mut rng, ty, budget);
         let program = compile_with(&source, &env, &options).unwrap();
 
-        // Exactly the memory it needs: its own, a slot per value it reads
-        // and the parts of those values.
+        // Exactly the memory it needs: its own, the values it reads and
+        // the parts of those values.
         let parts = program
             .globals()
             .iter()
             .map(|(name, _)| binding(name).1 as u64)
             .sum::<u64>();
-        let needed = program.memory().total() + program.globals().len() as u64 + parts;
+        let needed = program.memory().total() + parts;
 
         let mut machine = Machine::new(Limits::new().memory(needed as u32).fuel(u64::MAX));
         let mut run = machine.load(&program).unwrap();
@@ -977,8 +1027,8 @@ fn random_programs() {
             panic!("{round}: {source:?}: {error}");
         }
 
-        // A slot less is refused before it runs.
-        if needed > program.globals().len() as u64 + parts {
+        // A word less is refused before it runs, or a binding is.
+        {
             let mut machine = Machine::new(Limits::new().memory(needed as u32 - 1));
 
             if let Ok(mut run) = machine.load(&program) {
@@ -999,4 +1049,575 @@ fn describe(value: &Value) -> &'static str {
         Value::List(items) if items.iter().all(|i| matches!(i, Value::Int(_))) => "List<Int>",
         _ => "?",
     }
+}
+
+/// Whether `value` is of type `ty`.
+fn conforms(value: &Value, ty: &Type) -> bool {
+    match (ty, value) {
+        (Type::Int, Value::Int(_)) | (Type::Bool, Value::Bool(_)) => true,
+        (Type::String, Value::String(_)) => true,
+        (Type::Option(_), Value::None) => true,
+        (Type::Option(inner), Value::Some(value)) => conforms(value, inner),
+        (Type::List(entry), Value::List(items)) => items.iter().all(|i| conforms(i, entry)),
+        (Type::Record(fields), Value::Record(map)) => {
+            fields.len() == map.len()
+                && fields
+                    .iter()
+                    .all(|(name, ty)| map.get(name).is_some_and(|v| conforms(v, ty)))
+        }
+        _ => false,
+    }
+}
+
+/// A value of type `ty`, from the edges of each type's range.
+fn value_of(rng: &mut Rng, ty: &Type) -> Value {
+    match ty {
+        Type::Int => int([0, 1, -1, 7, i64::MIN, i64::MAX][rng.below(6)]),
+        Type::Bool => Value::Bool(rng.below(2) == 0),
+        Type::String => Value::from(rng.pick(&["", "Essence", "0123456789abcdefg"])),
+        Type::Option(inner) => match rng.below(3) {
+            0 => Value::None,
+            _ => Value::some(value_of(rng, inner)),
+        },
+        Type::List(entry) => Value::List((0..rng.below(4)).map(|_| value_of(rng, entry)).collect()),
+        Type::Record(fields) => Value::Record(
+            fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), value_of(rng, ty)))
+                .collect(),
+        ),
+    }
+}
+
+/// Every option layout, through every place a value is held: bound,
+/// returned, built into a list, read from a record's field and given back
+/// as the result. An `Option<Int>` is two words; every other option is
+/// one word with a value no `Bool` or reference is for absent.
+#[test]
+fn option_layouts() {
+    let record = Type::record([("a", Type::Int), ("b", Type::option(Type::Int))]);
+
+    let cases: Vec<(Type, Vec<Value>)> = vec![
+        (
+            Type::Int,
+            vec![int(0), int(-1), int(1), int(i64::MIN), int(i64::MAX)],
+        ),
+        (Type::Bool, vec![Value::Bool(false), Value::Bool(true)]),
+        (
+            Type::String,
+            vec![
+                Value::from(""),
+                Value::from("\u{ff}\u{ff}\u{ff}\u{ff}"),
+                Value::from("0123456789abcdefg"),
+            ],
+        ),
+        (
+            Type::list(Type::Int),
+            vec![ints(&[-1]), ints(&[i64::MIN, i64::MAX, 0])],
+        ),
+        (
+            record.clone(),
+            vec![
+                Value::record([("a", int(-1)), ("b", Value::None)]),
+                Value::record([("a", int(i64::MAX)), ("b", Value::some(int(-1)))]),
+            ],
+        ),
+    ];
+
+    for (ty, values) in cases {
+        let option = Type::option(ty.clone());
+        let holder = Type::record([("o", option.clone()), ("z", Type::Int)]);
+
+        let mut env = Environment::with_builtins();
+        env.value("o", option.clone()).unwrap();
+        env.value("d", ty.clone()).unwrap();
+        env.value("r", holder.clone()).unwrap();
+        env.value("l", Type::list(option.clone())).unwrap();
+        env.function("give", [], option.clone()).unwrap();
+        env.function("take", [option.clone(), Type::Int], Type::Int)
+            .unwrap();
+
+        for value in &values {
+            for o in [Value::None, Value::some(value.clone())] {
+                let default = values[0].clone();
+                let unwrapped = match &o {
+                    Value::Some(v) => (**v).clone(),
+                    _ => default.clone(),
+                };
+
+                let expected: &[(&str, Value)] = &[
+                    ("o", o.clone()),
+                    ("o.is_some()", Value::Bool(o != Value::None)),
+                    ("o.is_none()", Value::Bool(o == Value::None)),
+                    ("o.unwrap_or(d)", unwrapped.clone()),
+                    ("[o, o, o][2]", o.clone()),
+                    ("[o, give()]", Value::List(vec![o.clone(), o.clone()])),
+                    ("lookup(9, [give(), o])", o.clone()),
+                    ("r.o", o.clone()),
+                    ("r.z", int(-5)),
+                    ("l[1]", o.clone()),
+                    ("l.len()", int(3)),
+                    ("give().unwrap_or(d)", unwrapped.clone()),
+                    ("take(o, 4)", int(4)),
+                    ("take(give(), -1)", int(-1)),
+                    ("r", Value::record([("o", o.clone()), ("z", int(-5))])),
+                ];
+
+                for (source, want) in expected {
+                    let program = compile(source, &env).unwrap();
+                    let mut machine = Machine::default();
+                    let mut run = machine.load(&program).unwrap();
+
+                    for (name, _) in run.globals() {
+                        let bound = match name {
+                            "o" => o.clone(),
+                            "d" => default.clone(),
+                            "r" => Value::record([("o", o.clone()), ("z", int(-5))]),
+                            "l" => Value::List(vec![
+                                Value::None,
+                                o.clone(),
+                                Value::some(default.clone()),
+                            ]),
+                            _ => unreachable!(),
+                        };
+
+                        run.bind(name, bound).unwrap();
+                    }
+
+                    let given = o.clone();
+                    let mut host = |name: &str, args: Vec<Value>| match (name, args.as_slice()) {
+                        ("give", []) => Ok(given.clone()),
+                        ("take", [arg, Value::Int(n)]) => {
+                            assert_eq!(*arg, given, "{source:?}");
+                            Ok(int(*n))
+                        }
+                        _ => Err(format!("unexpected {name}{args:?}")),
+                    };
+
+                    let outcome = run.run_with(&mut host).unwrap();
+                    assert_eq!(outcome.value, *want, "{source:?} of {option} with o = {o}");
+                }
+            }
+        }
+    }
+}
+
+/// A list of `Option<Int>` takes two words an entry, wherever it is.
+#[test]
+fn list_of_optional_ints() {
+    let mut env = Environment::with_builtins();
+    env.value("l", Type::list(Type::option(Type::Int))).unwrap();
+    env.value("o", Type::option(Type::Int)).unwrap();
+    env.function("many", [Type::Int], Type::list(Type::option(Type::Int)))
+        .unwrap();
+
+    let l = Value::List(vec![
+        Value::None,
+        Value::some(int(i64::MIN)),
+        Value::some(int(i64::MAX)),
+        Value::some(int(-1)),
+        Value::some(int(0)),
+    ]);
+
+    let cases: &[(&str, &str)] = &[
+        (
+            "l",
+            "[none, some(-9223372036854775808), some(9223372036854775807), some(-1), some(0)]",
+        ),
+        ("l[0]", "none"),
+        ("l[1].unwrap_or(5)", "-9223372036854775808"),
+        ("l[2].unwrap_or(5)", "9223372036854775807"),
+        ("l[3].is_some()", "true"),
+        ("l[3].unwrap_or(5)", "-1"),
+        ("l[0].unwrap_or(5)", "5"),
+        ("lookup(-9, l)", "none"),
+        ("lookup(99, l)", "some(0)"),
+        ("l.len()", "5"),
+        (
+            "[l[2], o, l[0]]",
+            "[some(9223372036854775807), some(-1), none]",
+        ),
+        ("[l[2], o, l[0]][1].unwrap_or(3)", "-1"),
+        ("[l, [o]][1]", "[some(-1)]"),
+        ("many(2)", "[some(0), some(1)]"),
+        ("many(3)[2].unwrap_or(-7)", "2"),
+    ];
+
+    for (source, expected) in cases {
+        let program = compile(source, &env).unwrap();
+        let mut machine = Machine::default();
+        let mut run = machine.load(&program).unwrap();
+
+        for (name, _) in run.globals() {
+            match name {
+                "l" => run.bind("l", l.clone()).unwrap(),
+                _ => run.bind("o", Value::some(int(-1))).unwrap(),
+            }
+        }
+
+        let mut host = |_: &str, args: Vec<Value>| match args.as_slice() {
+            [Value::Int(n)] => Ok(Value::List((0..*n).map(|i| Value::some(int(i))).collect())),
+            _ => Err("unexpected".to_owned()),
+        };
+
+        let outcome = run.run_with(&mut host).unwrap();
+        assert_eq!(outcome.value.to_string(), *expected, "{source:?}");
+    }
+
+    assert_eq!(
+        compile("l[1]", &env).unwrap().memory(),
+        Memory {
+            stack: 2,
+            heap: 0,
+            constants: 0,
+            globals: 1,
+        }
+    );
+    assert_eq!(
+        compile("[o, o, o]", &env).unwrap().memory(),
+        Memory {
+            stack: 6,
+            heap: 6,
+            constants: 0,
+            globals: 2,
+        }
+    );
+}
+
+/// Memory is counted in words at the budget's boundary: a program's own,
+/// what it binds and what the caller's functions return.
+#[test]
+fn word_budget() {
+    let mut env = Environment::with_builtins();
+    env.value("l", Type::list(Type::option(Type::Int))).unwrap();
+    env.value("o", Type::option(Type::Int)).unwrap();
+    env.value("s", Type::String).unwrap();
+    env.function("many", [Type::Int], Type::list(Type::option(Type::Int)))
+        .unwrap();
+
+    // A program's own memory: `[o, o, o]` is 6 stack, 6 heap and 2 for `o`.
+    let program = compile("[o, o, o]", &env).unwrap();
+    assert_eq!(program.memory().total(), 14);
+
+    let mut machine = Machine::new(Limits::new().memory(14));
+    let mut run = machine.load(&program).unwrap();
+    run.bind("o", Value::some(int(i64::MIN))).unwrap();
+    let outcome = run.run().unwrap();
+    assert_eq!(
+        outcome.value.to_string(),
+        "[some(-9223372036854775808), some(-9223372036854775808), some(-9223372036854775808)]"
+    );
+    assert_eq!(outcome.memory, 14);
+
+    assert_eq!(
+        Machine::new(Limits::new().memory(13))
+            .load(&program)
+            .unwrap_err()
+            .to_string(),
+        "the program needs 14 words of memory, more than the 13 the machine allows"
+    );
+
+    // A bound list of k `Option<Int>`s takes 2k words beside `l.len()`'s 2.
+    let program = compile("l.len()", &env).unwrap();
+    assert_eq!(program.memory().total(), 2);
+
+    for k in [1usize, 2, 7] {
+        let list = Value::List(vec![Value::some(int(-1)); k]);
+        let words = 2 + 2 * k as u32;
+
+        let mut machine = Machine::new(Limits::new().memory(words));
+        let mut run = machine.load(&program).unwrap();
+        run.bind("l", list.clone()).unwrap();
+        let outcome = run.run().unwrap();
+        assert_eq!(outcome.value, int(k as i64));
+        assert_eq!(outcome.memory, u64::from(words));
+
+        let mut machine = Machine::new(Limits::new().memory(words - 1));
+        let mut run = machine.load(&program).unwrap();
+        assert_eq!(
+            run.bind("l", list).unwrap_err().to_string(),
+            format!(
+                "binding `l` needs {} words of memory, {} are left",
+                2 * k,
+                2 * k - 1
+            )
+        );
+    }
+
+    // A string takes a word per 8 bytes, the empty string none.
+    let program = compile("lookup(0, [s])", &env).unwrap();
+    let base = program.memory().total() as u32;
+
+    for (s, words) in [("", 0), ("12345678", 1), ("123456789", 2)] {
+        let mut machine = Machine::new(Limits::new().memory(base + words));
+        let mut run = machine.load(&program).unwrap();
+        run.bind("s", Value::from(s)).unwrap();
+        assert_eq!(run.run().unwrap().value, Value::from(s));
+
+        if words > 0 {
+            let mut machine = Machine::new(Limits::new().memory(base + words - 1));
+            let mut run = machine.load(&program).unwrap();
+            assert!(matches!(
+                run.bind("s", Value::from(s)),
+                Err(RunError::BindingTooLarge { .. })
+            ));
+        }
+    }
+
+    // What a function returns: `many(k)` gives 2k words of parts, and
+    // costs a step a word.
+    let program = compile("many(3).len()", &env).unwrap();
+    assert_eq!(program.memory().total(), 1);
+
+    let run = |memory: u32| {
+        let mut machine = Machine::new(Limits::new().memory(memory));
+        let mut host = |_: &str, args: Vec<Value>| match args.as_slice() {
+            [Value::Int(n)] => Ok(Value::List(vec![Value::None; *n as usize])),
+            _ => Err("unexpected".to_owned()),
+        };
+        machine.load(&program).unwrap().run_with(&mut host)
+    };
+
+    let outcome = run(7).unwrap();
+    assert_eq!(outcome.value, int(3));
+    assert_eq!(outcome.memory, 7);
+    assert_eq!(outcome.steps, 3 + 6);
+    assert_eq!(
+        run(6).unwrap_err().to_string(),
+        "the value `many` returned needs 6 words of memory, 5 are left"
+    );
+}
+
+/// An instruction of any kind, with operands near the ones programs use.
+fn instruction(rng: &mut Rng, types: u32) -> Instr {
+    let n = |rng: &mut Rng| rng.below(5) as u32;
+    let ty = |rng: &mut Rng| TypeId(rng.below(types as usize + 2) as u32);
+
+    match rng.below(32) {
+        0 => Instr::Int([0, 1, -1, i64::MIN, i64::MAX][rng.below(5)]),
+        1 => Instr::Bool(rng.below(2) == 0),
+        2 => Instr::Const(n(rng)),
+        3 => Instr::Global {
+            at: n(rng),
+            ty: ty(rng),
+        },
+        4 => Instr::Neg,
+        5 => Instr::Not,
+        6 => Instr::Add,
+        7 => Instr::Sub,
+        8 => Instr::Mul,
+        9 => Instr::Div,
+        10 => Instr::Rem,
+        11 => Instr::Eq,
+        12 => Instr::Ne,
+        13 => Instr::Lt,
+        14 => Instr::Le,
+        15 => Instr::Gt,
+        16 => Instr::Ge,
+        17 => Instr::And(n(rng)),
+        18 => Instr::Or(n(rng)),
+        19 => Instr::Field {
+            at: n(rng),
+            ty: ty(rng),
+        },
+        20 => Instr::Index(ty(rng)),
+        21 => Instr::List {
+            len: n(rng),
+            entry: ty(rng),
+        },
+        22 => Instr::Min(n(rng)),
+        23 => Instr::Max(n(rng)),
+        24 => Instr::Abs,
+        25 => Instr::Clamp,
+        26 => Instr::Lookup(ty(rng)),
+        27 => Instr::UnwrapOr(ty(rng)),
+        28 => Instr::IsSome(ty(rng)),
+        29 => Instr::IsNone(ty(rng)),
+        30 => Instr::Len,
+        _ => Instr::Call(n(rng)),
+    }
+}
+
+/// `instr` with one operand moved a little.
+fn nudge(rng: &mut Rng, instr: Instr) -> Instr {
+    let mut d = |n: u32| match rng.below(3) {
+        0 => n.wrapping_add(1),
+        1 => n.wrapping_sub(1),
+        _ => n.wrapping_add(rng.below(4) as u32),
+    };
+
+    match instr {
+        Instr::Const(c) => Instr::Const(d(c)),
+        Instr::Global { at, ty } if at % 2 == 0 => Instr::Global { at: d(at), ty },
+        Instr::Global { at, ty } => Instr::Global {
+            at,
+            ty: TypeId(d(ty.0)),
+        },
+        Instr::And(n) => Instr::And(d(n)),
+        Instr::Or(n) => Instr::Or(d(n)),
+        Instr::Field { at, ty } if at % 2 == 0 => Instr::Field { at: d(at), ty },
+        Instr::Field { at, ty } => Instr::Field {
+            at,
+            ty: TypeId(d(ty.0)),
+        },
+        Instr::Index(ty) => Instr::Index(TypeId(d(ty.0))),
+        Instr::List { len, entry } => Instr::List { len: d(len), entry },
+        Instr::Min(n) => Instr::Min(d(n)),
+        Instr::Max(n) => Instr::Max(d(n)),
+        Instr::Lookup(ty) => Instr::Lookup(TypeId(d(ty.0))),
+        Instr::UnwrapOr(ty) => Instr::UnwrapOr(TypeId(d(ty.0))),
+        Instr::IsSome(ty) => Instr::IsNone(TypeId(d(ty.0))),
+        Instr::IsNone(ty) => Instr::IsSome(TypeId(d(ty.0))),
+        Instr::Call(f) => Instr::Call(d(f)),
+        Instr::Int(n) => Instr::Int(n.wrapping_add(1)),
+        Instr::Bool(b) => Instr::Bool(!b),
+        other => other,
+    }
+}
+
+/// Tamper with a stored program: its instructions, their operands and the
+/// type ids it names.
+fn tamper(rng: &mut Rng, stored: &mut Stored) {
+    let types = stored.types.len() as u32;
+    let len = stored.code.len();
+
+    match rng.below(10) {
+        0..=2 if len > 0 => {
+            let at = rng.below(len);
+            stored.code[at] = nudge(rng, stored.code[at]);
+        }
+        3 | 4 if len > 0 => {
+            let at = rng.below(len);
+            stored.code[at] = instruction(rng, types);
+        }
+        5 => {
+            let at = rng.below(len + 1);
+            stored.code.insert(at, instruction(rng, types));
+        }
+        6 if len > 0 => {
+            stored.code.remove(rng.below(len));
+        }
+        7 if len > 1 => {
+            let (a, b) = (rng.below(len), rng.below(len));
+            stored.code.swap(a, b);
+        }
+        8 => {
+            let ty = TypeId(rng.below(types as usize + 1) as u32);
+
+            match rng.below(3) {
+                0 if !stored.globals.is_empty() => {
+                    let at = rng.below(stored.globals.len());
+                    stored.globals[at].ty = ty;
+                }
+                1 if !stored.functions.is_empty() => {
+                    let at = rng.below(stored.functions.len());
+                    stored.functions[at].ret = ty;
+                }
+                _ => stored.result = ty,
+            }
+        }
+        _ => {
+            let fresh = match rng.below(4) {
+                0 => TypeNode::Int,
+                1 => TypeNode::Option(TypeId(rng.below(types as usize) as u32)),
+                2 => TypeNode::List(TypeId(rng.below(types as usize) as u32)),
+                _ => TypeNode::Record(vec![]),
+            };
+            stored.types.push(fresh);
+        }
+    }
+
+    // A verified program declares the memory it uses, so a tamper that
+    // changes it is caught there; recount it as a forger would, so the
+    // code itself is what gets checked.
+    if let Ok(program) = Program::verify(
+        Types::from_stored(stored.types.clone()).unwrap_or_default(),
+        stored.constants.clone(),
+        stored.globals.clone(),
+        stored.functions.clone(),
+        stored.code.clone(),
+        stored.result,
+    ) {
+        stored.memory = program.memory();
+    }
+}
+
+/// Stored programs tampered with are refused when they load, or run
+/// without a fault or a panic, giving a value of their result type and
+/// handing the caller's functions arguments of their declared types: the
+/// verifier's proof is what the untyped machine relies on.
+#[test]
+fn tampered_programs_never_fault() {
+    let mut rng = Rng(0x7a4b_e5ed);
+    let options = Options::new().max_depth(10_000);
+    let env = env();
+    let (mut refused, mut ran) = (0, 0);
+
+    for round in 0..3_000 {
+        let ty = rng.pick(&["Int", "Bool", "Option<Int>", "List<Int>"]);
+        let budget = rng.below(30);
+        let source = generate(&mut rng, ty, budget);
+        let program = compile_with(&source, &env, &options).unwrap();
+        let bytes = program.to_bytes().unwrap();
+
+        for _ in 0..4 {
+            let mut stored: Stored = musli::storage::from_slice(&bytes).unwrap();
+
+            for _ in 0..=rng.below(3) {
+                tamper(&mut rng, &mut stored);
+            }
+
+            let tampered = musli::storage::to_vec(&stored).unwrap();
+
+            let Ok(program) = Program::from_bytes(&tampered) else {
+                refused += 1;
+                continue;
+            };
+
+            let limit = u32::try_from(program.memory().total()).unwrap() + 4096;
+            let mut machine = Machine::new(Limits::new().memory(limit).fuel(100_000));
+            let mut run = machine.load(&program).unwrap();
+
+            for (name, ty) in run.globals() {
+                let value = value_of(&mut rng, &ty);
+                run.bind(name, value).unwrap();
+            }
+
+            let functions = program.functions();
+            let mut host_rng = Rng(rng.next());
+            let mut host = |name: &str, args: Vec<Value>| {
+                let (_, _, ret) = functions
+                    .iter()
+                    .find(|(n, params, _)| {
+                        *n == name
+                            && params.len() == args.len()
+                            && params.iter().zip(&args).all(|(p, a)| conforms(a, p))
+                    })
+                    .unwrap_or_else(|| panic!("{round}: {name}{args:?} was not declared"));
+                Ok(value_of(&mut host_rng, ret))
+            };
+
+            match run.run_with(&mut host) {
+                Ok(outcome) => {
+                    ran += 1;
+                    assert!(
+                        conforms(&outcome.value, &program.result_type()),
+                        "{round}: {source:?} tampered as {:?} gave {}",
+                        stored.code,
+                        outcome.value
+                    );
+                }
+                Err(RunError::Fault(fault)) => {
+                    panic!("{round}: {source:?} tampered as {:?}: {fault}", stored.code)
+                }
+                Err(_) => ran += 1,
+            }
+        }
+    }
+
+    assert!(
+        refused > 1_000,
+        "only {refused} tampered programs were refused"
+    );
+    assert!(ran > 1_000, "only {ran} tampered programs ran");
 }

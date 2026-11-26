@@ -9,7 +9,7 @@ fn env() -> Environment {
     env.value("dead", Type::Bool).unwrap();
     env.value("bonus", Type::option(Type::Int)).unwrap();
     env.value("dots", Type::list(Type::Int)).unwrap();
-    env.value("health", Type::opaque("Track")).unwrap();
+    env.value("health", crate::check_tests::track()).unwrap();
     env.value(
         "m",
         Type::record([
@@ -19,9 +19,9 @@ fn env() -> Environment {
         ]),
     )
     .unwrap();
-    env.function("count", [Type::opaque("Track")], Type::Int)
+    env.function("count", [crate::check_tests::track()], Type::Int)
         .unwrap();
-    env.function("count", [Type::opaque("Track"), Type::Int], Type::Int)
+    env.function("count", [crate::check_tests::track(), Type::Int], Type::Int)
         .unwrap();
     env
 }

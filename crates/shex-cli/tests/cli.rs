@@ -72,6 +72,26 @@ fn explain_prints_details() {
 }
 
 #[test]
+fn explain_counts_words() {
+    // An `Option<Int>` is two words wherever it is held.
+    let out = run(
+        &[
+            "eval",
+            "x.unwrap_or(4) + 1",
+            "--var",
+            "x:Option<Int>=none",
+            "--explain",
+        ],
+        "",
+    );
+    assert!(out.ok, "{}", out.stderr);
+    assert_eq!(
+        out.stdout.trim_end(),
+        "5 : Int\ntype: Int\nmemory: 5 words at most (stack 3, heap 0, constants 0, values read 2), 5 used\nsteps: 5"
+    );
+}
+
+#[test]
 fn type_error_shows_caret() {
     let out = run(&["eval", "1 + true"], "");
     assert!(!out.ok);
