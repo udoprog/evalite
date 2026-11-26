@@ -595,11 +595,26 @@ impl<'a> Run<'a> {
             Instr::Lookup(entry) => {
                 let (start, len) = self.pop()?.as_reference()?;
                 let i = self.pop_int()?;
-                let last = len
-                    .checked_sub(1)
-                    .ok_or_else(|| RunError::new(Message::EmptyLookup))?;
-                let at = usize::try_from(i.max(0)).unwrap_or(usize::MAX).min(last);
-                self.push_entry(start, at, types.width(entry))?;
+                let at = usize::try_from(i).ok().filter(|at| *at < len);
+
+                // An `Int` entry is given as an `Option<Int>`, two words; an
+                // `Option<Int>` one as itself; and any other as one word,
+                // `Word::NONE` when out of range.
+                let int = types.get(entry) == Some(&TypeNode::Int);
+
+                match at {
+                    Some(at) if int => {
+                        self.push(Word::present(true))?;
+                        self.push_entry(start, at, 1)?;
+                    }
+                    Some(at) => self.push_entry(start, at, types.width(entry))?,
+                    None if int || types.is_option_int(entry) => {
+                        self.push(Word::present(false))?;
+                        self.push(Word::int(0))?;
+                    }
+                    None => self.push(Word::NONE)?,
+                }
+
                 return Ok(next);
             }
             Instr::List { len, entry } => {

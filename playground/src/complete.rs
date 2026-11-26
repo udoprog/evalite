@@ -13,6 +13,8 @@ pub struct Offer {
     pub label: String,
     pub kind: &'static str,
     pub ty: Option<String>,
+    /// The function's or method's signature, as `lookup<T>(Int, List<T>) -> Option<T>`.
+    pub signature: Option<String>,
 }
 
 /// What the cursor is in: the word it replaces (in characters) and what
@@ -73,6 +75,7 @@ pub fn offers(source: &str, cursor: usize, env: &Environment) -> Option<Offers> 
             label: c.label().to_owned(),
             kind: kind_name(c.kind()),
             ty: c.ty().map(|ty| ty.to_string()),
+            signature: c.signature().map(str::to_owned),
         })
         .collect::<Vec<_>>();
 
@@ -221,6 +224,20 @@ mod tests {
         let source = "_ + max(_, wi)";
         let labels = labels(source, 13);
         assert!(labels.iter().any(|l| l == "wits"), "{labels:?}");
+    }
+
+    #[test]
+    fn calls_carry_their_signature() {
+        let at = offers("lo", 2, &env()).unwrap();
+        let lookup = at
+            .offers
+            .iter()
+            .find(|o| o.label == "lookup(_, _)")
+            .unwrap();
+        assert_eq!(
+            lookup.signature.as_deref(),
+            Some("lookup<T>(Int, List<T>) -> Option<T>")
+        );
     }
 
     #[test]

@@ -9,9 +9,10 @@ use crate::Type;
 use crate::debug::DebugInfo;
 use crate::env::{Builtin, Environment, Overload};
 use crate::error::{Arity, Callee, ErrorKind, ParseError};
-use crate::methods::{self, MethodSig, Receiver, Slot};
+use crate::methods::{self, MethodSig};
 use crate::parser::{Options, Tree, parse_with};
 use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
+use crate::sig::Mismatch;
 use crate::syntax::{Syntax, unescape};
 use crate::types::{TypeId, TypeNode, Types};
 
@@ -144,8 +145,7 @@ enum Work<'a> {
     /// After a method's receiver.
     Method(N<'a>),
     /// After a method's arguments.
-    /// After a method's arguments, with its receiver's `T`.
-    MethodExit(N<'a>, &'static MethodSig, TypeId, Callee),
+    MethodExit(N<'a>, &'static MethodSig, Callee),
     Field(N<'a>),
     /// After an index's receiver.
     Index(N<'a>),
@@ -321,9 +321,7 @@ impl<'a> Compiler<'a> {
                 }
                 Work::Call(node, overloads, name) => self.call(node, overloads, name)?,
                 Work::Method(node) => self.method(node, &mut work)?,
-                Work::MethodExit(node, method, inner, callee) => {
-                    self.method_exit(node, method, inner, callee)?
-                }
+                Work::MethodExit(node, method, callee) => self.method_exit(node, method, callee)?,
                 Work::Field(node) => self.field(node)?,
                 Work::Index(node) => self.index(node, &mut work)?,
                 Work::IndexExit(node) => self.index_exit(node)?,
@@ -651,39 +649,15 @@ impl<'a> Compiler<'a> {
         found: &[TypeId],
         at: Span<u32>,
     ) -> Result<Result<TypeId, Mismatch>, ParseError> {
-        let int = self.int;
-
-        let ints = |from: usize| {
-            found
-                .iter()
-                .enumerate()
-                .skip(from)
-                .find(|(_, t)| **t != int)
-                .map(|(n, _)| Mismatch::Argument(n, "Int".to_owned()))
-        };
-
         Ok(match overload {
-            Overload::Builtin(Builtin::Min | Builtin::Max) => {
-                if found.is_empty() {
-                    Err(Mismatch::Count(Arity::AtLeast(1)))
-                } else if let Some(mismatch) = ints(0) {
-                    Err(mismatch)
-                } else {
-                    Ok(int)
+            Overload::Builtin(builtin) => {
+                let found = found.iter().map(|t| self.ty(*t)).collect::<Vec<_>>();
+
+                match builtin.signature().call(&found, None) {
+                    Ok(ret) => Ok(self.intern(&ret, at)?),
+                    Err(mismatch) => Err(mismatch),
                 }
             }
-            Overload::Builtin(Builtin::Lookup) => match found {
-                [index, list] => {
-                    if *index != int {
-                        Err(Mismatch::Argument(0, "Int".to_owned()))
-                    } else if let Some(TypeNode::List(entry)) = self.types.get(*list) {
-                        Ok(*entry)
-                    } else {
-                        Err(Mismatch::Argument(1, "List<T>".to_owned()))
-                    }
-                }
-                _ => Err(Mismatch::Count(Arity::Exactly(2))),
-            },
             Overload::Host { params, ret } => {
                 if params.len() != found.len() {
                     Err(Mismatch::Count(Arity::Exactly(params.len())))
@@ -716,7 +690,14 @@ impl<'a> Compiler<'a> {
         let instr = match overload {
             Overload::Builtin(Builtin::Min) => Instr::Min(count(n)?),
             Overload::Builtin(Builtin::Max) => Instr::Max(count(n)?),
-            Overload::Builtin(Builtin::Lookup) => Instr::Lookup(ret),
+            Overload::Builtin(Builtin::Lookup) => {
+                let entry = match found.get(1).and_then(|list| self.types.get(*list)) {
+                    Some(TypeNode::List(entry)) => *entry,
+                    _ => return Err(internal("`lookup` of something other than a list")),
+                };
+
+                Instr::Lookup(entry)
+            }
             Overload::Host { .. } => {
                 let key = (name.to_owned(), found.to_vec());
 
@@ -790,18 +771,9 @@ impl<'a> Compiler<'a> {
         let name_node = name_of(node).ok_or_else(|| internal("a method without a name"))?;
         let name = self.text(name_node);
 
-        let kind = match self.types.get(receiver.ty) {
-            Some(TypeNode::Int) => Some((Receiver::Int, self.int)),
-            Some(TypeNode::Option(t)) => Some((Receiver::Option, *t)),
-            Some(TypeNode::List(t)) => Some((Receiver::List, *t)),
-            _ => None,
-        };
-
-        let method = kind.and_then(|(kind, inner)| Some((methods::find(kind, name)?, inner)));
-
         let receiver_type = self.ty(receiver.ty);
 
-        let Some((method, inner)) = method else {
+        let Some(method) = methods::find(&receiver_type, name) else {
             return Err(ParseError::new(
                 *name_node.span(),
                 ErrorKind::UnknownMethod {
@@ -817,7 +789,7 @@ impl<'a> Compiler<'a> {
             name: name.to_owned(),
         };
 
-        work.push(Work::MethodExit(node, method, inner, callee));
+        work.push(Work::MethodExit(node, method, callee));
         push_args(work, node);
         Ok(())
     }
@@ -826,7 +798,6 @@ impl<'a> Compiler<'a> {
         &mut self,
         node: N<'a>,
         method: &MethodSig,
-        inner: TypeId,
         callee: Callee,
     ) -> Result<(), ParseError> {
         let args = args_of(node);
@@ -834,26 +805,14 @@ impl<'a> Compiler<'a> {
         let receiver = self.pop()?;
         let span = *node.span();
 
-        let resolve = |slot: Slot| slot.resolve(&self.int, &self.bool, &inner);
-        let params = method
-            .params
-            .iter()
-            .map(|p| resolve(*p))
-            .collect::<Vec<_>>();
-        let (instr, ret) = ((method.instr)(receiver.ty), resolve(method.ret));
+        let found = values.iter().map(|v| self.ty(v.ty)).collect::<Vec<_>>();
 
-        if params.len() != values.len() {
-            let mismatch = Mismatch::Count(Arity::Exactly(params.len()));
-            return Err(self.mismatch(mismatch, callee, &values, &args, node));
-        }
+        let ret = match method.call(&self.ty(receiver.ty), &found) {
+            Ok(ret) => self.intern(&ret, span)?,
+            Err(mismatch) => return Err(self.mismatch(mismatch, callee, &values, &args, node)),
+        };
 
-        for (n, (param, value)) in params.iter().zip(&values).enumerate() {
-            if *param != value.ty {
-                let mismatch = Mismatch::Argument(n, self.ty(*param).to_string());
-                return Err(self.mismatch(mismatch, callee, &values, &args, node));
-            }
-        }
-
+        let instr = (method.instr)(receiver.ty);
         self.emit(instr);
         self.push(ret, span);
         Ok(())
@@ -1048,13 +1007,6 @@ impl<'a> Compiler<'a> {
 
         Ok((program, DebugInfo::new(self.spans)))
     }
-}
-
-/// Why an overload does not take a call's arguments.
-enum Mismatch {
-    Count(Arity),
-    /// The argument at this index, from 0, is not of the type described.
-    Argument(usize, String),
 }
 
 fn is_expr(kind: Syntax) -> bool {

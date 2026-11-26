@@ -296,12 +296,29 @@ const CASES: &[(&str, &str)] = &[
     ("athletics.clamp(2, 3)", "2"),
     ("wits.clamp(1, 3)", "2"),
     ("wits.clamp(2, 2)", "2"),
-    // Lookup, clamped
-    ("lookup(1, levels)", "20"),
-    ("lookup(-5, levels)", "10"),
-    ("lookup(99, levels)", "30"),
-    ("lookup(blood_potency, [10, 11, 12, 13])", "12"),
-    ("lookup(9, [wits])", "2"),
+    // Lookup: an option, none out of range
+    ("lookup(1, levels)", "some(20)"),
+    ("lookup(0, levels)", "some(10)"),
+    ("lookup(-1, levels)", "none"),
+    ("lookup(-5, levels)", "none"),
+    ("lookup(3, levels)", "none"),
+    ("lookup(99, levels)", "none"),
+    ("lookup(blood_potency, [10, 11, 12, 13])", "some(12)"),
+    ("lookup(0, [wits])", "some(2)"),
+    ("lookup(9, levels).unwrap_or(0)", "0"),
+    ("lookup(1, levels).unwrap_or(0)", "20"),
+    ("lookup(1, levels).is_some()", "true"),
+    ("lookup(3, levels).is_none()", "true"),
+    ("lookup(0, [true, false])", "some(true)"),
+    ("lookup(2, [true, false])", "none"),
+    ("lookup(0, [levels])", "some([10, 20, 30])"),
+    ("lookup(1, [levels])", "none"),
+    // A list of options gives the option itself
+    ("lookup(0, [bonus, label(3)])", "some(2)"),
+    ("lookup(1, [bonus, label(3)])", "none"),
+    ("lookup(2, [bonus, label(3)])", "none"),
+    ("lookup(0, [maybe])", "none"),
+    ("lookup(1, [maybe])", "none"),
     // UnwrapOr, IsSome, IsNone
     ("bonus.unwrap_or(0)", "2"),
     ("maybe.unwrap_or(true)", "true"),
@@ -590,10 +607,12 @@ fn lookup_errors() {
         fails_in("e[0]", &empty),
         "index 0 is out of range of a list of 0 entries"
     );
-    assert_eq!(
-        fails_in("lookup(0, e)", &empty),
-        "`lookup` of an empty list has no entry to give"
-    );
+
+    // `lookup` gives none instead, of an empty list too.
+    let outcome = eval_in("lookup(0, e)", &empty, Limits::new()).unwrap();
+    assert_eq!(outcome.value, Value::none());
+    assert_eq!(eval("lookup(3, levels)"), Value::none());
+    assert_eq!(eval("lookup(2, levels)"), Value::some(int(30)));
 }
 
 #[test]
@@ -800,7 +819,7 @@ fn memory_budget() {
     let mut run = machine.load(&program).unwrap();
     run.bind("i", int(2)).unwrap();
     let outcome = run.run().unwrap();
-    assert_eq!(outcome.value, int(12));
+    assert_eq!(outcome.value, Value::some(int(12)));
     assert_eq!(outcome.memory, 7);
 
     let mut machine = Machine::new(Limits::new().memory(6));
@@ -1233,7 +1252,8 @@ fn option_layouts() {
                     ("o.unwrap_or(d)", unwrapped.clone()),
                     ("[o, o, o][2]", o.clone()),
                     ("[o, give()]", Value::list(vec![o.clone(), o.clone()])),
-                    ("lookup(9, [give(), o])", o.clone()),
+                    ("lookup(1, [give(), o])", o.clone()),
+                    ("lookup(9, [give(), o])", Value::none()),
                     ("r.o", o.clone()),
                     ("r.z", int(-5)),
                     ("l[1]", o.clone()),
@@ -1313,7 +1333,10 @@ fn list_of_optional_ints() {
         ("l[3].unwrap_or(5)", "-1"),
         ("l[0].unwrap_or(5)", "5"),
         ("lookup(-9, l)", "none"),
-        ("lookup(99, l)", "some(0)"),
+        ("lookup(99, l)", "none"),
+        ("lookup(0, l)", "none"),
+        ("lookup(1, l)", "some(-9223372036854775808)"),
+        ("lookup(4, l)", "some(0)"),
         ("l.len()", "5"),
         (
             "[l[2], o, l[0]]",
@@ -1435,7 +1458,7 @@ fn word_budget() {
         let mut machine = Machine::new(Limits::new().memory(base + words));
         let mut run = machine.load(&program).unwrap();
         run.bind("s", Value::from(s)).unwrap();
-        assert_eq!(run.run().unwrap().value, Value::from(s));
+        assert_eq!(run.run().unwrap().value, Value::some(Value::from(s)));
 
         if words > 0 {
             let mut machine = Machine::new(Limits::new().memory(base + words - 1));

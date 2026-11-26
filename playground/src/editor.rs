@@ -94,9 +94,10 @@ fn completions(ask: &Ask, bindings: &[Binding]) -> Option<Completions> {
         .map(|offer| {
             let (text, from, to) = complete::accept(&ask.text, &at, offer);
             let select = byte_of(&text, from)..byte_of(&text, to);
-            let detail = match &offer.ty {
-                Some(ty) => format!("{} · {ty}", offer.kind),
-                None => offer.kind.to_owned(),
+            let detail = match (&offer.signature, &offer.ty) {
+                (Some(signature), _) => signature.clone(),
+                (None, Some(ty)) => format!("{} · {ty}", offer.kind),
+                (None, None) => offer.kind.to_owned(),
             };
 
             Completion {

@@ -7,7 +7,7 @@ use crate::message::{Invalid, Message, StoreError};
 use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 2;
+pub(crate) const FORMAT: u32 = 3;
 
 /// One instruction of a stack machine over words of memory. A value takes
 /// the words its type's layout gives it: one for an `Int`, a `Bool` (0 or
@@ -75,7 +75,8 @@ pub(crate) enum Instr {
     Abs,
     /// `value.clamp(low, high)`.
     Clamp,
-    /// `lookup(index, list)` of a list of `T`s, clamped to its ends.
+    /// `lookup(index, list)` of a list of `T`s: an `Option<T>`, absent when
+    /// the index is out of range, or the entry itself when `T` is an option.
     Lookup(TypeId),
     /// `option.unwrap_or(default)` of this option type.
     UnwrapOr(TypeId),
@@ -623,7 +624,13 @@ impl Verifier<'_> {
                     need(stack.pop().and_then(|l| self.entry(l)), Some(entry))
                         .map_err(|_| fail(Invalid::LookupNonList))?;
                     need(stack.pop(), int)?;
-                    entry
+
+                    // An option of the entry, which is the entry itself
+                    // when it is an option.
+                    match self.types.get(entry) {
+                        Some(TypeNode::Option(_)) => entry,
+                        _ => self.find(TypeNode::Option(entry))?,
+                    }
                 }
                 Instr::List { len, entry } => {
                     self.known(entry)?;

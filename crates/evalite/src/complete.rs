@@ -5,8 +5,10 @@ use std::collections::HashSet;
 use std::fmt;
 
 use crate::Type;
-use crate::env::{Builtin, Environment, Overload};
-use crate::methods::{self, Receiver};
+use crate::env::{Environment, Overload};
+use crate::error::Arity;
+use crate::methods;
+use crate::sig::Shape;
 use crate::structure::{
     BinaryOp, EditError, EditKind, HOLE, Node, NodeId, Repr, Structure, StructureError, UnaryOp,
     escape, is_reserved,
@@ -81,6 +83,7 @@ pub struct Completion {
     pub(crate) label: String,
     pub(crate) kind: CompletionKind,
     pub(crate) ty: Option<Type>,
+    pub(crate) signature: Option<String>,
     pub(crate) insert: Insert,
 }
 
@@ -143,12 +146,48 @@ impl Completion {
     /// let all = s.complete(&env, s.root(), Some(&Type::int()))?;
     /// let ty = |label: &str| all.iter().find(|c| c.label() == label).map(|c| c.ty().cloned());
     /// assert_eq!(ty("bonus.unwrap_or(_)"), Some(Some(Type::int())));
-    /// // The builtin `lookup` gives whatever its list holds.
-    /// assert_eq!(ty("lookup(_, _)"), Some(None));
+    ///
+    /// // `lookup` gives an option of whatever its list holds: an
+    /// // `Option<Int>` where one is wanted, and not known where anything is.
+    /// let all = s.complete(&env, s.root(), Some(&Type::option(Type::int())))?;
+    /// let lookup = all.iter().find(|c| c.label() == "lookup(_, _)").ok_or("not offered")?;
+    /// assert_eq!(lookup.ty(), Some(&Type::option(Type::int())));
+    ///
+    /// let all = s.complete(&env, s.root(), None)?;
+    /// let lookup = all.iter().find(|c| c.label() == "lookup(_, _)").ok_or("not offered")?;
+    /// assert_eq!(lookup.ty(), None);
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn ty(&self) -> Option<&Type> {
         self.ty.as_ref()
+    }
+
+    /// The signature of the function or method it calls, generic over `T`
+    /// where it takes any type, or `None` for anything else.
+    ///
+    /// ```
+    /// use evalite::{Environment, Structure, Type};
+    ///
+    /// let mut env = Environment::with_builtins();
+    /// env.value("bonus", Type::option(Type::int()))?;
+    /// env.function("rating", [Type::string()], Type::int())?;
+    ///
+    /// let s = Structure::from_text("_")?;
+    /// let all = s.complete(&env, s.root(), None)?;
+    /// let signature = |label: &str| all.iter().find(|c| c.label() == label).and_then(|c| c.signature());
+    /// assert_eq!(signature("lookup(_, _)"), Some("lookup<T>(Int, List<T>) -> Option<T>"));
+    /// assert_eq!(signature("min(_, _)"), Some("min(Int, ...) -> Int"));
+    /// assert_eq!(signature("rating(_)"), Some("rating(String) -> Int"));
+    /// assert_eq!(signature("bonus"), None);
+    ///
+    /// // Where an `Int` is wanted, `bonus` is offered unwrapped.
+    /// let ints = s.complete(&env, s.root(), Some(&Type::int()))?;
+    /// let unwrap = ints.iter().find(|c| c.label() == "bonus.unwrap_or(_)").ok_or("not offered")?;
+    /// assert_eq!(unwrap.signature(), Some("Option<T>.unwrap_or(T) -> T"));
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn signature(&self) -> Option<&str> {
+        self.signature.as_deref()
     }
 }
 
@@ -268,6 +307,35 @@ impl Want {
         }
     }
 
+    /// Whether a result of `shape` can fit, its `T` not yet known: `None`
+    /// when it cannot, else the type it gives, when that is known.
+    fn fits_shape(&self, shape: Shape) -> Option<Option<Type>> {
+        if let Some(ty) = shape.resolve(None) {
+            return self.fits(&ty).then_some(Some(ty));
+        }
+
+        let Self::OneOf(patterns) = self else {
+            return Some(None);
+        };
+
+        let mut fitting = patterns.iter().filter(|p| match p {
+            Pattern::Type(ty) => shape.bind(ty, &mut None),
+            Pattern::List => matches!(shape, Shape::List(_) | Shape::Var),
+            Pattern::Record | Pattern::Field(_) => shape == Shape::Var,
+            Pattern::Method(name) => {
+                shape == Shape::Var
+                    || shape
+                        .resolve(Some(&Type::int()))
+                        .is_some_and(|ty| receiver_methods(&ty).any(|m| m.name == name))
+            }
+        });
+
+        match (fitting.next()?, fitting.next()) {
+            (Pattern::Type(ty), None) => Some(Some(ty.clone())),
+            _ => Some(None),
+        }
+    }
+
     /// Whether anything fits.
     fn is_open(&self) -> bool {
         !matches!(self, Self::OneOf(p) if p.is_empty())
@@ -355,10 +423,7 @@ impl Want {
 }
 
 fn receiver_methods(ty: &Type) -> impl Iterator<Item = &'static methods::MethodSig> {
-    Receiver::of(ty)
-        .map(|(receiver, _)| methods::methods(receiver))
-        .into_iter()
-        .flatten()
+    methods::methods_of(ty)
 }
 
 impl Structure {
@@ -549,8 +614,7 @@ impl Structure {
                 }) => {
                     let sig = name.as_deref().and_then(|name| {
                         let ty = self.type_of(env, *receiver)?;
-                        let (kind, _) = Receiver::of(&ty)?;
-                        Some(methods::find(kind, name)?.signature(&ty))
+                        Some(methods::find(&ty, name)?.signature(&ty))
                     });
 
                     match (args.iter().position(|a| *a == at), sig, name) {
@@ -632,19 +696,30 @@ impl Structure {
 
         for overload in overloads {
             match overload {
-                Overload::Builtin(Builtin::Min | Builtin::Max) => {
-                    if (0..args.len()).all(|i| fits(i, &|t| *t == Type::int())) {
-                        want.push(Pattern::Type(Type::int()));
-                    }
-                }
-                Overload::Builtin(Builtin::Lookup) => {
-                    let list = |t: &Type| matches!(t, Type(Kind::List(_)));
+                Overload::Builtin(builtin) => {
+                    let sig = builtin.signature();
 
-                    if args.len() == 2 && fits(0, &|t| *t == Type::int()) && fits(1, &list) {
-                        want.push(match n {
-                            0 => Pattern::Type(Type::int()),
-                            _ => Pattern::List,
-                        });
+                    let count = match sig.arity() {
+                        Arity::Exactly(k) => args.len() == k,
+                        Arity::AtLeast(k) => args.len() >= k,
+                    };
+
+                    // The `T` the other arguments bind, if they fit.
+                    let mut t = None;
+                    let others = (0..args.len()).all(|i| match (sig.param(i), known.get(i)) {
+                        (Some(param), Some(Some(ty))) => param.bind(ty, &mut t),
+                        (Some(_), _) => true,
+                        (None, _) => false,
+                    });
+
+                    let Some(param) = sig.param(n).filter(|_| count && others) else {
+                        continue;
+                    };
+
+                    match (param.resolve(t.as_ref()), param) {
+                        (Some(ty), _) => want.push(Pattern::Type(ty)),
+                        (None, Shape::List(_)) => want.push(Pattern::List),
+                        (None, _) => return Want::Any,
                     }
                 }
                 Overload::Host { params, .. } => {
@@ -701,16 +776,28 @@ impl Structure {
 
         for (name, overloads) in &env.functions {
             for overload in overloads {
-                let (arity, ret) = match overload {
-                    Overload::Builtin(Builtin::Min | Builtin::Max) => (2, Some(Type::int())),
-                    Overload::Builtin(Builtin::Lookup) => (2, None),
-                    Overload::Host { params, ret } => (params.len(), Some(ret.clone())),
+                let (arity, ty) = match overload {
+                    Overload::Builtin(builtin) => {
+                        let sig = builtin.signature();
+
+                        let Some(ty) = want.fits_shape(sig.ret) else {
+                            continue;
+                        };
+
+                        (sig.holes(), ty)
+                    }
+                    Overload::Host { params, ret } => {
+                        if !want.fits(ret) {
+                            continue;
+                        }
+
+                        (params.len(), Some(ret.clone()))
+                    }
                 };
 
-                if ret.as_ref().is_none_or(|ret| want.fits(ret)) {
-                    let label = format!("{name}({})", holes(arity));
-                    expr(&mut out, label, CompletionKind::Function, ret);
-                }
+                let label = format!("{name}({})", holes(arity));
+                let signature = overload.signature(name);
+                expr_signed(&mut out, label, CompletionKind::Function, ty, signature);
             }
         }
 
@@ -798,8 +885,24 @@ fn expr(out: &mut Vec<Completion>, label: String, kind: CompletionKind, ty: Opti
             label,
             kind,
             ty,
+            signature: None,
             insert: Insert::Expr(structure),
         });
+    }
+}
+
+/// Offer the call or method call `label` is the text of, of `signature`.
+fn expr_signed(
+    out: &mut Vec<Completion>,
+    label: String,
+    kind: CompletionKind,
+    ty: Option<Type>,
+    signature: String,
+) {
+    expr(out, label, kind, ty);
+
+    if let Some(last) = out.last_mut() {
+        last.signature = Some(signature);
     }
 }
 
@@ -830,7 +933,13 @@ fn paths(out: &mut Vec<Completion>, name: &str, ty: &Type, want: &Want) {
 
             if want.fits(&ret) {
                 let label = format!("{path}.{}({})", method.name, holes(params.len()));
-                expr(out, label, CompletionKind::Method, Some(ret));
+                expr_signed(
+                    out,
+                    label,
+                    CompletionKind::Method,
+                    Some(ret),
+                    method.describe(),
+                );
             }
         }
 
@@ -881,6 +990,7 @@ fn members(receiver: &Type, want: &Want) -> Vec<Completion> {
                     label,
                     kind: CompletionKind::Field,
                     ty: Some(ty.clone()),
+                    signature: None,
                     insert: Insert::Field(name.clone()),
                 });
             }
@@ -895,6 +1005,7 @@ fn members(receiver: &Type, want: &Want) -> Vec<Completion> {
                 label: format!("{}({})", method.name, holes(params.len())),
                 kind: CompletionKind::Method,
                 ty: Some(ret),
+                signature: Some(method.describe()),
                 insert: Insert::Method {
                     name: method.name.to_owned(),
                     args: params.len(),

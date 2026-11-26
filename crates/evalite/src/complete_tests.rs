@@ -88,7 +88,6 @@ const BOOL: &[&str] = &[
     "m.brawl.is_none()",
     "m.brawl.is_some()",
     "m.flags.frenzy",
-    "lookup(_, _)",
     "true",
     "false",
     "_ == _",
@@ -147,35 +146,32 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         ("_", 0, None, ANY.to_vec()),
         ("_", 0, Some(Type::int()), INT.to_vec()),
         ("_", 0, Some(Type::bool()), BOOL.to_vec()),
+        // `lookup` gives an option, so it fits where one is wanted.
         (
             "_",
             0,
-            Some(Type::string()),
-            vec!["table", "lookup(_, _)", r#""""#],
+            Some(Type::option(Type::int())),
+            vec!["bonus", "m.brawl", "lookup(_, _)"],
         ),
+        ("_", 0, Some(Type::string()), vec!["table", r#""""#]),
         (
             "_",
             0,
             Some(Type::list(Type::int())),
-            vec!["dots", "health.count", "lookup(_, _)", "[_]"],
+            vec!["dots", "health.count", "[_]"],
         ),
-        (
-            "_",
-            0,
-            Some(Type::list(Type::bool())),
-            vec!["lookup(_, _)", "[_]"],
-        ),
+        ("_", 0, Some(Type::list(Type::bool())), vec!["[_]"]),
         (
             "_",
             0,
             Some(crate::check_tests::track()),
-            vec!["health", "broken(_)", "lookup(_, _)"],
+            vec!["health", "broken(_)"],
         ),
         (
             "_",
             0,
             Some(Type::record([("nothing", Type::bool())])),
-            vec!["lookup(_, _)"],
+            vec![],
         ),
         // Operands.
         ("1 + _", 0, None, INT.to_vec()),
@@ -187,19 +183,9 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         ("wits != _", 0, None, INT.to_vec()),
         ("_ == _", 0, None, int_or_bool_sorted()),
         // Call arguments, by the overloads the other arguments leave.
-        (
-            "count(_)",
-            0,
-            None,
-            vec!["health", "broken(_)", "lookup(_, _)"],
-        ),
+        ("count(_)", 0, None, vec!["health", "broken(_)"]),
         ("count(health, _)", 0, None, INT.to_vec()),
-        (
-            "count(_, 1)",
-            0,
-            None,
-            vec!["health", "broken(_)", "lookup(_, _)"],
-        ),
+        ("count(_, 1)", 0, None, vec!["health", "broken(_)"]),
         ("count(_, _, _)", 0, None, vec![]),
         ("max(_)", 0, None, INT.to_vec()),
         ("min(1, _, 3)", 0, None, INT.to_vec()),
@@ -209,27 +195,13 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             "lookup(_, _)",
             1,
             None,
-            vec![
-                "dots",
-                "health.count",
-                "table",
-                "lookup(_, _)",
-                r#""""#,
-                "[_]",
-            ],
+            vec!["dots", "health.count", "table", r#""""#, "[_]"],
         ),
         (
             "lookup(1, _)",
             0,
             None,
-            vec![
-                "dots",
-                "health.count",
-                "table",
-                "lookup(_, _)",
-                r#""""#,
-                "[_]",
-            ],
+            vec!["dots", "health.count", "table", r#""""#, "[_]"],
         ),
         ("lookup(_, table)", 0, None, INT.to_vec()),
         ("unknown(_)", 0, None, ANY.to_vec()),
@@ -246,15 +218,10 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             None,
             vec!["bonus", "m.brawl", "lookup(_, _)"],
         ),
-        (
-            "_.len()",
-            0,
-            None,
-            vec!["dots", "health.count", "lookup(_, _)"],
-        ),
+        ("_.len()", 0, None, vec!["dots", "health.count"]),
         ("_.abs()", 0, None, INT.to_vec()),
-        ("_.frenzy", 0, None, vec!["m.flags", "lookup(_, _)"]),
-        ("_.nothing", 0, None, vec!["lookup(_, _)"]),
+        ("_.frenzy", 0, None, vec!["m.flags"]),
+        ("_.nothing", 0, None, vec![]),
         // Indexes.
         ("dots[_]", 0, None, INT.to_vec()),
         (
@@ -268,19 +235,14 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
                 r#""flags""#,
             ],
         ),
-        (
-            "_[1]",
-            0,
-            None,
-            vec!["dots", "health.count", "lookup(_, _)", "[_]"],
-        ),
+        ("_[1]", 0, None, vec!["dots", "health.count", "[_]"]),
         (
             "_[_]",
             0,
             None,
-            vec!["dots", "health", "m", "broken(_)", "lookup(_, _)", "[_]"],
+            vec!["dots", "health", "m", "broken(_)", "[_]"],
         ),
-        (r#"_["Brawl (bar)"]"#, 0, None, vec!["m", "lookup(_, _)"]),
+        (r#"_["Brawl (bar)"]"#, 0, None, vec!["m"]),
         // List entries, by a sibling or the list's own type.
         ("[1, _]", 0, None, INT.to_vec()),
         ("[_, dead]", 0, None, BOOL.to_vec()),
@@ -299,9 +261,9 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             "_[0]",
             0,
             Some(Type::int()),
-            vec!["dots", "health.count", "lookup(_, _)", "[_]"],
+            vec!["dots", "health.count", "[_]"],
         ),
-        ("_[0]", 0, Some(Type::bool()), vec!["lookup(_, _)", "[_]"]),
+        ("_[0]", 0, Some(Type::bool()), vec!["[_]"]),
         ("[_][0]", 0, Some(Type::bool()), BOOL.to_vec()),
         // Member holes, by the receiver's type and what the place takes.
         (
@@ -406,8 +368,13 @@ fn completion_kinds_and_types() {
     assert_eq!(find("bonus.unwrap_or(_)").ty, Some(Type::int()));
     assert_eq!(find("count(_)").kind, CompletionKind::Function);
     assert_eq!(find("count(_)").ty, Some(Type::int()));
-    // The builtin `lookup` gives whatever its list holds.
-    assert_eq!(find("lookup(_, _)").ty, None);
+    // The builtin `lookup` gives an option, so this is the caller's
+    // `lookup(Int, String) -> Int`.
+    assert_eq!(find("lookup(_, _)").ty, Some(Type::int()));
+    assert_eq!(
+        find("lookup(_, _)").signature(),
+        Some("lookup(Int, String) -> Int")
+    );
     assert_eq!(find("0").kind, CompletionKind::Literal);
     assert_eq!(find("_ + _").kind, CompletionKind::Operator);
 
@@ -565,6 +532,7 @@ fn applying_members() {
         label: "bonus.unwrap_or(_)".into(),
         kind: CompletionKind::Method,
         ty: Some(Type::int()),
+        signature: None,
         insert: Insert::Expr(self::s("bonus.unwrap_or(_)")),
     };
     s.apply(one, &completion).unwrap();
@@ -576,6 +544,7 @@ fn field(name: &str) -> Completion {
         label: name.into(),
         kind: CompletionKind::Field,
         ty: None,
+        signature: None,
         insert: Insert::Field(name.into()),
     }
 }
@@ -585,6 +554,7 @@ fn method(name: &str, args: usize) -> Completion {
         label: name.into(),
         kind: CompletionKind::Method,
         ty: None,
+        signature: None,
         insert: Insert::Method {
             name: name.into(),
             args,
@@ -616,13 +586,11 @@ fn filling_a_form() {
     pick(&mut s, int, "health");
     pick(&mut s, int, "lookup(_, _)");
     pick(&mut s, int, "wits");
-    pick(&mut s, int, "[_]");
-    pick(&mut s, int, "-_");
-    pick(&mut s, int, "0");
+    pick(&mut s, int, r#""""#);
 
     assert_eq!(
         s.to_text(),
-        "m.brawl.unwrap_or(0) + count(health, lookup(wits, [-(0)]))"
+        r#"m.brawl.unwrap_or(0) + count(health, lookup(wits, ""))"#
     );
     assert!(s.holes().is_empty());
     assert_eq!(s.compile(&env).unwrap().result_type(), Type::int());
@@ -690,9 +658,8 @@ fn method_table_matches_the_checker() {
 
     for (n, ty) in receivers.iter().enumerate() {
         let names = crate::methods::method_names(ty);
-        let (kind, _) = crate::methods::Receiver::of(ty).unwrap();
 
-        for sig in crate::methods::methods(kind) {
+        for sig in crate::methods::methods_of(ty) {
             assert!(names.contains(&sig.name));
             let (params, ret) = sig.signature(ty);
 

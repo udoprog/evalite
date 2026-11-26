@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::Type;
+use crate::sig::{Shape, Signature};
 use crate::types::{TypeFault, check_type, is_value_name};
 
 /// A function evalite itself provides, which a caller adds to an
@@ -13,8 +14,11 @@ pub enum Builtin {
     Min,
     /// `max(a, b, ...)`: the greatest of one or more `Int`s.
     Max,
-    /// `lookup(index, list)`: the `List<T>`'s entry at an `Int` index,
-    /// clamped to its ends, so `lookup(9, [1, 2])` is `2`.
+    /// `lookup(index, list)`: the `List<T>`'s entry at an `Int` index, from
+    /// 0, or none when the index is out of range, so `lookup(1, [10, 20])`
+    /// is `some(20)` and `lookup(2, [10, 20])` is `none`. A list of
+    /// options gives the option itself, since `Option<Option<T>>` is not a
+    /// type.
     Lookup,
 }
 
@@ -38,12 +42,32 @@ impl Builtin {
         }
     }
 
-    /// Its parameters as an error lists them.
-    pub(crate) fn describe(self) -> &'static str {
+    /// What it takes and gives.
+    pub(crate) fn signature(self) -> Signature {
+        const T: Shape = Shape::Var;
+
         match self {
-            Self::Min | Self::Max => "(Int, ...)",
-            Self::Lookup => "(Int, List<T>)",
+            Self::Min | Self::Max => Signature::repeating(&[Shape::Int], Shape::Int),
+            Self::Lookup => Signature::new(&[Shape::Int, Shape::List(&T)], Shape::Option(&T)),
         }
+    }
+}
+
+/// Its signature, generic over `T` where it takes any type.
+///
+/// ```
+/// use evalite::Builtin;
+///
+/// let signatures = Builtin::ALL.map(|b| b.to_string());
+/// assert_eq!(signatures, [
+///     "min(Int, ...) -> Int",
+///     "max(Int, ...) -> Int",
+///     "lookup<T>(Int, List<T>) -> Option<T>",
+/// ]);
+/// ```
+impl fmt::Display for Builtin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.signature().describe(self.name()))
     }
 }
 
@@ -59,9 +83,18 @@ pub(crate) enum Overload {
 }
 
 impl Overload {
+    /// It in full, called `name`: `lookup<T>(Int, List<T>) -> Option<T>`.
+    pub(crate) fn signature(&self, name: &str) -> String {
+        match self {
+            Self::Builtin(builtin) => builtin.signature().describe(name),
+            Self::Host { ret, .. } => format!("{name}{} -> {ret}", self.describe()),
+        }
+    }
+
+    /// Its parameters as an error lists them, such as `(Int, List<T>)`.
     pub(crate) fn describe(&self) -> String {
         match self {
-            Self::Builtin(builtin) => builtin.describe().to_owned(),
+            Self::Builtin(builtin) => builtin.signature().describe_params(),
             Self::Host { params, .. } => {
                 let params = params.iter().map(Type::to_string).collect::<Vec<_>>();
                 format!("({})", params.join(", "))

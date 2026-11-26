@@ -119,7 +119,9 @@ comparisons, which do not chain (`a < b < c` is an error):
 | `&&`                         | `Bool`s, the right skipped when the left is `false` | `Bool` |
 | <code>&#124;&#124;</code>    | `Bool`s, the right skipped when the left is `true`  | `Bool` |
 
-Methods, which chain, as in `bonus.unwrap_or(0).max(1)`:
+Methods, which chain, as in `bonus.unwrap_or(0).max(1)`. A `T` is whatever
+the receiver holds, so `bonus.unwrap_or(0)` of an `Option<Int>` takes and
+gives an `Int`:
 
 | On          | Methods                                                      |
 |-------------|--------------------------------------------------------------|
@@ -128,11 +130,23 @@ Methods, which chain, as in `bonus.unwrap_or(0).max(1)`:
 | `List<T>`   | `len() -> Int`                                               |
 
 Functions are called by name, `min(a, b)`. The builtins, from
-[`Environment::with_builtins`], are `min(Int, ...)` and `max(Int, ...)`,
-of one or more `Int`s, and `lookup(Int, List<T>)`, a list's entry at an
-index clamped to its ends. Every other name, value or function, is one the
-caller declares, with its type. A function name may be declared several
-ways, and a call takes the first whose parameters match:
+[`Environment::with_builtins`], are:
+
+| Function                               | Gives                                     |
+|----------------------------------------|-------------------------------------------|
+| `min(Int, ...) -> Int`                 | the least of one or more `Int`s           |
+| `max(Int, ...) -> Int`                 | the greatest of one or more `Int`s        |
+| `lookup<T>(Int, List<T>) -> Option<T>` | the entry at an index from 0, or `none` when the index is out of range |
+
+`lookup` is generic: its `T` is whatever the list holds, so
+`lookup(1, [10, 20])` is `some(20)`, an `Option<Int>`, and
+`lookup(2, [10, 20])` is `none`. Unwrap it like any option, as in
+`lookup(rank, [10, 20, 30]).unwrap_or(0)`. On a list of options it gives
+the entry itself, since `Option<Option<T>>` is not a type.
+
+Every other name, value or function, is one the caller declares, with its
+type. A function name may be declared several ways, and a call takes the
+first whose parameters match:
 
 ```rust
 use evalite::{Environment, Type};
@@ -186,7 +200,7 @@ known when it is compiled, and [`Machine::load`] refuses one that needs
 more than the machine has. Running out of fuel stops the run. There are no
 loops, so most expressions use a few dozen steps. Faults are errors, never
 panics: `Int` overflow, division by zero, `list[i]` past either end
-(`lookup` clamps instead), `clamp` with its bounds the wrong way round, and
+(`lookup` gives `none` instead), `clamp` with its bounds the wrong way round, and
 a host function's failure or wrongly typed result.
 
 ```rust
@@ -353,11 +367,14 @@ error: index 3 is out of range of a list of 2 entries
   = while running instruction 2
   = while running the program
 
-$ evalite eval 'lookup(rank, [10, 20, 30]) * 2' --var rank:Int=7 --explain
-60 : Int
+$ evalite eval 'lookup(rank, [10, 20, 30])' --var rank:Int=7
+none : Option<Int>
+
+$ evalite eval 'lookup(rank, [10, 20, 30]).unwrap_or(0) * 2' --var rank:Int=1 --explain
+40 : Int
 type: Int
-memory: 6 words at most (stack 2, heap 0, constants 3, values read 1), 6 used
-steps: 5
+memory: 7 words at most (stack 3, heap 0, constants 3, values read 1), 7 used
+steps: 7
 ```
 
 Without an expression it reads one per line from stdin. `--max-depth`,

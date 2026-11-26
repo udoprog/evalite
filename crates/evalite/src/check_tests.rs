@@ -203,11 +203,17 @@ fn functions() {
         ("min(wits)", "Int"),
         ("min(wits, dexterity)", "Int"),
         ("max(dexterity, wits, 7)", "Int"),
-        ("lookup(wits, [10, 11, 12])", "Int"),
-        ("lookup(wits, levels)", "Int"),
-        ("lookup(wits, grid)", "List<Int>"),
-        ("lookup(1, [true, false])", "Bool"),
-        ("lookup(1, tracks)", "{boxes: Int, count: List<Int>}"),
+        ("lookup(wits, [10, 11, 12])", "Option<Int>"),
+        ("lookup(wits, levels)", "Option<Int>"),
+        ("lookup(wits, grid)", "Option<List<Int>>"),
+        ("lookup(1, [true, false])", "Option<Bool>"),
+        (
+            "lookup(1, tracks)",
+            "Option<{boxes: Int, count: List<Int>}>",
+        ),
+        ("lookup(1, [bonus])", "Option<Int>"),
+        ("lookup(1, [maybe, maybe])", "Option<Bool>"),
+        ("lookup(1, levels).unwrap_or(0)", "Int"),
         (r#"lookup(primal_urge, "Essence (1e)")"#, "Int"),
         ("count(health)", "Int"),
         ("count(health, 2)", "Int"),
@@ -260,10 +266,10 @@ fn current_expressions() {
         ("-dexterity + 1", "Int"),
         ("min(wits, dexterity) + athletics", "Int"),
         ("max (wits)", "Int"),
-        ("lookup(blood_potency, [10, 11, 12 , 13])", "Int"),
-        ("lookup(blood_potency + 5, [10, 11, 12, 13])", "Int"),
-        ("lookup(-wits, [10, 11])", "Int"),
-        ("lookup(0, [wits + 1])", "Int"),
+        ("lookup(blood_potency, [10, 11, 12 , 13])", "Option<Int>"),
+        ("lookup(blood_potency + 5, [10, 11, 12, 13])", "Option<Int>"),
+        ("lookup(-wits, [10, 11])", "Option<Int>"),
+        ("lookup(0, [wits + 1])", "Option<Int>"),
         (r#"lookup(primal_urge, "Essence (1e)")"#, "Int"),
         (r#"lookup(blood_potency, "Vitae \"2e\"")"#, "Int"),
         (
@@ -276,7 +282,7 @@ fn current_expressions() {
         // The same, read from the track's record.
         ("health.boxes", "Int"),
         ("health.count[2]", "Int"),
-        ("lookup(-4, health.count)", "Int"),
+        ("lookup(-4, health.count)", "Option<Int>"),
         (r#"health.boxes - m["a b"].boxes"#, "Int"),
         ("9223372036854775807 + 1", "Int"),
     ]);
@@ -909,11 +915,11 @@ fn redeclaring() {
     );
     assert_eq!(
         compile("lookup(1, [true])", &env).unwrap().result_type(),
-        Type::bool()
+        Type::option(Type::bool())
     );
     assert_eq!(
         compile("lookup(1, [[1]])", &env).unwrap().result_type(),
-        Type::list(Type::int())
+        Type::option(Type::list(Type::int()))
     );
 }
 
@@ -1034,7 +1040,7 @@ fn globals_and_functions() {
 
     // Builtins are the machine's own, not the caller's.
     assert!(
-        compile("min(1) + lookup(1, [1])", &env())
+        compile("min(1) + lookup(1, [1]).unwrap_or(0)", &env())
             .unwrap()
             .functions()
             .is_empty()
@@ -1235,7 +1241,7 @@ fn invalid(stored: &Stored) -> String {
 
 #[test]
 fn tampered_programs() {
-    let source = "wits + lookup(1, [2, 3]) + count(health)";
+    let source = "wits + lookup(1, [2, 3]).unwrap_or(0) + count(health)";
 
     // Unchanged, it loads.
     assert!(load(&stored(source)).is_ok());
@@ -1246,17 +1252,17 @@ fn tampered_programs() {
         (
             source,
             Box::new(|s| s.memory.stack -= 1),
-            "it declares 6 words of memory but uses 7: while verifying the program",
+            "it declares 7 words of memory but uses 8: while verifying the program",
         ),
         (
             source,
             Box::new(|s| s.memory.stack += 1),
-            "it declares 8 words of memory but uses 7: while verifying the program",
+            "it declares 9 words of memory but uses 8: while verifying the program",
         ),
         (
             source,
             Box::new(|s| s.memory.constants = 0),
-            "it declares 5 words of memory but uses 7: while verifying the program",
+            "it declares 6 words of memory but uses 8: while verifying the program",
         ),
         (
             "bonus",
@@ -1570,7 +1576,7 @@ fn stored_bytes_errors() {
 
     assert_eq!(
         format!("{:#}", load(&stored).unwrap_err()),
-        "it was stored in format 3, this evalite reads format 2: while reading a stored program"
+        "it was stored in format 4, this evalite reads format 3: while reading a stored program"
     );
 
     let error = Program::from_bytes(&[]).unwrap_err();
@@ -1618,7 +1624,7 @@ fn random_corruption() {
     let env = env();
 
     let sources = [
-        "lookup(blood_potency, [10, 11, 12, 13]) + count(health, 2)",
+        "lookup(blood_potency, [10, 11, 12, 13]).unwrap_or(0) + count(health, 2)",
         "flag && (wits > 1 || !maybe.unwrap_or(false))",
         r#"[[wits], [1, 2]][0][0] + m["Brawl (bar)"] + lookup(1, "Essence")"#,
     ];
@@ -1699,8 +1705,9 @@ pub(crate) fn generate(rng: &mut Rng, ty: &str, budget: usize) -> String {
                 }
                 8 => {
                     let i = generate(rng, "Int", b / 2);
-                    let l = generate(rng, "List<Int>", b / 2);
-                    format!("lookup({i}, {l})")
+                    let l = generate(rng, "List<Int>", b / 3);
+                    let d = generate(rng, "Int", b / 3);
+                    format!("lookup({i}, {l}).unwrap_or({d})")
                 }
                 9 => {
                     let l = generate(rng, "List<Int>", b / 2);
@@ -1741,10 +1748,16 @@ pub(crate) fn generate(rng: &mut Rng, ty: &str, budget: usize) -> String {
                 _ => format!("m.inner.deep || ({})", generate(rng, "Bool", b)),
             }
         }
-        "Option<Int>" => match rng.below(3) {
+        "Option<Int>" => match rng.below(4) {
             0 => "bonus".to_owned(),
             1 => "specialties.brawl".to_owned(),
-            _ => format!("label({})", generate(rng, "Int", budget.saturating_sub(1))),
+            2 => format!("label({})", generate(rng, "Int", budget.saturating_sub(1))),
+            _ => {
+                let b = budget.saturating_sub(1);
+                let i = generate(rng, "Int", b / 2);
+                let l = generate(rng, "List<Int>", b / 2);
+                format!("lookup({i}, {l})")
+            }
         },
         "List<Int>" if leaf => "levels".to_owned(),
         "List<Int>" => {

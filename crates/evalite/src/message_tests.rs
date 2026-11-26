@@ -263,11 +263,6 @@ fn every_message_with_and_without_a_program() {
             "index -1 is out of range of a list of 3 entries",
         ),
         (
-            Message::EmptyLookup,
-            "`lookup` of an empty list has no entry to give",
-            "`lookup` of an empty list has no entry to give",
-        ),
-        (
             Message::ClampBounds { low: 3, high: 1 },
             "`clamp` needs its low bound 3 to be at most its high bound 1",
             "`clamp` needs its low bound 3 to be at most its high bound 1",

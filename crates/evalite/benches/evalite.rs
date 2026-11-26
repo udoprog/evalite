@@ -243,11 +243,11 @@ fn cases() -> Vec<(&'static str, String)> {
         ("is_none_16", tests),
         (
             "lookup_literal",
-            "lookup(blood_potency, [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5])".to_owned(),
+            "lookup(blood_potency, [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5]).unwrap_or(0)".to_owned(),
         ),
         (
             "lookup_global",
-            "lookup(blood_potency, feeding) + lookup(humanity, table)".to_owned(),
+            "lookup(blood_potency, feeding).unwrap_or(0) + lookup(humanity, table).unwrap_or(0)".to_owned(),
         ),
         ("lookup_host", r#"lookup(blood_potency, "Essence")"#.to_owned()),
         (
@@ -301,9 +301,9 @@ fn sheet() -> Vec<String> {
             "min(dexterity, wits) + athletics",
             "min(wits, dexterity) + armor.unwrap_or(0)",
             "size + strength + dexterity",
-            "lookup(blood_potency, [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])",
-            "lookup(blood_potency, feeding)",
-            "lookup(humanity, table) + 1",
+            "lookup(blood_potency, [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]).unwrap_or(10)",
+            "lookup(blood_potency, feeding).unwrap_or(0)",
+            "lookup(humanity, table).unwrap_or(0) + 1",
             "vitae.boxes - vitae.count[1]",
             "humanity >= 5 || bonus_3.is_some()",
             "merits[0].unwrap_or(0) + merits[1].unwrap_or(0) + merits[2].unwrap_or(0)",
