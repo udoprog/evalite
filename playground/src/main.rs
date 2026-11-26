@@ -7,7 +7,6 @@ mod editor;
 mod eval;
 mod examples;
 mod share;
-mod vars;
 
 /// The playground's own classes (`style/`), from sockel-build.
 mod class {
@@ -24,6 +23,7 @@ const INSTALL: &str = "cargo add evalite";
 
 use std::rc::Rc;
 
+use evalite::{Type, Value};
 use gloo_timers::callback::Timeout;
 use yew::prelude::*;
 
@@ -98,8 +98,8 @@ fn row_binding(row: &Row) -> Result<Binding, RowError> {
         return Err(RowError::Name("the variable has no name".into()));
     }
 
-    let ty = vars::parse_type(&row.ty).map_err(RowError::Type)?;
-    let value = vars::parse_value(&ty, &row.value).map_err(RowError::Value)?;
+    let ty = Type::parse(&row.ty).map_err(|e| RowError::Type(e.to_string()))?;
+    let value = Value::parse(&row.value, &ty).map_err(|e| RowError::Value(e.to_string()))?;
 
     Ok(Binding {
         name: name.to_owned(),

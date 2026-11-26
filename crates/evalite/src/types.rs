@@ -329,7 +329,10 @@ impl fmt::Display for Type {
             match piece {
                 Piece::Text(text) => f.write_str(text)?,
                 Piece::Field(name) if is_field_name(name) => write!(f, "{name}: ")?,
-                Piece::Field(name) => write!(f, "{name:?}: ")?,
+                Piece::Field(name) => {
+                    crate::value::write_string(f, name)?;
+                    f.write_str(": ")?;
+                }
                 Piece::Type(ty) => match ty {
                     Type(Kind::Int) => f.write_str("Int")?,
                     Type(Kind::Bool) => f.write_str("Bool")?,

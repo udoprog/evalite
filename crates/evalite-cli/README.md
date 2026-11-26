@@ -9,8 +9,10 @@
 expressions that are safe to run on anyone's input.
 
 Variables are declared and bound with `--var name:Type=value`, where a
-type is `Int`, `Bool`, `String`, `Option<T>` or `List<T>`, and a value is
-`3`, `true`, `"text"`, `none`, `some(2)` or `[1, 2]`.
+type is `Int`, `Bool`, `String`, `Option<T>`, `List<T>` or a record such as
+`{boxes: Int}`, and a value is `3`, `true`, `"text"`, `none`, `some(2)`,
+`[1, 2]` or `{boxes: 7}`, as `Type::parse` and `Value::parse` read them. A
+top-level string may leave out its quotes.
 
 ```text
 $ evalite eval 'min(wits, dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'

@@ -107,6 +107,11 @@
 //!   `Option<Option<Int>>` is `none`, `some(none)` or `some(some(1))`, and
 //!   `x!!` unwraps both.
 //!
+//! Types and values are written the same way outside an expression, such as
+//! in a form or on a command line: [`Type::parse`] reads `Option<List<Int>>`
+//! or `{boxes: Int}`, and [`Value::parse`] reads a value of a type, such as
+//! `some([1, -2])` or `{boxes: 7}`. Both read back what `Display` prints.
+//!
 //! Operators, tightest first. Binary operators are left-associative, except
 //! comparisons, which do not chain (`a < b < c` is an error):
 //!
@@ -459,8 +464,10 @@
 //! [`Structure::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.to_bytes
 //! [`Structure`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html
 //! [`StructureError`]: https://docs.rs/evalite/latest/evalite/struct.StructureError.html
+//! [`Type::parse`]: https://docs.rs/evalite/latest/evalite/struct.Type.html#method.parse
 //! [`Value::as_int`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.as_int
 //! [`Value::int`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.int
+//! [`Value::parse`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.parse
 //! [completions]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.complete
 //! [labels]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html#method.labels
 
@@ -474,6 +481,7 @@ mod env;
 mod error;
 pub mod highlight;
 mod lexer;
+mod literal;
 mod message;
 mod methods;
 mod parser;
@@ -506,6 +514,9 @@ mod message_tests;
 
 #[cfg(test)]
 mod highlight_tests;
+
+#[cfg(test)]
+mod literal_tests;
 
 pub use self::check::{compile, compile_debug, compile_with};
 pub use self::complete::{CompleteError, Completion, CompletionKind};

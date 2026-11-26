@@ -480,7 +480,9 @@ impl fmt::Display for Value {
     }
 }
 
-fn write_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
+/// `s` in quotes, escaping `"` and `\\`, as [`Value::parse`] and
+/// [`Type::parse`](crate::Type::parse) read it back.
+pub(crate) fn write_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
     f.write_str("\"")?;
 
     for c in s.chars() {

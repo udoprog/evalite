@@ -2,6 +2,7 @@ use std::fmt;
 
 use syntree::Span;
 
+use crate::literal::{Expected, LiteralFound};
 use crate::message::{Labels, plural};
 use crate::types::Kind;
 use crate::{Syntax, Type};
@@ -471,6 +472,33 @@ pub(crate) enum ErrorKind {
     TooLarge,
     /// The diagnostics past [`MAX_DIAGNOSTICS`], which are left out.
     MoreErrors(usize),
+
+    /// A type or value literal longer than
+    /// [`DEFAULT_MAX_LEN`](crate::DEFAULT_MAX_LEN).
+    LiteralTooLong { len: usize, max: usize },
+    /// A type was expected.
+    ExpectedType(LiteralFound),
+    /// A word that names no type.
+    UnknownType(String),
+    /// A type literal nesting more than
+    /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH) levels.
+    LiteralTooDeep,
+    /// A punctuation character was expected.
+    ExpectedChar { expected: char, found: LiteralFound },
+    /// A record field's name was expected.
+    ExpectedFieldName(LiteralFound),
+    /// A value of the type was expected.
+    ExpectedValue { ty: Type, found: LiteralFound },
+    /// A literal is complete, but more follows it.
+    ExpectedEnd(LiteralFound),
+    /// An integer below the range of `Int`.
+    IntegerTooSmall,
+    /// A record field given twice.
+    DuplicateField(String),
+    /// A field the record type does not have.
+    NoSuchField { ty: Type, field: String },
+    /// A field of the record type that is given no value.
+    MissingField(String),
 }
 
 /// What a call calls, as an error names it.
@@ -801,6 +829,37 @@ impl fmt::Display for Diagnostic {
             ErrorKind::MoreErrors(n) => {
                 write!(f, "and {}", plural(*n, "more error", "more errors"))
             }
+            ErrorKind::LiteralTooLong { len, max } => write!(
+                f,
+                "the text is {} long, the limit is {max}",
+                plural(*len, "byte", "bytes"),
+            ),
+            ErrorKind::ExpectedType(found) => write!(f, "expected a type, found {found}"),
+            ErrorKind::UnknownType(name) => write!(
+                f,
+                "unknown type `{name}`, expected Int, Bool, String, Option<T>, List<T> or {{name: T}}"
+            ),
+            ErrorKind::LiteralTooDeep => write!(
+                f,
+                "this type nests more than {}",
+                plural(crate::MAX_TYPE_DEPTH, "level", "levels")
+            ),
+            ErrorKind::ExpectedChar { expected, found } => {
+                write!(f, "expected `{expected}`, found {found}")
+            }
+            ErrorKind::ExpectedFieldName(found) => {
+                write!(f, "expected a field name, found {found}")
+            }
+            ErrorKind::ExpectedValue { ty, found } => {
+                write!(f, "expected {}, found {found}", Expected(ty))
+            }
+            ErrorKind::ExpectedEnd(found) => write!(f, "expected the end, found {found}"),
+            ErrorKind::IntegerTooSmall => {
+                write!(f, "this integer is too small, the smallest is {}", i64::MIN)
+            }
+            ErrorKind::DuplicateField(name) => write!(f, "the field `{name}` is given twice"),
+            ErrorKind::NoSuchField { ty, field } => write!(f, "{ty} has no field `{field}`"),
+            ErrorKind::MissingField(name) => write!(f, "the field `{name}` has no value"),
         }
     }
 }

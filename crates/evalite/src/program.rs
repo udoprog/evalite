@@ -255,7 +255,23 @@ impl Program {
     }
 
     /// The values it reads, which are bound before it runs, with their
-    /// types.
+    /// types: each declared name the expression uses, once, and none it
+    /// does not.
+    ///
+    /// ```
+    /// use evalite::{Environment, Type};
+    ///
+    /// let mut env = Environment::with_builtins();
+    /// env.value("wits", Type::int())?;
+    /// env.value("bonus", Type::option(Type::int()))?;
+    /// env.value("unused", Type::bool())?;
+    ///
+    /// let program = evalite::compile("wits + bonus.unwrap_or(wits)", &env)?;
+    /// let mut names: Vec<_> = program.globals().into_iter().map(|(name, _)| name).collect();
+    /// names.sort();
+    /// assert_eq!(names, ["bonus", "wits"]);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
     pub fn globals(&self) -> Vec<(&str, Type)> {
         self.globals
             .iter()
