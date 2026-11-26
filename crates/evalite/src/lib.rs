@@ -33,7 +33,7 @@
 //!
 //! <br>
 //!
-//! ## Example
+//! ## Quick start
 //!
 //! Declare what an expression may use, compile it, then bind values and run
 //! it:
@@ -70,193 +70,71 @@
 //!
 //! <br>
 //!
-//! ## Types
+//! ## The language
 //!
-//! Every expression has one type, known when it is compiled; nothing
-//! converts implicitly.
+//! An expression is one line, such as `health.boxes - damage.len()` or
+//! `rank >= 3 && !flagged`. Every expression has one type, known when it is
+//! compiled, and nothing converts implicitly:
 //!
 //! - `Int`: a 64-bit signed integer, such as `12` (`-12` is `-` applied to
 //!   `12`).
-//! - `Bool`: `true` or `false`, from comparisons and `!`, `&&`, `||`.
-//! - `String`: a literal such as `"Essence (1e)"`, naming a library table.
-//!   `\"` and `\\` are its only escapes.
-//! - `List<T>`: `[10, 11, 12]`, one or more entries of one type. `[]` is
-//!   an error, since it has no entry type.
-//! - `Option<T>`: a value that may be absent. It is unwrapped explicitly,
-//!   `x.unwrap_or(0)`, never used as a `T`. `Option<Option<T>>` is not a
-//!   type.
-//! - Records, written `{athletics: Int, "Brawl (bar)": Int}`: fields read
-//!   with `.athletics` or `["Brawl (bar)"]`, the latter only with a string
-//!   literal. A sheet's track is one, such as
-//!   `health: {boxes: Int, count: List<Int>}`, read as `health.boxes`.
+//! - `Bool`: `true` or `false`.
+//! - `String`: a literal such as `"Essence (1e)"`. `\"` and `\\` are its only
+//!   escapes.
+//! - `List<T>`: `[10, 11, 12]`, one or more entries of one type, so `[]` is an
+//!   error.
+//! - Records, such as `{boxes: Int, count: List<Int>}`: a field is read with
+//!   `.boxes`, or with `["Brawl (bar)"]` when its name is not a plain name.
+//! - `Option<T>`: a value that may be absent, which only comes from a name or
+//!   a function declared with it. It is never used as a `T`: unwrap it with
+//!   `x.unwrap_or(0)`, or test it with `x.is_some()` and `x.is_none()`.
+//!   `Option<Option<T>>` is not a type.
 //!
-//! The rules:
+//! Operators, tightest first. Binary operators are left-associative, except
+//! comparisons, which do not chain (`a < b < c` is an error):
 //!
-//! - `+ - * / %` and unary `-` take `Int`s; `< <= > >=` take two `Int`s and
-//!   give a `Bool`; `==` and `!=` take two `Int`s or two `Bool`s.
-//! - `&&`, `||` and `!` take `Bool`s; `&&` and `||` skip their right operand
-//!   when the left decides.
-//! - `list[i]` takes a `List<T>` and an `Int` and gives a `T`.
-//! - A call matches its function's declared parameters exactly.
+//! | Operators                    | Takes                        | Gives  |
+//! |------------------------------|------------------------------|--------|
+//! | `x.field`, `x.method(..)`, `list[i]` | a record, any value, a `List<T>` and an `Int` | its type |
+//! | unary `-`, `!`               | `Int`, `Bool`                | the same |
+//! | `*` `/` `%`                  | `Int`s                       | `Int`  |
+//! | `+` `-`                      | `Int`s                       | `Int`  |
+//! | `<` `<=` `>` `>=`            | `Int`s                       | `Bool` |
+//! | `==` `!=`                    | two `Int`s or two `Bool`s    | `Bool` |
+//! | `&&`                         | `Bool`s, the right skipped when the left is `false` | `Bool` |
+//! | <code>&#124;&#124;</code>    | `Bool`s, the right skipped when the left is `true`  | `Bool` |
 //!
-//! <br>
+//! Methods, which chain, as in `bonus.unwrap_or(0).max(1)`:
 //!
-//! ## Environment
+//! | On          | Methods                                                      |
+//! |-------------|--------------------------------------------------------------|
+//! | `Int`       | `abs() -> Int`, `min(Int) -> Int`, `max(Int) -> Int`, `clamp(Int, Int) -> Int` |
+//! | `Option<T>` | `unwrap_or(T) -> T`, `is_some() -> Bool`, `is_none() -> Bool` |
+//! | `List<T>`   | `len() -> Int`                                               |
 //!
-//! An [`Environment`] declares every name an expression may use, with its
-//! type, and every function. Values and functions are named apart, so a
-//! value `min` and the function `min(...)` can both exist. Names are
-//! lowercase, so `Strength` is unknown, with a hint when `strength` is
-//! declared.
-//!
-//! The [`Builtin`] functions are `min(Int, ...)` and `max(Int, ...)`, of
-//! one or more `Int`s, and `lookup(Int, List<T>)`, a list's entry at an
-//! index clamped to its ends. The caller declares the rest, such as
-//! `lookup(Int, String)` for a named table; a name declared several ways
-//! calls the first whose parameters the arguments match.
+//! Functions are called by name, `min(a, b)`. The builtins, from
+//! [`Environment::with_builtins`], are `min(Int, ...)` and `max(Int, ...)`,
+//! of one or more `Int`s, and `lookup(Int, List<T>)`, a list's entry at an
+//! index clamped to its ends. Every other name, value or function, is one the
+//! caller declares, with its type. A function name may be declared several
+//! ways, and a call takes the first whose parameters match:
 //!
 //! ```
 //! use evalite::{Environment, Type};
 //!
 //! let mut env = Environment::with_builtins();
 //! env.value("health", Type::record([("boxes", Type::int())]))?;
-//! env.value("specialties", Type::record([("brawl", Type::option(Type::int()))]))?;
 //! env.function("lookup", [Type::int(), Type::string()], Type::int())?;
 //!
-//! let program = evalite::compile("health.boxes + specialties.brawl.unwrap_or(0)", &env)?;
+//! let program = evalite::compile(r#"health.boxes + lookup(1, "Essence")"#, &env)?;
 //! assert_eq!(program.result_type(), Type::int());
 //!
 //! let error = evalite::compile("lookup(1, health)", &env).unwrap_err();
 //! assert_eq!(error.to_string(), "no `lookup` takes (Int, {boxes: Int}), it takes (Int, List<T>) or (Int, String)");
-//! assert_eq!(error.span().range(), 0..17);
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! <br>
-//!
-//! ## Programs
-//!
-//! [`compile`] gives a [`Program`]: code for a stack machine, with the
-//! values it reads and the caller's functions it calls, each with its
-//! type, so it runs without the environment.
-//!
-//! Memory is 64-bit words, and each type's layout is fixed when the
-//! program is compiled. An `Int` is a word, a `Bool` a word of 0 or 1, and
-//! a string, list or record a word referring to its parts: a string's
-//! bytes 8 to a word, a list's entries one after another, a record's
-//! fields in name order. An `Option<Int>` is two words, whether it is
-//! present and then the `Int`; every other option is one word, with a
-//! value no `Bool` or reference has for absent. A program's [`Memory`] is
-//! the deepest its stack gets, the entries of the lists it builds as it
-//! runs, its constants and the values it reads, all in words. There are
-//! no loops, so each instruction runs at most once.
-//!
-//! [`Program::to_bytes`] stores a program with `musli`, and
-//! [`Program::from_bytes`] reads it back. Stored bytes are not trusted: a
-//! loaded program is checked by running its code over types instead of
-//! values, and is refused unless it is well typed and uses exactly the
-//! memory it declares. That check is what lets the machine run on untyped
-//! words: nothing it runs looks at what a word is, and every name and
-//! field is an offset fixed when the program was compiled.
-//!
-//! ```
-//! use evalite::{Environment, Program, Type};
-//!
-//! let mut env = Environment::with_builtins();
-//! env.value("blood_potency", Type::int())?;
-//!
-//! let program = evalite::compile("lookup(blood_potency, [10, 11, 12, 13])", &env)?;
-//! assert_eq!(program.memory().stack(), 2);
-//! assert_eq!(program.memory().constants(), 4);
-//!
-//! let loaded = Program::from_bytes(&program.to_bytes()?)?;
-//! assert_eq!(loaded.globals(), [("blood_potency", Type::int())]);
-//! # Ok::<_, Box<dyn std::error::Error>>(())
-//! ```
-//!
-//! <br>
-//!
-//! ## Running
-//!
-//! A [`Machine`] runs programs in a fixed memory, [`DEFAULT_MEMORY`] words
-//! unless [`Limits::memory`] says otherwise, reserved when it is made.
-//! [`Machine::load`] refuses a program whose memory is more than that,
-//! saying how much it needs, and copies the program's constants in. Each
-//! value the program reads is then bound with [`Run::bind`], which checks
-//! it against the value's declared type and that its parts fit in the
-//! memory left; a missing or mistyped binding is an error, never a
-//! default. The caller's functions are a [`Host`], taking and giving
-//! [`Value`]s.
-//!
-//! A run takes at most [`DEFAULT_FUEL`] steps unless [`Limits::fuel`]
-//! says otherwise: one per instruction, one more per entry of a list,
-//! `min` or `max` it makes, and one per word of a value a function
-//! returns. Faults are errors, never panics: `Int` arithmetic that
-//! overflows, dividing by zero, `list[i]` past either end (`lookup`
-//! clamps instead), `clamp` with its bounds the wrong way round, and a
-//! function's failure or wrongly typed result.
-//!
-//! A [`RunError`] is opaque. It shows its message, `{:#}` shows the whole
-//! chain of what was being done, and [`RunError::labels`] gives each part
-//! with the program's names. With the [`DebugInfo`] from
-//! [`compile_debug`], each label also has the span of the expression that
-//! failed.
-//!
-//! ```
-//! use evalite::{Environment, Limits, Machine, Type, Value};
-//!
-//! let mut env = Environment::with_builtins();
-//! env.value("health", Type::record([("boxes", Type::int()), ("count", Type::list(Type::int()))]))?;
-//! env.value("brawl", Type::option(Type::int()))?;
-//! env.function("lookup", [Type::int(), Type::string()], Type::int())?;
-//!
-//! let program = evalite::compile(r#"health.count[1] + brawl.unwrap_or(0) + lookup(1, "Essence")"#, &env)?;
-//!
-//! let mut machine = Machine::new(Limits::new().fuel(100));
-//! let mut run = machine.load(&program)?;
-//! run.bind("health", Value::record([
-//!     ("boxes", Value::int(7)),
-//!     ("count", Value::list(vec![Value::int(3), Value::int(1)])),
-//! ]))?;
-//! run.bind("brawl", Value::none())?;
-//!
-//! let mut host = |name: &str, args: Vec<Value>| match (name, args.as_slice()) {
-//!     ("lookup", [n, table]) if n.as_int() == Some(1) && table.as_str() == Some("Essence") => Ok(Value::int(10)),
-//!     _ => Err(format!("no function {name}")),
-//! };
-//!
-//! let outcome = run.run_with(&mut host)?;
-//! assert_eq!(outcome.value(), &Value::int(11));
-//! assert_eq!(outcome.steps(), 12);
-//!
-//! let error = Machine::new(Limits::new().memory(2)).load(&program).unwrap_err();
-//! assert_eq!(error.to_string(), "the program needs 8 words of memory, more than the 2 the machine allows");
-//! # Ok::<_, Box<dyn std::error::Error>>(())
-//! ```
-//!
-//! <br>
-//!
-//! ## Structures
-//!
-//! A [`Structure`] is an expression as data, the shape a form builds: a
-//! table of [`Node`]s, which may have holes (`_` as text) while it is being
-//! edited. It encodes with `musli`, and compiles exactly as its
-//! [`to_text`][Structure::to_text] would, with the same errors, each also
-//! naming the [`NodeId`] it is about; a hole is an error. Writing one as
-//! text and parsing that back gives the same structure.
-//!
-//! [`Structure::complete`] lists what fits in a hole, for a form to offer:
-//! the values, paths into records, methods, calls, literals and operators
-//! whose type the hole's place takes, which comes from what holds it. At a
-//! member hole, `bonus._` with `bonus` an `Option<Int>` in an `Int`'s
-//! place, that is `unwrap_or(_)`. [`Structure::apply`] fills the hole with
-//! one, leaving holes for its arguments.
-//!
-//! <br>
-//!
-//! ## Grammar
-//!
-//! Lowest precedence first; whitespace may separate any two tokens.
+//! The whole grammar, loosest first; whitespace may separate any two tokens:
 //!
 //! ```text
 //! expr     = or
@@ -275,31 +153,205 @@
 //! string   = '"' ([^"\\] | '\"' | '\\')* '"'
 //! ```
 //!
-//! Binary operators are left-associative, except comparisons, which do not
-//! chain (`a < b < c` is an error). Every expression a computed widget
-//! stores today is in this grammar: a value key such as `health[2]` or
-//! `m["Brawl (bar)"]` is a name with field and index postfixes.
+//! <br>
+//!
+//! ## Limits and safety
+//!
+//! Three limits bound everything an expression can do, so it is safe to run
+//! whatever a user typed:
+//!
+//! | Limit   | Bounds                                                              | Default                | Set with             |
+//! |---------|---------------------------------------------------------------------|------------------------|----------------------|
+//! | Nesting | each parenthesis, list, call, index and unary operator nests a level | [`DEFAULT_MAX_DEPTH`] (32) | [`Options::max_depth`] |
+//! | Memory  | 64-bit words for the stack, built lists, constants and bound values  | [`DEFAULT_MEMORY`] (1024)  | [`Limits::memory`]     |
+//! | Fuel    | steps: one per instruction, plus one per list entry built or word a function returns | [`DEFAULT_FUEL`] (1000) | [`Limits::fuel`] |
+//!
+//! Going too deep is a compile error at the construct that did; the parser
+//! never recurses, so no input overflows the stack. A program's memory is
+//! known when it is compiled, and [`Machine::load`] refuses one that needs
+//! more than the machine has. Running out of fuel stops the run. There are no
+//! loops, so most expressions use a few dozen steps. Faults are errors, never
+//! panics: `Int` overflow, division by zero, `list[i]` past either end
+//! (`lookup` clamps instead), `clamp` with its bounds the wrong way round, and
+//! a host function's failure or wrongly typed result.
+//!
+//! ```
+//! use evalite::{Environment, Limits, Machine, Options};
+//!
+//! let env = Environment::with_builtins();
+//!
+//! let error = evalite::compile_with("(((1)))", &env, &Options::new().max_depth(2)).unwrap_err();
+//! assert_eq!(error.to_string(), "this parenthesis nests too deeply, the limit is 2 levels of nesting");
+//!
+//! let program = evalite::compile("min(1, 2, 3, 4, 5) + 9223372036854775807", &env)?;
+//!
+//! let mut machine = Machine::new(Limits::new().fuel(3));
+//! let error = machine.load(&program)?.run().unwrap_err();
+//! assert_eq!(error.to_string(), "the expression took too long: it used all of its 3 steps");
+//!
+//! let mut machine = Machine::new(Limits::new());
+//! let error = machine.load(&program)?.run().unwrap_err();
+//! assert_eq!(error.to_string(), "`1 + 9223372036854775807` overflows an Int");
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! ```
 //!
 //! <br>
 //!
-//! ## Methods
+//! ## Storing programs
 //!
-//! Methods are called Rust-style on a value, `value.method(args)`, and
-//! chain: `some.field.unwrap_or(0).max(1)`. A name followed by `(` is a
-//! call of a function; `.name` without `(` is a field.
+//! A [`Program`] is everything needed to run an expression: its code, and the
+//! names and types of the values it reads and functions it calls. Compile
+//! when the user saves, store [`Program::to_bytes`], and run it on every
+//! change without parsing or checking again.
 //!
-//! - `Int`: `abs()`, `min(Int)`, `max(Int)`, `clamp(Int, Int)`.
-//! - `Option<T>`: `unwrap_or(T)`, `is_some()`, `is_none()`.
-//! - `List<T>`: `len()`.
+//! Stored bytes are not trusted. They start with a format version, and
+//! [`Program::from_bytes`] refuses another version, then checks the program
+//! again by running its code over types instead of values: it must be well
+//! typed and use exactly the memory it declares. That check is what lets the
+//! machine run on bare words without looking at them.
+//!
+//! A program carries no source text. To point run errors at the expression
+//! that failed, [`compile_debug`] also gives a [`DebugInfo`], which can be
+//! stored next to the program with [`DebugInfo::to_bytes`].
+//!
+//! ```
+//! use evalite::{DebugInfo, Environment, Machine, Options, Program, Type, Value};
+//!
+//! let mut env = Environment::with_builtins();
+//! env.value("rank", Type::int())?;
+//!
+//! let (program, debug) = evalite::compile_debug("10 / rank", &env, &Options::new())?;
+//! let (stored, stored_debug) = (program.to_bytes()?, debug.to_bytes()?);
+//!
+//! let program = Program::from_bytes(&stored)?;
+//! let debug = DebugInfo::from_bytes(&stored_debug)?;
+//! assert_eq!(program.globals(), [("rank", Type::int())]);
+//!
+//! let mut machine = Machine::default();
+//! let mut run = machine.load(&program)?;
+//! run.bind("rank", Value::int(0))?;
+//! let error = run.run().unwrap_err();
+//! let primary = error.labels(&program, Some(&debug)).next().and_then(|l| l.span());
+//! assert_eq!(primary.map(|s| s.range()), Some(0..9));
+//!
+//! assert!(Program::from_bytes(&stored[..stored.len() - 1]).is_err());
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! ```
 //!
 //! <br>
 //!
-//! ## Nesting
+//! ## Errors
 //!
-//! Each parenthesis, list, call's arguments, index and unary operator
-//! nests one level inside what holds it. Going past `max_depth` (32 unless
-//! set with `Options::max_depth`) is an error at the construct that went
-//! too deep. Chains of operators, fields and methods do not nest.
+//! Every error is opaque and implements `Display` and `std::error::Error`.
+//! Those that point into the input, [`ParseError`], [`StructureError`] and
+//! [`RunError`], give [`Label`]s: a message and the span it is about, the
+//! primary label first and then what explains it, such as where an unclosed
+//! bracket was opened or what was being done when a run failed. This is
+//! enough to draw them under the input, as the CLI does:
+//!
+//! ```
+//! use evalite::{Environment, Labels};
+//!
+//! fn render(source: &str, labels: Labels<'_>) -> String {
+//!     let mut out = String::new();
+//!
+//!     for label in labels {
+//!         let prefix = if label.is_primary() { "error" } else { "note" };
+//!         out.push_str(&format!("{prefix}: {}\n", label.message()));
+//!
+//!         if let Some(span) = label.span() {
+//!             let column = source.get(..span.start as usize).map_or(0, |s| s.chars().count());
+//!             let width = source.get(span.range()).map_or(1, |s| s.chars().count().max(1));
+//!             out.push_str(&format!("  {source}\n  {}{}\n", " ".repeat(column), "^".repeat(width)));
+//!         }
+//!     }
+//!
+//!     out
+//! }
+//!
+//! let source = "min(1, (2 + 3)";
+//! let error = evalite::compile(source, &Environment::with_builtins()).unwrap_err();
+//!
+//! assert_eq!(render(source, error.labels()), "\
+//! error: expected `)` to close the `(` at byte 3, found the end of the expression
+//!   min(1, (2 + 3)
+//!                 ^
+//! note: the `(` opened here
+//!   min(1, (2 + 3)
+//!      ^
+//! ");
+//! ```
+//!
+//! <br>
+//!
+//! ## Forms
+//!
+//! A [`Structure`] is an expression as data, the shape a form edits: a tree
+//! of [`Node`]s that may have holes, written `_`. [`Structure::complete`]
+//! lists what fits in a hole, by the type its place takes, and
+//! [`Structure::apply`] fills it, leaving holes for any arguments. A
+//! structure converts to and from text, stores with [`Structure::to_bytes`],
+//! and compiles with the same errors as its text, each also naming the
+//! [`NodeId`] it is about.
+//!
+//! ```
+//! use evalite::{Environment, Structure, Type};
+//!
+//! let mut env = Environment::with_builtins();
+//! env.value("wits", Type::int())?;
+//! env.value("bonus", Type::option(Type::int()))?;
+//! env.value("name", Type::string())?;
+//!
+//! let mut form = Structure::from_text("wits + bonus._")?;
+//! let hole = form.holes()[0];
+//!
+//! let fits = form.complete(&env, hole, None)?;
+//! assert_eq!(fits.iter().map(|c| c.label()).collect::<Vec<_>>(), ["unwrap_or(_)"]);
+//!
+//! form.apply(hole, &fits[0])?;
+//! assert_eq!(form.to_text(), "wits + bonus.unwrap_or(_)");
+//! assert!(form.compile(&env).is_err());
+//!
+//! let hole = form.holes()[0];
+//! let fits = form.complete(&env, hole, None)?;
+//! assert!(fits.iter().any(|c| c.label() == "wits"));
+//! assert!(!fits.iter().any(|c| c.label() == "name"));
+//!
+//! form.apply(hole, &fits.iter().find(|c| c.label() == "wits").unwrap())?;
+//! assert_eq!(form.compile(&env)?.result_type(), Type::int());
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! <br>
+//!
+//! ## The command line
+//!
+//! The `evalite` command runs expressions from the terminal, which is a quick
+//! way to try the language. Install it with `cargo install --git
+//! https://github.com/udoprog/evalite evalite-cli`. Variables are declared and
+//! bound with `--var name:Type=value`:
+//!
+//! ```text
+//! $ evalite eval 'min(wits, dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
+//! 3 : Int
+//!
+//! $ evalite eval 'skills[3] * 2' --var 'skills:List<Int>=[1, 2]'
+//! error: index 3 is out of range of a list of 2 entries
+//!   | skills[3] * 2
+//!   | ^^^^^^^^^
+//!   = while running instruction 2
+//!   = while running the program
+//!
+//! $ evalite eval 'lookup(rank, [10, 20, 30]) * 2' --var rank:Int=7 --explain
+//! 60 : Int
+//! type: Int
+//! memory: 6 words at most (stack 2, heap 0, constants 3, values read 1), 6 used
+//! steps: 5
+//! ```
+//!
+//! Without an expression it reads one per line from stdin. `--max-depth`,
+//! `--memory` and `--fuel` set the limits, and `evalite --help` lists the
+//! rest.
 //!
 //! <br>
 //!
@@ -317,37 +369,35 @@
 //! example covering its failure paths, which `#![deny(missing_docs)]` and
 //! clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 //!
-//! [`Builtin`]: https://docs.rs/evalite/latest/evalite/enum.Builtin.html
 //! [`compile_debug`]: https://docs.rs/evalite/latest/evalite/fn.compile_debug.html
-//! [`compile`]: https://docs.rs/evalite/latest/evalite/fn.compile.html
+//! [`DebugInfo::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.DebugInfo.html#method.to_bytes
 //! [`DebugInfo`]: https://docs.rs/evalite/latest/evalite/struct.DebugInfo.html
 //! [`DEFAULT_FUEL`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_FUEL.html
+//! [`DEFAULT_MAX_DEPTH`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MAX_DEPTH.html
 //! [`DEFAULT_MEMORY`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MEMORY.html
-//! [`Environment`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html
-//! [`Host`]: https://docs.rs/evalite/latest/evalite/trait.Host.html
+//! [`Environment::with_builtins`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html#method.with_builtins
+//! [`Label`]: https://docs.rs/evalite/latest/evalite/struct.Label.html
 //! [`Limits::fuel`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.fuel
 //! [`Limits::memory`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.memory
 //! [`Machine::load`]: https://docs.rs/evalite/latest/evalite/struct.Machine.html#method.load
-//! [`Machine`]: https://docs.rs/evalite/latest/evalite/struct.Machine.html
-//! [`Memory`]: https://docs.rs/evalite/latest/evalite/struct.Memory.html
 //! [`Node`]: https://docs.rs/evalite/latest/evalite/struct.Node.html
 //! [`NodeId`]: https://docs.rs/evalite/latest/evalite/struct.NodeId.html
+//! [`Options::max_depth`]: https://docs.rs/evalite/latest/evalite/struct.Options.html#method.max_depth
 //! [`ParseError::labels`]: https://docs.rs/evalite/latest/evalite/struct.ParseError.html#method.labels
+//! [`ParseError`]: https://docs.rs/evalite/latest/evalite/struct.ParseError.html
 //! [`Program::from_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Program.html#method.from_bytes
 //! [`Program::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Program.html#method.to_bytes
 //! [`Program`]: https://docs.rs/evalite/latest/evalite/struct.Program.html
-//! [`Run::bind`]: https://docs.rs/evalite/latest/evalite/struct.Run.html#method.bind
-//! [`RunError::labels`]: https://docs.rs/evalite/latest/evalite/struct.RunError.html#method.labels
 //! [`RunError`]: https://docs.rs/evalite/latest/evalite/struct.RunError.html
 //! [`Structure::apply`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.apply
 //! [`Structure::complete`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.complete
+//! [`Structure::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.to_bytes
 //! [`Structure`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html
+//! [`StructureError`]: https://docs.rs/evalite/latest/evalite/struct.StructureError.html
 //! [`Value::as_int`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.as_int
 //! [`Value::int`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.int
-//! [`Value`]: https://docs.rs/evalite/latest/evalite/struct.Value.html
 //! [completions]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.complete
 //! [labels]: https://docs.rs/evalite/latest/evalite/struct.ParseError.html#method.labels
-//! [Structure::to_text]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.to_text
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_errors_doc, clippy::missing_panics_doc)]

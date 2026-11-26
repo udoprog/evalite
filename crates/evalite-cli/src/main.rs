@@ -1,28 +1,32 @@
-//! `evalite`, a command line front end for evalite, a small, strictly typed
-//! expression evaluator.
+//! `evalite`, the command line for [evalite]: small, strictly typed
+//! expressions that are safe to run on anyone's input.
 //!
-//! Variables are declared and bound on the command line as
-//! `--var name:Type=value`, where a type is `Int`, `Bool`, `String`,
-//! `Option<T>` or `List<T>`, and a value is `3`, `true`, `"text"`, `none`,
-//! `some(2)` or `[1, 2]`.
+//! Variables are declared and bound with `--var name:Type=value`, where a
+//! type is `Int`, `Bool`, `String`, `Option<T>` or `List<T>`, and a value is
+//! `3`, `true`, `"text"`, `none`, `some(2)` or `[1, 2]`.
 //!
 //! ```text
-//! $ evalite eval 'strength + 2' --var strength:Int=3
-//! 5 : Int
+//! $ evalite eval 'min(wits, dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
+//! 3 : Int
 //!
-//! $ evalite eval 'bonus.unwrap_or(0) + 1' --var bonus:Option<Int>=none
-//! 1 : Int
+//! $ evalite eval 'skills[3] * 2' --var 'skills:List<Int>=[1, 2]'
+//! error: index 3 is out of range of a list of 2 entries
+//!   | skills[3] * 2
+//!   | ^^^^^^^^^
+//!   = while running instruction 2
+//!   = while running the program
 //!
-//! $ evalite --var strength:Int=3          # a loop over stdin, one expression per line
+//! $ evalite --var strength:Int=3          # one expression per line from stdin
 //! > strength * 2
 //! 6 : Int
 //! ```
 //!
-//! Limits are `--max-depth` (nesting), `--memory` (64-bit words) and `--fuel`
-//! (steps); `--explain` also prints the type, memory and steps. Errors
-//! print the expression with a caret under what is wrong, then what was
-//! being done, and exit non-zero.
-//! With no expression, `evalite` reads expressions from stdin until the end.
+//! `--max-depth` (nesting), `--memory` (64-bit words) and `--fuel` (steps)
+//! set the limits, and `--explain` also prints the type, memory and steps.
+//! An error prints the expression with a caret under what is wrong, then
+//! what was being done, and exits non-zero.
+//!
+//! [evalite]: https://docs.rs/evalite
 
 mod vars;
 
@@ -37,11 +41,25 @@ use evalite::{
 
 use crate::vars::{Var, VarError, parse_var};
 
+/// Shown after the options in `--help`.
+const AFTER_HELP: &str = "\
+Variables:
+  A type is Int, Bool, String, Option<T> or List<T>, and a value is 3, true,
+  \"text\", none, some(2) or [1, 2].
+
+Examples:
+  evalite eval 'strength + 2' --var strength:Int=3
+  evalite eval 'bonus.unwrap_or(0) + 1' --var 'bonus:Option<Int>=none'
+  evalite --var strength:Int=3          # one expression per line from stdin
+
+The language: https://docs.rs/evalite";
+
 #[derive(Parser)]
 #[command(
     name = "evalite",
     version,
-    about = "A small, strictly typed expression evaluator"
+    about = "Run small, strictly typed expressions, safe on anyone's input",
+    after_help = AFTER_HELP
 )]
 struct Cli {
     /// Declare and bind a variable, as `name:Type=value`.
