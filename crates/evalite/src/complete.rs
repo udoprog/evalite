@@ -371,6 +371,15 @@ impl Structure {
     /// name) these are its receiver's fields and methods; anywhere else,
     /// expressions to put in the node's place.
     ///
+    /// # Errors
+    ///
+    /// Returns a [`CompleteError`] when `at` is not a node of the structure, or
+    /// `at` is a member hole whose receiver does not compile, so its members
+    /// are not known; the receiver's [`StructureError`] is then its
+    /// [`source`](std::error::Error::source).
+    ///
+    /// # Examples
+    ///
     /// ```
     /// use evalite::{Environment, Structure, Type};
     ///
@@ -422,6 +431,13 @@ impl Structure {
 
     /// Fill node `at` with `completion`, one of [`complete`](Self::complete)'s
     /// for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EditError`] when `at` is not a node of the structure, when
+    /// `completion` is a field or method and `at` is neither, or when the edit
+    /// would break the tree, as [`graft`](Self::graft) and
+    /// [`replace`](Self::replace) do.
     pub fn apply(&mut self, at: NodeId, completion: &Completion) -> Result<(), EditError> {
         let (receiver, old_args) = match self.get(at) {
             Some(Node(Repr::Field { receiver, .. })) => (Some(*receiver), Vec::new()),

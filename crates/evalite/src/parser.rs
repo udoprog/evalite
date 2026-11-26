@@ -20,6 +20,19 @@ pub struct Options {
 }
 
 impl Options {
+    /// The default options: at most [`DEFAULT_MAX_DEPTH`] levels of
+    /// nesting.
+    ///
+    /// ```
+    /// use evalite::{Environment, Options};
+    ///
+    /// let env = Environment::with_builtins();
+    /// let deep = format!("{}1{}", "(".repeat(40), ")".repeat(40));
+    ///
+    /// assert!(evalite::compile_with(&deep, &env, &Options::new()).is_err());
+    /// assert!(evalite::compile_with(&deep, &env, &Options::new().max_depth(64)).is_ok());
+    /// assert_eq!(Options::new(), Options::default());
+    /// ```
     pub const fn new() -> Self {
         Self {
             max_depth: DEFAULT_MAX_DEPTH,

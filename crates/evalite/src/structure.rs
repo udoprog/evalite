@@ -971,6 +971,20 @@ impl Structure {
         self.root
     }
 
+    /// The node `id`; `None` when the structure has no such node.
+    ///
+    /// ```
+    /// use evalite::Structure;
+    ///
+    /// let big = Structure::from_text("[1, 2, 3, 4]")?;
+    /// let root = big.get(big.root()).ok_or("no root")?;
+    /// assert_eq!(root.children().len(), 4);
+    ///
+    /// let last = root.children().into_iter().max().ok_or("no entries")?;
+    /// assert_eq!(big.get(last).and_then(|n| n.as_int()), Some(4));
+    /// assert!(Structure::new().get(last).is_none());
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
     pub fn get(&self, id: NodeId) -> Option<&Node> {
         self.nodes.get(id.index())
     }
@@ -1005,6 +1019,12 @@ impl Structure {
 
     /// Add `node`, which is not yet part of anything. Its parts must be
     /// nodes that are not part of anything either.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EditError`] when a part of `node` is not a node of the
+    /// structure or is already part of something, or the structure has too many
+    /// nodes to number.
     pub fn add(&mut self, node: Node) -> Result<NodeId, EditError> {
         let id = NodeId(u32::try_from(self.nodes.len()).map_err(|_| EditKind::TooLarge)?);
         self.check_free(&node, None)?;
@@ -1016,6 +1036,12 @@ impl Structure {
 
     /// Replace node `at` with `node`. `at`'s old parts are no longer part
     /// of it, and so may be used again, such as by `node`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EditError`] when `at` or a part of `node` is not a node of
+    /// the structure, a part is already part of something else, or `node` would
+    /// hold `at` itself.
     pub fn replace(&mut self, at: NodeId, node: Node) -> Result<(), EditError> {
         let old = self.get(at).ok_or(EditKind::UnknownNode(at))?;
         let old_children = old.children();
@@ -1035,6 +1061,11 @@ impl Structure {
     }
 
     /// Make `id`, which is not part of anything, the whole expression.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EditError`] when `id` is not a node of the structure or is
+    /// part of something.
     pub fn set_root(&mut self, id: NodeId) -> Result<(), EditError> {
         if self.get(id).is_none() {
             return Err(EditKind::UnknownNode(id).into());
@@ -1049,6 +1080,11 @@ impl Structure {
     }
 
     /// Copy the expression of `other` in place of node `at`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EditError`] when `at` is not a node of the structure, or
+    /// the structure would have too many nodes to number.
     pub fn graft(&mut self, at: NodeId, other: &Structure) -> Result<(), EditError> {
         if self.get(at).is_none() {
             return Err(EditKind::UnknownNode(at).into());
@@ -1152,23 +1188,45 @@ impl Structure {
     /// Parse `source` into a structure, with the default [`Options`]. `_`
     /// is a hole, as a value or as a field's or method's name.
     /// Parentheses are dropped, and `-12` is the integer `-12`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParseError`] when `source` does not parse or nests deeper
+    /// than the default `max_depth`.
     pub fn from_text(source: &str) -> Result<Self, ParseError> {
         Self::from_text_with(source, &Options::new())
     }
 
     /// Parse `source` into a structure.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParseError`] when `source` does not parse or nests deeper
+    /// than `options` allows.
     pub fn from_text_with(source: &str, options: &Options) -> Result<Self, ParseError> {
         let tree = parse_with(source, options)?;
         from_tree(source, &tree)
     }
 
     /// Compile against `env`, with the default [`Options`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StructureError`] when the structure has a hole, a name that
+    /// cannot be written, or does not compile against `env`; its
+    /// [`node`](StructureError::node) says where.
     pub fn compile(&self, env: &Environment) -> Result<Program, StructureError> {
         self.compile_with(env, &Options::new())
     }
 
     /// Compile against `env`: the same program, or the same error, as
     /// compiling [`to_text`](Self::to_text), once it has no holes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StructureError`] when the structure has a hole, a name that
+    /// cannot be written, or its text does not compile against `env` with
+    /// `options`; its [`node`](StructureError::node) says where.
     pub fn compile_with(
         &self,
         env: &Environment,
@@ -1180,6 +1238,8 @@ impl Structure {
     /// Compile against `env` as [`compile_with`](Self::compile_with) does,
     /// also giving the [`DebugInfo`] whose spans are into
     /// [`to_text`](Self::to_text).
+    ///
+    /// # Examples
     ///
     /// ```
     /// use evalite::{Environment, Machine, Options, Structure};
@@ -1220,6 +1280,11 @@ impl Structure {
 
     /// The stored form, which [`Structure::from_bytes`] reads. Unused
     /// nodes are left out.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the structure cannot be encoded, which
+    /// does not happen in practice.
     pub fn to_bytes(&self) -> Result<Vec<u8>, StoreError> {
         let (nodes, root) = self.compact().ok_or_else(|| {
             StoreError::from(Invalid::NotOneTree).context(Message::StoringStructure)
@@ -1239,6 +1304,11 @@ impl Structure {
     }
 
     /// Read a stored structure, checking that its nodes are one tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when `bytes` do not decode, are of another
+    /// format version, or are nodes that are not one tree.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, StoreError> {
         let stored: Stored = musli::storage::from_slice(bytes).map_err(|e| {
             StoreError::new(Message::NotDecoded)

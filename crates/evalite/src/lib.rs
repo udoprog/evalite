@@ -235,6 +235,23 @@
 //! nests one level inside what holds it. Going past `max_depth` (32 unless
 //! set with `Options::max_depth`) is an error at the construct that went
 //! too deep. Chains of operators, fields and methods do not nest.
+//!
+//! ## What is public
+//!
+//! A type is public only if a caller needs to name it, and its insides are
+//! private: no public fields, and no public enums of internal variants.
+//! Callers build things through constructors, such as [`Value::int`], and
+//! read them through methods that never panic, such as [`Value::as_int`].
+//! Errors are opaque: they implement `Display` and `std::error::Error`, and
+//! where they point into source text they are inspected through
+//! `labels()`, as [`ParseError::labels`] is. A predicate is added only for a
+//! named caller that must tell errors apart. Items only the crate's own
+//! tests use are `pub(crate)`. Every public item is documented, with an
+//! example covering its failure paths, which `#![deny(missing_docs)]` and
+//! clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
+
+#![deny(missing_docs)]
+#![deny(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
 mod check;
 mod complete;

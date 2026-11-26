@@ -20,6 +20,14 @@ type N<'a> = Node<'a, Syntax, FlavorDefault>;
 /// Parse `source` and compile it against `env`, with the default
 /// [`Options`].
 ///
+/// # Errors
+///
+/// Returns a [`ParseError`] when `source` does not parse, nests deeper than
+/// `max_depth`, uses a name `env` does not declare, or does not type check. Its
+/// [`labels`](ParseError::labels) point into `source`.
+///
+/// # Examples
+///
 /// ```
 /// use evalite::{Environment, Type};
 ///
@@ -42,6 +50,11 @@ pub fn compile(source: &str, env: &Environment) -> Result<Program, ParseError> {
 }
 
 /// Parse `source` with `options` and compile it against `env`.
+///
+/// # Errors
+///
+/// As [`compile`]: a [`ParseError`] when `source` does not parse, nests deeper
+/// than `options` allows, or does not type check against `env`.
 pub fn compile_with(
     source: &str,
     env: &Environment,
@@ -54,6 +67,8 @@ pub fn compile_with(
 /// Parse `source` with `options` and compile it against `env`, also giving
 /// the [`DebugInfo`] that says where each instruction came from, for a
 /// [`RunError`](crate::RunError)'s labels.
+///
+/// # Examples
 ///
 /// ```
 /// use evalite::{Environment, Machine, Options, Type, Value};

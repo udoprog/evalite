@@ -19,6 +19,14 @@ pub enum Builtin {
 }
 
 impl Builtin {
+    /// Every builtin, as [`Environment::with_builtins`] declares them.
+    ///
+    /// ```
+    /// use evalite::Builtin;
+    ///
+    /// let names = Builtin::ALL.map(Builtin::name);
+    /// assert_eq!(names, ["min", "max", "lookup"]);
+    /// ```
     pub const ALL: [Builtin; 3] = [Self::Min, Self::Max, Self::Lookup];
 
     /// The name it is called by.
@@ -167,6 +175,13 @@ impl Environment {
 
     /// Declare a value `name` of type `ty`, replacing any value of that
     /// name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DeclareError`] when `name` is not a valid name (lowercase
+    /// letters, digits and `_`, starting with a letter or `_`), or `ty` holds
+    /// an `Option<Option<T>>` or nests deeper than
+    /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH).
     pub fn value(&mut self, name: &str, ty: Type) -> Result<(), DeclareError> {
         check_name(name)?;
         check(name, &ty)?;
@@ -188,6 +203,12 @@ impl Environment {
     /// such as `rating(String)` and `rating(String, Int)`; a call takes the
     /// first declaration its arguments' types match. Declaring the same
     /// parameters again replaces the return type.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DeclareError`] when `name` is not a valid name, or a
+    /// parameter or `ret` holds an `Option<Option<T>>` or nests deeper than
+    /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH).
     pub fn function(
         &mut self,
         name: &str,

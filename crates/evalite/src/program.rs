@@ -276,6 +276,12 @@ impl Program {
     }
 
     /// The program's stored form, which [`Program::from_bytes`] reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the program cannot be encoded, which a
+    /// program from [`compile`](crate::compile) or [`Program::from_bytes`] does
+    /// not do in practice.
     pub fn to_bytes(&self) -> Result<Vec<u8>, StoreError> {
         let stored = Stored {
             format: FORMAT,
@@ -297,6 +303,13 @@ impl Program {
 
     /// Read a stored program, checking that it is one evalite would compile:
     /// well formed, well typed, and using exactly the memory it declares.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when `bytes` do not decode, are of another
+    /// format version, or are a program that fails verification: ill typed, out
+    /// of bounds, or using other memory than it declares. Its `{:#}` chain says
+    /// where, such as "at instruction 0: while verifying the program".
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, StoreError> {
         let stored: Stored = musli::storage::from_slice(bytes).map_err(|e| {
             StoreError::new(Message::NotDecoded)

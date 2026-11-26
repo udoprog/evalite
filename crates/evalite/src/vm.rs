@@ -79,6 +79,43 @@ fn fault(fault: Fault) -> RunError {
 ///
 /// A closure `FnMut(&str, Vec<Value>) -> Result<Value, String>` is a host.
 pub trait Host {
+    /// Call the function `name` with `args`, which are of the types the
+    /// environment declared for it.
+    ///
+    /// # Errors
+    ///
+    /// The caller's own message, which fails the run with a [`RunError`]
+    /// whose [`source`](std::error::Error::source) it is.
+    ///
+    /// ```
+    /// use std::error::Error;
+    ///
+    /// use evalite::{Environment, Host, Machine, Type, Value};
+    ///
+    /// struct Ratings;
+    ///
+    /// impl Host for Ratings {
+    ///     fn call(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
+    ///         match (name, args.first().and_then(Value::as_str)) {
+    ///             ("rating", Some("brawl")) => Ok(Value::int(3)),
+    ///             _ => Err(format!("no rating for {args:?}")),
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut env = Environment::with_builtins();
+    /// env.function("rating", [Type::string()], Type::int())?;
+    /// let mut machine = Machine::default();
+    ///
+    /// let program = evalite::compile("rating(\"brawl\") + 1", &env)?;
+    /// let outcome = machine.load(&program)?.run_with(&mut Ratings)?;
+    /// assert_eq!(outcome.value().as_int(), Some(4));
+    ///
+    /// let program = evalite::compile("rating(\"melee\")", &env)?;
+    /// let error = machine.load(&program)?.run_with(&mut Ratings).unwrap_err();
+    /// assert!(error.source().is_some_and(|e| e.to_string().starts_with("no rating")));
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
     fn call(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String>;
 }
 
@@ -207,6 +244,11 @@ impl Machine {
     /// Get ready to run `program`, refusing it when its memory, the words
     /// of the values it reads included, is more than the machine has, and
     /// copying its constants into memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RunError`] when the program needs more memory, the values it
+    /// reads included, than the machine's [`Limits`] allow.
     pub fn load<'a>(&'a mut self, program: &'a Program) -> Result<Run<'a>, RunError> {
         let memory = program.memory();
         let needed = memory.total();
@@ -305,6 +347,12 @@ impl<'a> Run<'a> {
 
     /// Bind `value` to the value `name` the program reads, checking it is
     /// of its declared type and fits in the memory left.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RunError`] when the program reads no value `name`, it is
+    /// already bound, `value` is not of its declared type (the error's labels
+    /// give the path into `value`), or `value` does not fit in the memory left.
     pub fn bind(&mut self, name: &str, value: Value) -> Result<(), RunError> {
         let program = self.program;
 
@@ -353,11 +401,23 @@ impl<'a> Run<'a> {
     }
 
     /// Run the program, which calls none of the caller's functions.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RunError`] when a value the program reads is unbound, the
+    /// program runs out of fuel, an operation overflows or divides by zero, or
+    /// an index is out of range.
     pub fn run(self) -> Result<Outcome, RunError> {
         self.run_with(&mut NoHost)
     }
 
     /// Run the program, calling `host` for the caller's functions.
+    ///
+    /// # Errors
+    ///
+    /// As [`run`](Self::run), and when `host` fails a call or gives a value of
+    /// another type than declared; a failed call's message is the error's
+    /// [`source`](std::error::Error::source).
     pub fn run_with(mut self, host: &mut dyn Host) -> Result<Outcome, RunError> {
         let program = self.program;
 
