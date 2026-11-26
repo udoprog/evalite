@@ -111,6 +111,20 @@ a {
     letter-spacing: -0.02em;
 }
 
+// The project's mark beside the headline, as tall as its letters.
+.playground-logo {
+    display: block;
+    flex: none;
+    width: 0.9em;
+    height: 0.9em;
+
+    svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+    }
+}
+
 // The pitch under the headline: larger, in the muted ink.
 .playground-lead {
     margin: 0;

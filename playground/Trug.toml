@@ -3,4 +3,4 @@ target = "index.html"
 dist = "dist"
 
 [watch]
-watch = [".", "../crates/evalite/src"]
+watch = [".", "../crates/evalite/src", "../assets"]

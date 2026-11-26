@@ -18,6 +18,8 @@ const GITHUB: &str = "https://github.com/udoprog/evalite";
 const DOCS: &str = "https://docs.rs/evalite";
 const CRATES: &str = "https://crates.io/crates/evalite";
 const INSTALL: &str = "cargo add evalite";
+/// The square mark, inlined so its tile follows the page's theme.
+const LOGO: &str = include_str!("../../assets/logo.svg");
 
 use std::rc::Rc;
 
@@ -301,7 +303,10 @@ fn Hero() -> Html {
     html! {
         <header>
             <Stack gap={Gap::Loose}>
-                <h1 class={class::DISPLAY}>{ "evalite" }</h1>
+                <Cluster tag="h1" class={class::DISPLAY} gap={Gap::Tight} nowrap=true>
+                    <span class={class::LOGO} aria-hidden="true">{ Html::from_html_unchecked(LOGO.into()) }</span>
+                    { "evalite" }
+                </Cluster>
                 <p class={class::LEAD}>
                     { "Let your users write formulas like " }
                     <code class={class::CODE}>{ "min(wits, dexterity) + athletics" }</code>
