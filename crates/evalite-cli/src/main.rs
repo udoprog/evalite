@@ -9,7 +9,7 @@
 //! `3`, `true`, `"text"`, `none`, `some(2)` or `[1, 2]`.
 //!
 //! ```text
-//! $ evalite eval 'min(wits, dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
+//! $ evalite eval 'Int::min(wits, dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
 //! 3 : Int
 //!
 //! $ evalite eval 'skills[3] * 2' --var 'skills:List<Int>=[1, 2]'
@@ -108,7 +108,7 @@ fn main() -> ExitCode {
 
 /// Run the command; whether every expression evaluated.
 fn run(cli: &Cli) -> Result<bool, Box<dyn std::error::Error>> {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
 
     for var in &cli.vars {
         env.value(&var.name, var.ty.clone())

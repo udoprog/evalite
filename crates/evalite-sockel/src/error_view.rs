@@ -143,7 +143,7 @@ mod tests {
     }
 
     fn causes_of(source: &str) -> Vec<Vec<String>> {
-        let mut env = Environment::with_builtins();
+        let mut env = Environment::new();
         env.value("rank", Type::int()).unwrap();
         let errors = evalite::compile(source, &env).unwrap_err();
         errors.iter().map(|e| plain(causes(source, e))).collect()
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn a_secondary_label_has_its_note() {
-        let causes = causes_of("min(rank, 1");
+        let causes = causes_of("Int::min(rank, 1");
         let first = causes.first().unwrap();
         assert_eq!(first.len(), 4, "{first:?}");
         assert!(

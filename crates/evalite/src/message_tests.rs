@@ -16,7 +16,7 @@ use crate::types::TypeId;
 use crate::*;
 
 fn env() -> Environment {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
     env.value("strength", Type::int()).unwrap();
     env.value(
         "health",

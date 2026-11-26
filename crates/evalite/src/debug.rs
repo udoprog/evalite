@@ -17,7 +17,7 @@ use crate::message::{Invalid, Message, StoreError};
 /// ```
 /// use evalite::{DebugInfo, Environment, Options};
 ///
-/// let env = Environment::with_builtins();
+/// let env = Environment::new();
 /// let (_, debug) = evalite::compile_debug("1 + 2", &env, &Options::new())?;
 ///
 /// let loaded = DebugInfo::from_bytes(&debug.to_bytes()?)?;

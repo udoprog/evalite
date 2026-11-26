@@ -53,6 +53,27 @@ fn each_class() {
 }
 
 #[test]
+fn path() {
+    use Class::*;
+
+    assert_eq!(
+        texts("Int :: min(a)"),
+        [
+            (Type, "Int"),
+            (Whitespace, " "),
+            (Punctuation, "::"),
+            (Whitespace, " "),
+            (Ident, "min"),
+            (Punctuation, "("),
+            (Ident, "a"),
+            (Punctuation, ")"),
+        ]
+    );
+
+    assert_eq!(texts("Int:")[0], (Ident, "Int"));
+}
+
+#[test]
 fn member_after_whitespace() {
     assert_eq!(texts("a. b")[3], (Class::Member, "b"));
     assert_eq!(texts("a . b")[4], (Class::Member, "b"));

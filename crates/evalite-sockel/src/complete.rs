@@ -177,7 +177,7 @@ mod tests {
     use super::*;
 
     fn env() -> Environment {
-        let mut env = Environment::with_builtins();
+        let mut env = Environment::new();
         env.value("wits", Type::int()).unwrap();
         env.value("bonus", Type::option(Type::int())).unwrap();
         env.value(
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn the_right_hole_among_others() {
-        let source = "_ + max(_, wi)";
+        let source = "_ + Int::max(_, wi)";
         let labels = labels(source, 13);
         assert!(labels.iter().any(|l| l == "wits"), "{labels:?}");
     }

@@ -36,6 +36,7 @@ pub(crate) struct Rejected {
     pub(crate) token: Token,
 }
 
+#[derive(Clone)]
 pub(crate) struct Lexer<'a> {
     source: &'a str,
     at: usize,
@@ -155,6 +156,7 @@ impl<'a> Lexer<'a> {
                 ('>', Some('=')) => (Syntax::Ge, 2),
                 ('&', Some('&')) => (Syntax::AndAnd, 2),
                 ('|', Some('|')) => (Syntax::OrOr, 2),
+                (':', Some(':')) => (Syntax::ColonColon, 2),
                 ('=' | '&' | '|', _) => {
                     let kind = match c {
                         '=' => Syntax::EqEq,

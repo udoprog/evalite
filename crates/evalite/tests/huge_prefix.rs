@@ -55,7 +55,7 @@ fn varint(mut n: u64) -> Vec<u8> {
 
 #[test]
 fn huge_length_prefix() {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
     env.value("i", Type::int()).unwrap();
     let bytes = evalite::compile("i", &env).unwrap().to_bytes().unwrap();
     assert!(Program::from_bytes(&bytes).is_ok());

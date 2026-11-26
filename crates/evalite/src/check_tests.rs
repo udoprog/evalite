@@ -24,7 +24,7 @@ pub(crate) fn track() -> Type {
 
 /// The environment most tests compile against.
 pub(crate) fn env() -> Environment {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
 
     for name in [
         "wits",
@@ -203,9 +203,9 @@ fn every_method() {
 #[test]
 fn functions() {
     types(&[
-        ("min(wits)", "Int"),
-        ("min(wits, dexterity)", "Int"),
-        ("max(dexterity, wits, 7)", "Int"),
+        ("Int::min(wits)", "Int"),
+        ("Int::min(wits, dexterity)", "Int"),
+        ("Int::max(dexterity, wits, 7)", "Int"),
         ("[10, 11, 12].get(wits)", "Option<Int>"),
         ("levels.get(wits)", "Option<Int>"),
         ("grid.get(wits)", "Option<List<Int>>"),
@@ -267,8 +267,8 @@ fn current_expressions() {
         ("12", "Int"),
         ("dexterity + wits - 1", "Int"),
         ("-dexterity + 1", "Int"),
-        ("min(wits, dexterity) + athletics", "Int"),
-        ("max (wits)", "Int"),
+        ("Int::min(wits, dexterity) + athletics", "Int"),
+        ("Int::max (wits)", "Int"),
         ("[10, 11, 12 , 13].get(blood_potency)", "Option<Int>"),
         ("[10, 11, 12, 13].get(blood_potency + 5)", "Option<Int>"),
         ("[10, 11].get(-wits)", "Option<Int>"),
@@ -312,8 +312,8 @@ fn unwrap_hint() {
             "!maybe",
         ),
         (
-            "min(bonus)",
-            &format!("argument 1 of `min` must be Int, found Option<Int>{HINT}"),
+            "Int::min(bonus)",
+            &format!("argument 1 of `Int::min` must be Int, found Option<Int>{HINT}"),
             "bonus",
         ),
         (
@@ -367,9 +367,24 @@ fn error_names() {
             "count",
         ),
         (
-            "1 + max",
-            "`max` is a function, call it with `max(...)`",
-            "max",
+            "1 + Int::max",
+            "`Int::max` is a function, call it with `Int::max(...)`",
+            "Int::max",
+        ),
+        (
+            "Int::nope(1)",
+            "Int has no function `nope`, its functions are `abs`, `clamp`, `max` and `min`",
+            "nope",
+        ),
+        (
+            "Foo::min(1)",
+            "`Foo` is not a type with functions, such as `Int`",
+            "Foo",
+        ),
+        (
+            "Int::(1)",
+            "expected a function name after `::`, found `(`",
+            "(",
         ),
         ("f(1)", "unknown function `f`", "f"),
         (
@@ -378,9 +393,9 @@ fn error_names() {
             "cout",
         ),
         (
-            "Min(1)",
-            "unknown function `Min`, did you mean `min`?",
-            "Min",
+            "Count()",
+            "unknown function `Count`, did you mean `count`?",
+            "Count",
         ),
         ("wits(1)", "`wits` is a value, not a function", "wits"),
         // Arguments are not checked before the function is found.
@@ -485,16 +500,35 @@ fn error_operators() {
 #[test]
 fn error_calls() {
     errors(&[
-        ("min()", "`min` takes at least 1 argument, found 0", "()"),
-        ("max()", "`max` takes at least 1 argument, found 0", "()"),
         (
-            "min(1, true)",
-            "argument 2 of `min` must be Int, found Bool",
+            "Int::min()",
+            "`Int::min` takes at least 1 argument, found 0",
+            "()",
+        ),
+        (
+            "Int::max()",
+            "`Int::max` takes at least 1 argument, found 0",
+            "()",
+        ),
+        ("Int::abs()", "`Int::abs` takes 1 argument, found 0", "()"),
+        (
+            "Int::clamp(1, true, 2)",
+            "argument 2 of `Int::clamp` must be Int, found Bool",
             "true",
         ),
         (
-            "max(flag)",
-            "argument 1 of `max` must be Int, found Bool",
+            "Option::unwrap_or(wits, 0)",
+            "argument 1 of `Option::unwrap_or` must be Option<T>, found Int",
+            "wits",
+        ),
+        (
+            "Int::min(1, true)",
+            "argument 2 of `Int::min` must be Int, found Bool",
+            "true",
+        ),
+        (
+            "Int::max(flag)",
+            "argument 1 of `Int::max` must be Int, found Bool",
             "flag",
         ),
         ("chart(1)", "`chart` takes 2 arguments, found 1", "(1)"),
@@ -536,7 +570,7 @@ fn error_calls() {
             "flag",
         ),
         // An argument's own error comes first.
-        ("min(1, x)", "unknown name `x`", "x"),
+        ("Int::min(1, x)", "unknown name `x`", "x"),
     ]);
 }
 
@@ -910,25 +944,20 @@ fn redeclaring() {
     env.function("f", [Type::bool()], Type::int()).unwrap();
     assert_eq!(compile("f(true)", &env).unwrap().result_type(), Type::int());
 
-    // Adding a builtin twice keeps one.
-    env.builtin(Builtin::Min);
-    env.builtin(Builtin::Min);
-    assert_eq!(
-        error_in("min()", &env).0,
-        "`min` takes at least 1 argument, found 0"
-    );
-
-    // The first matching declaration wins.
+    // A caller's function may share a name with a type's function.
     env.function("max", [Type::int(), Type::int()], Type::bool())
         .unwrap();
-    env.builtin(Builtin::Max);
     assert_eq!(
         compile("max(1, 2)", &env).unwrap().result_type(),
         Type::bool()
     );
     assert_eq!(
-        compile("max(1, 2, 3)", &env).unwrap().result_type(),
+        compile("Int::max(1, 2, 3)", &env).unwrap().result_type(),
         Type::int()
+    );
+    assert_eq!(
+        error_in("Int::min()", &env).0,
+        "`Int::min` takes at least 1 argument, found 0"
     );
 }
 
@@ -972,8 +1001,8 @@ fn memory_bounds() {
         ("((1 + 2) + 3) + 4", (2, 0, 0)),
         ("1 + (2 + (3 + 4))", (4, 0, 0)),
         ("1 * 2 + 3 * 4", (3, 0, 0)),
-        ("min(1, 2, 3, 4)", (4, 0, 0)),
-        ("max(wits)", (1, 0, 0)),
+        ("Int::min(1, 2, 3, 4)", (4, 0, 0)),
+        ("Int::max(wits)", (1, 0, 0)),
         ("wits.clamp(1, 2)", (3, 0, 0)),
         ("bonus.unwrap_or(0) + 1", (3, 0, 0)),
         ("[1, 2, 3]", (1, 0, 3)),
@@ -1046,7 +1075,7 @@ fn globals_and_functions() {
 
     // Builtins are the machine's own, not the caller's.
     assert!(
-        compile("min(1) + [1].get(1).unwrap_or(0)", &env())
+        compile("Int::min(1) + [1].get(1).unwrap_or(0)", &env())
             .unwrap()
             .functions()
             .is_empty()
@@ -1127,7 +1156,7 @@ fn code() {
         ]
     );
     assert_eq!(code("[1].get(wits)"), [Const(0), WITS, Get(TypeId(0))]);
-    assert_eq!(code("min(1, wits, 3)"), [Int(1), WITS, Int(3), Min(3)]);
+    assert_eq!(code("Int::min(1, wits, 3)"), [Int(1), WITS, Int(3), Min(3)]);
     assert_eq!(code("wits.max(2)"), [WITS, Int(2), Max(2)]);
     assert_eq!(code("wits.clamp(1, 2)"), [WITS, Int(1), Int(2), Clamp]);
     assert_eq!(
@@ -1199,7 +1228,7 @@ fn code() {
 fn store_round_trip() {
     let sources = [
         "1",
-        "min(wits, dexterity) + athletics",
+        "Int::min(wits, dexterity) + athletics",
         "[10, 11, 12, 13].get(blood_potency)",
         r#"chart(primal_urge, "Essence (1e)")"#,
         "count(health) + count(health, 2) + boxes(health)",
@@ -1681,7 +1710,7 @@ pub(crate) fn generate(rng: &mut Rng, ty: &str, budget: usize) -> String {
                 }
                 1 => format!("-({})", generate(rng, "Int", b)),
                 2 | 3 => {
-                    let f = rng.pick(&["min", "max"]);
+                    let f = rng.pick(&["Int::min", "Int::max"]);
                     let n = 1 + rng.below(4);
                     let args = (0..n)
                         .map(|_| generate(rng, "Int", b / n))
@@ -1939,7 +1968,7 @@ fn field_node_ids() {
 /// compiling slow. Without the length check this is about 10^10 steps.
 #[test]
 fn long_unknown_names_are_cheap() {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
 
     for n in 0..1_000 {
         env.value(&format!("name_{n:04}"), Type::int()).unwrap();
@@ -2030,7 +2059,7 @@ fn one_error_is_reported_once() {
         "nothing[\"x\"] + 1",
         "nothing! + 1",
         "nothing.unwrap_or(1) + 2",
-        "min(nothing, 1) + 1",
+        "Int::min(nothing, 1) + 1",
         "count(nothing) + 1",
         "label(nothing).unwrap_or(0)",
         "[nothing, 1][0] + 1",

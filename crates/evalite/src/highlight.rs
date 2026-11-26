@@ -32,13 +32,15 @@ pub enum Class {
     Keyword,
     /// A name: a value or a function.
     Ident,
+    /// A type's name before `::`, such as `Int` in `Int::min`.
+    Type,
     /// A name after a `.`: a method or a field.
     Member,
     /// An integer literal.
     Number,
     /// A string literal.
     String,
-    /// Delimiters and separators: `( ) [ ] , .`.
+    /// Delimiters and separators: `( ) [ ] , . ::`.
     Punctuation,
     /// Operators.
     Operator,
@@ -55,6 +57,7 @@ impl Class {
         match self {
             Class::Keyword => "keyword",
             Class::Ident => "ident",
+            Class::Type => "type",
             Class::Member => "member",
             Class::Number => "number",
             Class::String => "string",
@@ -91,13 +94,15 @@ pub fn highlight(source: &str) -> impl Iterator<Item = Token> + '_ {
                     Syntax::StringToken => Class::String,
                     Syntax::True | Syntax::False => Class::Keyword,
                     Syntax::NameToken if after_dot => Class::Member,
+                    Syntax::NameToken if before_path(&lexer) => Class::Type,
                     Syntax::NameToken => Class::Ident,
                     Syntax::OpenParen
                     | Syntax::CloseParen
                     | Syntax::OpenBracket
                     | Syntax::CloseBracket
                     | Syntax::Comma
-                    | Syntax::Dot => Class::Punctuation,
+                    | Syntax::Dot
+                    | Syntax::ColonColon => Class::Punctuation,
                     _ => Class::Operator,
                 };
 
@@ -119,4 +124,17 @@ pub fn highlight(source: &str) -> impl Iterator<Item = Token> + '_ {
             span: start..end,
         })
     })
+}
+
+/// Whether `::` is the next token past whitespace.
+fn before_path(lexer: &Lexer<'_>) -> bool {
+    let mut lexer = lexer.clone();
+
+    loop {
+        match lexer.next() {
+            Ok(Some(token)) if token.kind == Syntax::Whitespace => {}
+            Ok(Some(token)) => return token.kind == Syntax::ColonColon,
+            _ => return false,
+        }
+    }
 }

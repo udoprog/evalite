@@ -1,4 +1,4 @@
-//! Signatures of the builtin functions and methods: the one place their
+//! Signatures of the types' functions and methods: the one place their
 //! parameter and result types are written, generic over one type `T` where
 //! they take any type. The checker resolves calls with them, completions
 //! offer from them, and errors and docs print them.
@@ -132,7 +132,7 @@ impl Signature {
     }
 
     /// How many holes a completion of a call leaves: one per parameter, and
-    /// one more for a repeated one, as `min(_, _)`.
+    /// one more for a repeated one, as `Int::min(_, _)`.
     pub(crate) fn holes(&self) -> usize {
         self.params.len().saturating_add(usize::from(self.repeats))
     }
@@ -185,7 +185,7 @@ impl Signature {
         format!("({})", params.join(", "))
     }
 
-    /// It in full, called `name`: `max(Int, ...) -> Int`.
+    /// It in full, called `name`: `Int::max(Int, ...) -> Int`.
     pub(crate) fn describe(&self, name: &str) -> String {
         let generic = if self.is_generic() { "<T>" } else { "" };
         format!("{name}{generic}{} -> {}", self.describe_params(), self.ret)

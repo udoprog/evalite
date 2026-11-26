@@ -261,7 +261,7 @@ impl Program {
     /// ```
     /// use evalite::{Environment, Type};
     ///
-    /// let mut env = Environment::with_builtins();
+    /// let mut env = Environment::new();
     /// env.value("wits", Type::int())?;
     /// env.value("bonus", Type::option(Type::int()))?;
     /// env.value("unused", Type::bool())?;

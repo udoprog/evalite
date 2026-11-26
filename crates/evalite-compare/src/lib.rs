@@ -134,7 +134,12 @@ pub fn cases() -> Vec<Case> {
             name: "functions",
             description: "Nested min and max calls.",
             kind: Kind::Int,
-            sources: same("min(max(strength + brawl - armor, 0), 5) + max(wits, composure, 1)"),
+            sources: [
+                "Int::min(Int::max(strength + brawl - armor, 0), 5) + Int::max(wits, composure, 1)"
+                    .to_owned(),
+                "min(max(strength + brawl - armor, 0), 5) + max(wits, composure, 1)".to_owned(),
+                "min(max(strength + brawl - armor, 0), 5) + max(wits, composure, 1)".to_owned(),
+            ],
             expected: 7,
         },
         Case {
@@ -189,7 +194,7 @@ pub struct Evalite {
 
 impl Evalite {
     pub fn new() -> Result<Self, Error> {
-        let mut env = evalite::Environment::with_builtins();
+        let mut env = evalite::Environment::new();
 
         for (name, _) in VARIABLES {
             env.value(name, evalite::Type::int())

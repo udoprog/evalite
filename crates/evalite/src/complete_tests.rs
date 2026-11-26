@@ -7,7 +7,7 @@ use crate::types::Kind;
 use crate::*;
 
 fn env() -> Environment {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
     env.value("wits", Type::int()).unwrap();
     env.value("dead", Type::bool()).unwrap();
     env.value("bonus", Type::option(Type::int())).unwrap();
@@ -71,8 +71,8 @@ const INT: &[&str] = &[
     "chart(_, _)",
     "count(_)",
     "count(_, _)",
-    "max(_, _)",
-    "min(_, _)",
+    "Int::max(_, _)",
+    "Int::min(_, _)",
     "0",
     "_ + _",
     "_ - _",
@@ -118,8 +118,8 @@ const ANY: &[&str] = &[
     "chart(_, _)",
     "count(_)",
     "count(_, _)",
-    "max(_, _)",
-    "min(_, _)",
+    "Int::max(_, _)",
+    "Int::min(_, _)",
     "0",
     "true",
     "false",
@@ -224,9 +224,9 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         ("count(health, _)", 0, None, INT.to_vec()),
         ("count(_, 1)", 0, None, vec!["health", "broken(_)", "_!"]),
         ("count(_, _, _)", 0, None, vec![]),
-        ("max(_)", 0, None, INT.to_vec()),
-        ("min(1, _, 3)", 0, None, INT.to_vec()),
-        ("min(dead, _)", 0, None, vec![]),
+        ("Int::max(_)", 0, None, INT.to_vec()),
+        ("Int::min(1, _, 3)", 0, None, INT.to_vec()),
+        ("Int::min(dead, _)", 0, None, vec![]),
         ("chart(_, _)", 0, None, INT.to_vec()),
         ("chart(_, _)", 1, None, vec!["table", r#""""#, "_!"]),
         ("chart(1, _)", 0, None, vec!["table", r#""""#, "_!"]),
@@ -344,7 +344,7 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         ),
         // Holes are listed outermost first: the inner `._` is the second.
         (
-            "max(m._._, 1)",
+            "Int::max(m._._, 1)",
             1,
             None,
             vec![r#"["Brawl (bar)"]"#, "athletics", "brawl", "flags"],

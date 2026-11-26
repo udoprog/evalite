@@ -10,7 +10,7 @@
 Small, strictly typed expressions that are safe to run on anyone's input.
 
 evalite is "eval lite": let users write formulas such as
-`min(wits, dexterity) + athletics` or `bonus.unwrap_or(0) + 1`, check
+`Int::min(wits, dexterity) + athletics` or `bonus.unwrap_or(0) + 1`, check
 them once against the names you declare, store the compiled program, and
 run it later in a fixed budget of memory and steps. Every mistake is
 caught before it runs, and no input can crash, hang or exhaust the host.
@@ -39,12 +39,12 @@ caught before it runs, and no input can crash, hang or exhaust the host.
   Cutting the last byte off gives "the bytes do not decode".
 - **Errors that point.** Every mistake is reported, not only the first,
   and each says what it expected and what it found, while its [labels]
-  mark where, so you can underline it in your own UI. `min(1, (2 + 3)` gives "expected `)` to close the `(` at byte 3, found the
+  mark where, so you can underline it in your own UI. `Int::min(1, (2 + 3)` gives "expected `)` to close the `(` at byte 8, found the
   end of the expression", pointing at the `(` and noting where the `)` was
   expected. See [Errors](#errors).
 - **Autocomplete that only offers what fits.** Leave a hole in a
   [`Structure`] and [completions] list only what would type-check there. In
-  `rank + _` you are offered `rank`, `bonus.unwrap_or(_)` and `min(_, _)`,
+  `rank + _` you are offered `rank`, `bonus.unwrap_or(_)` and `Int::min(_, _)`,
   but never `name`, a `String`, or a bare `bonus`, an `Option<Int>`. That is
   enough to build an editor where users pick from lists and every pick is
   valid. See [Autocomplete](#autocomplete).
@@ -59,12 +59,12 @@ it:
 ```rust
 use evalite::{Environment, Limits, Machine, Type, Value};
 
-let mut env = Environment::with_builtins();
+let mut env = Environment::new();
 env.value("wits", Type::int())?;
 env.value("dexterity", Type::int())?;
 env.value("bonus", Type::option(Type::int()))?;
 
-let program = evalite::compile("min(wits, dexterity) + bonus.unwrap_or(0)", &env)?;
+let program = evalite::compile("Int::min(wits, dexterity) + bonus.unwrap_or(0)", &env)?;
 assert_eq!(program.result_type(), Type::int());
 
 let mut machine = Machine::new(Limits::new());
@@ -149,13 +149,16 @@ option of an option, so an index out of range (`none`) is told apart from
 an absent entry (`some(none)`). `list[i]` is the entry itself, and an
 error out of range.
 
-Functions are called by name, `min(a, b)`. The builtins, from
-[`Environment::with_builtins`], are:
+A type's functions are called by path, as in `Int::min(a, b, c)`:
 
-| Function               | Gives                              |
-|------------------------|------------------------------------|
-| `min(Int, ...) -> Int` | the least of one or more `Int`s    |
-| `max(Int, ...) -> Int` | the greatest of one or more `Int`s |
+| Function                    | Gives                              |
+|-----------------------------|------------------------------------|
+| `Int::min(Int, ...) -> Int` | the least of one or more `Int`s    |
+| `Int::max(Int, ...) -> Int` | the greatest of one or more `Int`s |
+
+Every method is a function of its type too, taking the receiver first, so
+`Int::abs(x)` is `x.abs()` and `Option::unwrap_or(bonus, 0)` is
+`bonus.unwrap_or(0)`.
 
 Every other name, value or function, is one the caller declares, with its
 type, and the caller runs its functions when a program calls them. A
@@ -166,7 +169,7 @@ by name, and with a specialty it may add a die for:
 ```rust
 use evalite::{Environment, Type};
 
-let mut env = Environment::with_builtins();
+let mut env = Environment::new();
 env.value("wits", Type::int())?;
 env.function("skill", [Type::string()], Type::int())?;
 env.function("skill", [Type::string(), Type::string()], Type::int())?;
@@ -190,6 +193,7 @@ product  = unary (("*" | "/" | "%") unary)*
 unary    = ("-" | "!") unary | postfix
 postfix  = primary ("." name args? | "[" expr "]" | "!")*
 primary  = integer | string | "true" | "false" | name args?
+         | name "::" name args
          | "(" expr ")" | "[" (expr ("," expr)*)? "]"
 args     = "(" (expr ("," expr)*)? ")"
 name     = [A-Za-z_][A-Za-z0-9_]*
@@ -224,12 +228,12 @@ result.
 ```rust
 use evalite::{Environment, Limits, Machine, Options};
 
-let env = Environment::with_builtins();
+let env = Environment::new();
 
 let error = evalite::compile_with("(((1)))", &env, &Options::new().max_depth(2)).unwrap_err();
 assert_eq!(error.to_string(), "this parenthesis nests too deeply, the limit is 2 levels of nesting");
 
-let program = evalite::compile("min(1, 2, 3, 4, 5) + 9223372036854775807", &env)?;
+let program = evalite::compile("Int::min(1, 2, 3, 4, 5) + 9223372036854775807", &env)?;
 
 let mut machine = Machine::new(Limits::new().fuel(3));
 let error = machine.load(&program)?.run().unwrap_err();
@@ -262,7 +266,7 @@ stored next to the program with [`DebugInfo::to_bytes`].
 ```rust
 use evalite::{DebugInfo, Environment, Machine, Options, Program, Type, Value};
 
-let mut env = Environment::with_builtins();
+let mut env = Environment::new();
 env.value("rank", Type::int())?;
 
 let (program, debug) = evalite::compile_debug("10 / rank", &env, &Options::new())?;
@@ -293,7 +297,7 @@ an expression in error is not reported again by what uses it, so
 `rank + true + bonus` reports `rank + true`, not `+ bonus` as well.
 A syntax error is recovered from: the parser skips to where the
 expression can go on, and what it could parse is still checked, so
-`min(rank, , true) + bonus` reports the missing argument and the
+`Int::min(rank, , true) + bonus` reports the missing argument and the
 unknown `bonus`.
 
 Those that point into the input, each [`Diagnostic`], [`StructureError`]
@@ -322,33 +326,33 @@ fn render(source: &str, labels: Labels<'_>) -> String {
     out
 }
 
-let mut env = Environment::with_builtins();
+let mut env = Environment::new();
 env.value("rank", Type::int())?;
 
-let source = "min(rank, true) + bonus";
+let source = "Int::min(rank, true) + bonus";
 let errors = evalite::compile(source, &env).unwrap_err();
 let rendered: String = errors.iter().map(|error| render(source, error.labels())).collect();
 
 assert_eq!(rendered, "\
-error: argument 2 of `min` must be Int, found Bool
-  min(rank, true) + bonus
-            ^^^^
+error: argument 2 of `Int::min` must be Int, found Bool
+  Int::min(rank, true) + bonus
+                 ^^^^
 error: unknown name `bonus`
-  min(rank, true) + bonus
-                    ^^^^^
+  Int::min(rank, true) + bonus
+                         ^^^^^
 ");
 
-let source = "min(1, (2 + 3)";
+let source = "Int::min(1, (2 + 3)";
 let errors = evalite::compile(source, &env).unwrap_err();
 let error = errors.iter().next().unwrap();
 
 assert_eq!(render(source, error.labels()), "\
-error: expected `)` to close the `(` at byte 3, found the end of the expression
-  min(1, (2 + 3)
-     ^
+error: expected `)` to close the `(` at byte 8, found the end of the expression
+  Int::min(1, (2 + 3)
+          ^
 note: expected `)` here
-  min(1, (2 + 3)
-                ^
+  Int::min(1, (2 + 3)
+                     ^
 ");
 ```
 
@@ -368,7 +372,7 @@ text, each also naming the [`NodeId`] it is about.
 ```rust
 use evalite::{Environment, Structure, Type};
 
-let mut env = Environment::with_builtins();
+let mut env = Environment::new();
 env.value("wits", Type::int())?;
 env.value("bonus", Type::option(Type::int()))?;
 env.value("name", Type::string())?;
@@ -401,7 +405,7 @@ way to try the language. Install it with `cargo install evalite-cli`.
 Variables are declared and bound with `--var name:Type=value`:
 
 ```text
-$ evalite eval 'min(wits, dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
+$ evalite eval 'Int::min(wits, dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
 3 : Int
 
 $ evalite eval 'skills[3] * 2' --var 'skills:List<Int>=[1, 2]'
@@ -451,7 +455,6 @@ clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 [`Diagnostic::labels`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html#method.labels
 [`Diagnostic`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html
 [`Diagnostics`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostics.html
-[`Environment::with_builtins`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html#method.with_builtins
 [`Label`]: https://docs.rs/evalite/latest/evalite/struct.Label.html
 [`Limits::fuel`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.fuel
 [`Limits::memory`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.memory

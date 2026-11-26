@@ -623,7 +623,7 @@ fn field_name(program: Option<&Program>, record: TypeId, field: u32) -> Option<&
 /// ```
 /// use evalite::{Environment, Machine, Type, Value};
 ///
-/// let mut env = Environment::with_builtins();
+/// let mut env = Environment::new();
 /// env.value("strength", Type::int())?;
 /// let program = evalite::compile("strength", &env)?;
 ///
@@ -729,7 +729,7 @@ impl RunError {
     /// ```
     /// use evalite::{Environment, Machine, Type, Value};
     ///
-    /// let mut env = Environment::with_builtins();
+    /// let mut env = Environment::new();
     /// env.value("a", Type::int())?;
     /// let source = "1 + a / 0";
     /// let (program, debug) = evalite::compile_debug(source, &env, &evalite::Options::new())?;
@@ -1015,7 +1015,7 @@ where
 /// ```
 /// use evalite::{Machine, Limits};
 ///
-/// let env = evalite::Environment::with_builtins();
+/// let env = evalite::Environment::new();
 /// let program = evalite::compile("[1, 2, 3][1]", &env)?;
 /// let error = Machine::new(Limits::new().memory(1)).load(&program).unwrap_err();
 ///
@@ -1145,7 +1145,7 @@ impl<'a> Label<'a> {
     /// ```
     /// use evalite::{Environment, Machine, Options};
     ///
-    /// let env = Environment::with_builtins();
+    /// let env = Environment::new();
     /// let (program, debug) = evalite::compile_debug("2 + -(9223372036854775807 * 2)", &env, &Options::new())?;
     /// let error = Machine::default().load(&program)?.run().unwrap_err();
     ///
@@ -1163,7 +1163,7 @@ impl<'a> Label<'a> {
     /// ```
     /// use evalite::{Environment, Machine, Limits};
     ///
-    /// let env = Environment::with_builtins();
+    /// let env = Environment::new();
     /// let program = evalite::compile("1 + 2", &env)?;
     /// let error = Machine::new(Limits::new().fuel(1)).load(&program)?.run().unwrap_err();
     ///
@@ -1185,7 +1185,7 @@ impl<'a> Label<'a> {
     /// ```
     /// use evalite::{Environment, Machine, Limits};
     ///
-    /// let env = Environment::with_builtins();
+    /// let env = Environment::new();
     /// let program = evalite::compile("1 + 2", &env)?;
     /// let error = Machine::new(Limits::new().fuel(1)).load(&program)?.run().unwrap_err();
     ///

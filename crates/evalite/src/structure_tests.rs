@@ -6,7 +6,7 @@ use crate::structure::{EditKind, Repr, StructureKind};
 use crate::*;
 
 fn env() -> Environment {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
     env.value("wits", Type::int()).unwrap();
     env.value("dexterity", Type::int()).unwrap();
     env.value("dead", Type::bool()).unwrap();
@@ -86,7 +86,7 @@ const CONSTRUCTS: &[(&str, &str)] = &[
     ("-(1 + 2)", "-(1 + 2)"),
     ("!(a && b)", "!(a && b)"),
     ("wits - -1", "wits - -1"),
-    ("min(wits,3)", "min(wits, 3)"),
+    ("Int::min(wits,3)", "Int::min(wits, 3)"),
     ("f()", "f()"),
     ("count(health, _)", "count(health, _)"),
     ("bonus.unwrap_or(0)", "bonus.unwrap_or(0)"),
@@ -146,7 +146,7 @@ fn text_parses_to_the_nodes_it_names() {
         Some(Node(Repr::Method { name: None, .. }))
     ));
 
-    let structure = s("min(1, _)");
+    let structure = s("Int::min(1, _)");
     assert_eq!(structure.holes().len(), 1);
     assert_eq!(s("_ + m._ + f(_)").holes().len(), 3);
 }
@@ -256,7 +256,7 @@ fn compiling_a_structure_matches_compiling_its_text() {
     let env = env();
 
     for text in [
-        "min(wits, 3) + bonus.unwrap_or(0)",
+        "Int::min(wits, 3) + bonus.unwrap_or(0)",
         "count(health) + count(health, 2)",
         "[10, 11, 12].get(wits)",
         r#"m["Brawl (bar)"] + m.athletics + m.brawl.unwrap_or(1).clamp(0, 5)"#,
@@ -266,7 +266,7 @@ fn compiling_a_structure_matches_compiling_its_text() {
         "wits + bonus",
         "count(1)",
         "unknown",
-        "min()",
+        "Int::min()",
         "[]",
         "[1, true]",
         "dots[true]",
@@ -291,7 +291,7 @@ fn errors_name_the_node_they_are_about() {
     );
     assert_eq!(structure.text_of(error.first().unwrap().node()), "true");
 
-    let structure = s("min(wits, 1) + m.nope");
+    let structure = s("Int::min(wits, 1) + m.nope");
     let error = structure.compile(&env).unwrap_err();
     // `nope` is part of the field node.
     assert_eq!(structure.text_of(error.first().unwrap().node()), "m.nope");
@@ -316,7 +316,7 @@ fn every_error_names_its_node() {
     assert_eq!(structure.text_of(error.first().unwrap().node()), nodes[0]);
 
     // Every hole, as written.
-    let structure = s("_ + min(_, _)");
+    let structure = s("_ + Int::min(_, _)");
     let error = structure.compile(&env).unwrap_err();
     let found: Vec<_> = error.iter().map(|e| e.node()).collect();
     assert_eq!(found, structure.holes());
@@ -348,7 +348,14 @@ fn every_error_names_its_node() {
 fn holes_are_refused_when_compiling() {
     let env = env();
 
-    for text in ["_", "wits + _", "min(_, 1)", "m._", "bonus._(0)", "[1, _]"] {
+    for text in [
+        "_",
+        "wits + _",
+        "Int::min(_, 1)",
+        "m._",
+        "bonus._(0)",
+        "[1, _]",
+    ] {
         let structure = s(text);
         let error = structure.compile(&env).unwrap_err();
         assert_eq!(
@@ -367,7 +374,7 @@ fn holes_are_refused_when_compiling() {
     }
 
     // The first hole as written.
-    let structure = s("_ + min(_)");
+    let structure = s("_ + Int::min(_)");
     let error = structure.compile(&env).unwrap_err();
     assert_eq!(error.first().unwrap().node(), structure.holes()[0]);
 }
@@ -744,14 +751,14 @@ fn edits_keep_the_structure_a_tree() {
 
 #[test]
 fn grafting_copies_an_expression_into_a_hole() {
-    let mut b = s("min(_, 1)");
+    let mut b = s("Int::min(_, 1)");
     let hole = b.holes()[0];
     b.graft(hole, &s("bonus.unwrap_or(_)")).unwrap();
-    assert_eq!(b.to_text(), "min(bonus.unwrap_or(_), 1)");
+    assert_eq!(b.to_text(), "Int::min(bonus.unwrap_or(_), 1)");
 
     let hole = b.holes()[0];
     b.graft(hole, &s("2")).unwrap();
-    assert_eq!(b.to_text(), "min(bonus.unwrap_or(2), 1)");
+    assert_eq!(b.to_text(), "Int::min(bonus.unwrap_or(2), 1)");
     assert!(b.compile(&env()).is_ok());
 
     let mut root = Structure::new();

@@ -5,9 +5,9 @@ use std::collections::HashSet;
 use std::fmt;
 
 use crate::Type;
-use crate::env::{Environment, Overload};
+use crate::env::Environment;
 use crate::error::Arity;
-use crate::methods;
+use crate::methods::{self, Associated};
 use crate::sig::Shape;
 use crate::structure::{
     BinaryOp, EditError, EditKind, HOLE, Node, NodeId, Repr, Structure, StructureErrors, UnaryOp,
@@ -30,7 +30,8 @@ pub enum CompletionKind {
     Field,
     /// A method, of a member hole's receiver or at the end of a path.
     Method,
-    /// A call of the environment's function.
+    /// A call of the environment's function, or of a type's, such as
+    /// `Int::min(_, _)`.
     Function,
     /// A literal, such as `0`, `true` or `""`.
     Literal,
@@ -63,7 +64,7 @@ pub(crate) enum Insert {
 /// ```
 /// use evalite::{CompletionKind, Environment, Structure, Type};
 ///
-/// let mut env = Environment::with_builtins();
+/// let mut env = Environment::new();
 /// env.value("bonus", Type::option(Type::int()))?;
 ///
 /// let mut s = Structure::from_text("1 + _")?;
@@ -98,7 +99,7 @@ impl Completion {
     /// ```
     /// use evalite::{Environment, Structure, Type};
     ///
-    /// let mut env = Environment::with_builtins();
+    /// let mut env = Environment::new();
     /// env.value("m", Type::record([("athletics", Type::int()), ("Brawl (bar)", Type::int())]))?;
     ///
     /// let s = Structure::from_text("m._")?;
@@ -120,7 +121,7 @@ impl Completion {
     /// ```
     /// use evalite::{CompletionKind, Environment, Structure, Type};
     ///
-    /// let mut env = Environment::with_builtins();
+    /// let mut env = Environment::new();
     /// env.value("wits", Type::int())?;
     ///
     /// let s = Structure::from_text("_")?;
@@ -129,7 +130,7 @@ impl Completion {
     /// assert_eq!(kind("wits"), Some(CompletionKind::Value));
     /// assert_eq!(kind("0"), Some(CompletionKind::Literal));
     /// assert_eq!(kind("_ + _"), Some(CompletionKind::Operator));
-    /// assert_eq!(kind("max(_, _)"), Some(CompletionKind::Function));
+    /// assert_eq!(kind("Int::max(_, _)"), Some(CompletionKind::Function));
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn kind(&self) -> CompletionKind {
@@ -142,7 +143,7 @@ impl Completion {
     /// ```
     /// use evalite::{Environment, Structure, Type};
     ///
-    /// let mut env = Environment::with_builtins();
+    /// let mut env = Environment::new();
     /// env.value("bonus", Type::option(Type::int()))?;
     ///
     /// let s = Structure::from_text("_")?;
@@ -167,14 +168,14 @@ impl Completion {
     /// ```
     /// use evalite::{Environment, Structure, Type};
     ///
-    /// let mut env = Environment::with_builtins();
+    /// let mut env = Environment::new();
     /// env.value("bonus", Type::option(Type::int()))?;
     /// env.function("rating", [Type::string()], Type::int())?;
     ///
     /// let s = Structure::from_text("_")?;
     /// let all = s.complete(&env, s.root(), None)?;
     /// let signature = |label: &str| all.iter().find(|c| c.label() == label).and_then(|c| c.signature());
-    /// assert_eq!(signature("min(_, _)"), Some("min(Int, ...) -> Int"));
+    /// assert_eq!(signature("Int::min(_, _)"), Some("Int::min(Int, ...) -> Int"));
     /// assert_eq!(signature("rating(_)"), Some("rating(String) -> Int"));
     /// assert_eq!(signature("bonus"), None);
     ///
@@ -497,7 +498,7 @@ impl Structure {
     /// ```
     /// use evalite::{Environment, Structure, Type};
     ///
-    /// let mut env = Environment::with_builtins();
+    /// let mut env = Environment::new();
     /// env.value("bonus", Type::option(Type::int()))?;
     ///
     /// let mut s = Structure::from_text("1 + bonus._")?;
@@ -730,10 +731,6 @@ impl Structure {
     /// The types argument `at` of a call of `function` takes, given the
     /// other arguments' types.
     fn argument(&self, env: &Environment, function: &str, args: &[NodeId], at: NodeId) -> Want {
-        let Some(overloads) = env.functions.get(function) else {
-            return Want::Any;
-        };
-
         let Some(n) = args.iter().position(|a| *a == at) else {
             return Want::Any;
         };
@@ -749,42 +746,51 @@ impl Structure {
 
         let mut want = Want::OneOf(Vec::new());
 
+        if let Some((ty, name)) = function.split_once("::") {
+            let Ok(Associated::Function(function)) = methods::find_path(ty, name) else {
+                return Want::Any;
+            };
+
+            let sig = function.sig;
+
+            let count = match sig.arity() {
+                Arity::Exactly(k) => args.len() == k,
+                Arity::AtLeast(k) => args.len() >= k,
+            };
+
+            // The `T` the other arguments bind, if they fit.
+            let mut t = None;
+            let others = (0..args.len()).all(|i| match (sig.param(i), known.get(i)) {
+                (Some(param), Some(Some(ty))) => param.bind(ty, &mut t),
+                (Some(_), _) => true,
+                (None, _) => false,
+            });
+
+            if let Some(param) = sig.param(n).filter(|_| count && others) {
+                match (param.resolve(t.as_ref()), param) {
+                    (Some(ty), _) => want.push(Pattern::Type(ty)),
+                    (None, Shape::List(_)) => want.push(Pattern::List),
+                    (None, _) => return Want::Any,
+                }
+            }
+
+            return want;
+        }
+
+        let Some(overloads) = env.functions.get(function) else {
+            return Want::Any;
+        };
+
         for overload in overloads {
-            match overload {
-                Overload::Builtin(builtin) => {
-                    let sig = builtin.signature();
-
-                    let count = match sig.arity() {
-                        Arity::Exactly(k) => args.len() == k,
-                        Arity::AtLeast(k) => args.len() >= k,
-                    };
-
-                    // The `T` the other arguments bind, if they fit.
-                    let mut t = None;
-                    let others = (0..args.len()).all(|i| match (sig.param(i), known.get(i)) {
-                        (Some(param), Some(Some(ty))) => param.bind(ty, &mut t),
-                        (Some(_), _) => true,
-                        (None, _) => false,
-                    });
-
-                    let Some(param) = sig.param(n).filter(|_| count && others) else {
-                        continue;
-                    };
-
-                    match (param.resolve(t.as_ref()), param) {
-                        (Some(ty), _) => want.push(Pattern::Type(ty)),
-                        (None, Shape::List(_)) => want.push(Pattern::List),
-                        (None, _) => return Want::Any,
-                    }
-                }
-                Overload::Host { params, .. } => {
-                    if params.len() == args.len()
-                        && params.iter().enumerate().all(|(i, p)| fits(i, &|t| t == p))
-                        && let Some(param) = params.get(n)
-                    {
-                        want.push(Pattern::Type(param.clone()));
-                    }
-                }
+            if overload.params.len() == args.len()
+                && overload
+                    .params
+                    .iter()
+                    .enumerate()
+                    .all(|(i, p)| fits(i, &|t| t == p))
+                && let Some(param) = overload.params.get(n)
+            {
+                want.push(Pattern::Type(param.clone()));
             }
         }
 
@@ -831,29 +837,25 @@ impl Structure {
 
         for (name, overloads) in &env.functions {
             for overload in overloads {
-                let (arity, ty) = match overload {
-                    Overload::Builtin(builtin) => {
-                        let sig = builtin.signature();
+                if !want.fits(&overload.ret) {
+                    continue;
+                }
 
-                        let Some(ty) = want.fits_shape(sig.ret) else {
-                            continue;
-                        };
-
-                        (sig.holes(), ty)
-                    }
-                    Overload::Host { params, ret } => {
-                        if !want.fits(ret) {
-                            continue;
-                        }
-
-                        (params.len(), Some(ret.clone()))
-                    }
-                };
-
-                let label = format!("{name}({})", holes(arity));
+                let label = format!("{name}({})", holes(overload.params.len()));
+                let ty = Some(overload.ret.clone());
                 let signature = overload.signature(name);
                 expr_signed(&mut out, label, CompletionKind::Function, ty, signature);
             }
+        }
+
+        for function in methods::FUNCTIONS {
+            let Some(ty) = want.fits_shape(function.sig.ret) else {
+                continue;
+            };
+
+            let label = format!("{}({})", function.path(), holes(function.sig.holes()));
+            let signature = function.describe();
+            expr_signed(&mut out, label, CompletionKind::Function, ty, signature);
         }
 
         let literals = [

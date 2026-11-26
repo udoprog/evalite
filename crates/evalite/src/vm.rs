@@ -103,7 +103,7 @@ pub trait Host {
     ///     }
     /// }
     ///
-    /// let mut env = Environment::with_builtins();
+    /// let mut env = Environment::new();
     /// env.function("rating", [Type::string()], Type::int())?;
     /// let mut machine = Machine::default();
     ///
@@ -198,7 +198,7 @@ impl Outcome {
 /// ```
 /// use evalite::{Environment, Limits, Machine, Type, Value};
 ///
-/// let mut env = Environment::with_builtins();
+/// let mut env = Environment::new();
 /// env.value("strength", Type::int())?;
 /// env.value("bonus", Type::option(Type::int()))?;
 ///

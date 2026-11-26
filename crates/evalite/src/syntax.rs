@@ -22,8 +22,11 @@ pub(crate) enum Syntax {
     Unary,
     /// Two operands and the operator between them.
     Binary,
-    /// A `Name` and its `Args`.
+    /// A `Name` or `Path` and its `Args`.
     Call,
+    /// A type's name, `::` and a function's name, such as `Int::min`, which
+    /// only a `Call` holds.
+    Path,
     /// A receiver, `.`, a `Name` and its `Args`.
     Method,
     /// A receiver, `.` and a `Name`.
@@ -69,6 +72,7 @@ pub(crate) enum Syntax {
     CloseBracket,
     Comma,
     Dot,
+    ColonColon,
     /// Text the lexer rejected, already reported.
     Invalid,
 }
@@ -102,6 +106,7 @@ impl Syntax {
             Self::CloseBracket => "`]`",
             Self::Comma => "`,`",
             Self::Dot => "`.`",
+            Self::ColonColon => "`::`",
             Self::Whitespace => "whitespace",
             Self::Invalid => "text that is no token",
             Self::Root
@@ -110,6 +115,7 @@ impl Syntax {
             | Self::Unary
             | Self::Binary
             | Self::Call
+            | Self::Path
             | Self::Method
             | Self::Field
             | Self::Index
@@ -141,6 +147,31 @@ pub(crate) fn unescape(literal: &str) -> Option<String> {
     }
 
     Some(out)
+}
+
+/// A `Call`'s callee and the name it calls, such as `min` or `Int::min`,
+/// whitespace in a path left out.
+pub(crate) fn callee<'a>(
+    call: syntree::Node<'a, Syntax, syntree::FlavorDefault>,
+    source: &str,
+) -> Option<(syntree::Node<'a, Syntax, syntree::FlavorDefault>, String)> {
+    let node = call
+        .children()
+        .find(|n| matches!(n.value(), Syntax::Name | Syntax::Path))?;
+
+    let mut names = node
+        .children()
+        .filter(|n| n.value() == Syntax::NameToken)
+        .filter_map(|n| source.get(n.range()));
+
+    let first = names.next()?;
+
+    let name = match names.next() {
+        Some(second) => format!("{first}::{second}"),
+        None => first.to_owned(),
+    };
+
+    Some((node, name))
 }
 
 /// Whether `kind` is a unary or binary operator's token.

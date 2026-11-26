@@ -10,6 +10,7 @@ pub(crate) fn token_class(class: Class) -> Option<&'static str> {
         Class::Keyword => sockel::class::CODE_TOKEN_KEYWORD,
         Class::Ident => sockel::class::CODE_TOKEN_NAME,
         Class::Member => sockel::class::CODE_TOKEN_MEMBER,
+        Class::Type => sockel::class::CODE_TOKEN_TYPE,
         Class::Number => sockel::class::CODE_TOKEN_NUMBER,
         Class::String => sockel::class::CODE_TOKEN_STRING,
         Class::Punctuation | Class::Operator => sockel::class::CODE_TOKEN_PUNCTUATION,

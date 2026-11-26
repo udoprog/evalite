@@ -31,7 +31,7 @@ impl Options {
     /// ```
     /// use evalite::{Environment, Options};
     ///
-    /// let env = Environment::with_builtins();
+    /// let env = Environment::new();
     /// let deep = format!("{}1{}", "(".repeat(40), ")".repeat(40));
     ///
     /// assert!(evalite::compile_with(&deep, &env, &Options::new()).is_err());
@@ -56,7 +56,7 @@ impl Options {
     /// ```
     /// use evalite::{Environment, Options};
     ///
-    /// let env = Environment::with_builtins();
+    /// let env = Environment::new();
     ///
     /// assert!(evalite::compile_with("1 + 2", &env, &Options::new().max_len(5)).is_ok());
     /// assert!(evalite::compile_with("1 + 2", &env, &Options::new().max_len(4)).is_err());
@@ -503,11 +503,39 @@ impl Parser<'_> {
             Syntax::True | Syntax::False => self.literal(c, Syntax::Bool),
             Syntax::NameToken => {
                 self.bump()?;
-                self.close_at(&c, Syntax::Name)?;
+
+                let mut path = None;
+
+                if self.peek_kind() == Some(Syntax::ColonColon) {
+                    self.bump()?;
+                    let name = self.peek();
+
+                    let Some(name) = name.filter(|t| t.kind == Syntax::NameToken) else {
+                        let (found, at) = self.found(name);
+                        self.report(at, ErrorKind::ExpectedPathName(found));
+                        self.skip()?;
+                        self.close_at(&c, Syntax::Error)?;
+                        self.primary = Some(c);
+                        return Ok(State::Operator);
+                    };
+
+                    path = Some(name);
+                    self.bump()?;
+                    self.close_at(&c, Syntax::Path)?;
+                } else {
+                    self.close_at(&c, Syntax::Name)?;
+                }
 
                 if let Some(open) = self.peek().filter(|t| t.kind == Syntax::OpenParen) {
                     let args = self.checkpoint()?;
                     return self.open(Delimiter::Args, c, Some((args, Syntax::Call)), open);
+                }
+
+                if let Some(name) = path {
+                    let at = span(token.start, name.end);
+                    let path = format!("{}::{}", self.lexer_text(token), self.lexer_text(name));
+                    self.report(at, ErrorKind::PathAsValue(path));
+                    self.close_at(&c, Syntax::Error)?;
                 }
 
                 self.primary = Some(c);

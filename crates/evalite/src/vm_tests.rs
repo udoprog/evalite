@@ -283,10 +283,16 @@ const CASES: &[(&str, &str)] = &[
         "[some(2), some(1), none]",
     ),
     // Min, Max (functions and methods)
-    ("min(wits)", "2"),
-    ("min(dexterity, wits, strength)", "2"),
-    ("max(dexterity, wits, strength)", "4"),
+    ("Int::min(wits)", "2"),
+    ("Int::min(dexterity, wits, strength)", "2"),
+    ("Int::max(dexterity, wits, strength)", "4"),
     ("wits.min(dexterity)", "2"),
+    ("Int :: max(wits)", "2"),
+    // A method by path, the receiver first
+    ("Int::abs(-wits)", "2"),
+    ("Int::clamp(wits, 3, 5)", "3"),
+    ("Option::unwrap_or(bonus, 0)", "2"),
+    ("List::len([1, 2, 3])", "3"),
     ("wits.max(dexterity)", "3"),
     // Abs
     ("(-wits).abs()", "2"),
@@ -831,7 +837,7 @@ fn binding_errors() {
 fn memory_budget() {
     // `[10, 11, 12, 13].get(i)` takes 2 stack words, 4 constant words
     // and a word for `i`.
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
     env.value("i", Type::int()).unwrap();
     let program = compile("[10, 11, 12, 13].get(i)", &env).unwrap();
     assert_eq!(
@@ -891,7 +897,7 @@ fn memory_budget() {
 fn binding_memory() {
     // `l.len()` takes 1 stack word and 1 for `l`, so a machine of 2 + k
     // words takes a bound list of k entries, and no more.
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
     env.value("l", Type::list(Type::int())).unwrap();
     env.value("s", Type::string()).unwrap();
     let program = compile("l.len()", &env).unwrap();
@@ -951,8 +957,8 @@ fn fuel() {
     // call one more per word it returns.
     for (source, steps) in [
         ("[wits, wits, wits]", 7),
-        ("min(wits, wits, wits)", 7),
-        ("max(wits, wits)", 5),
+        ("Int::min(wits, wits, wits)", 7),
+        ("Int::max(wits, wits)", 5),
         ("many(4)", 6),
         ("wits.min(wits)", 5),
         ("flag || flag", 2),
@@ -1257,7 +1263,7 @@ fn option_layouts() {
         let option = Type::option(ty.clone());
         let holder = Type::record([("o", option.clone()), ("z", Type::int())]);
 
-        let mut env = Environment::with_builtins();
+        let mut env = Environment::new();
         env.value("o", option.clone()).unwrap();
         env.value("d", ty.clone()).unwrap();
         env.value("r", holder.clone()).unwrap();
@@ -1336,7 +1342,7 @@ fn option_layouts() {
 /// A list of `Option<Int>` takes two words an entry, wherever it is.
 #[test]
 fn list_of_optional_ints() {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
     env.value("l", Type::list(Type::option(Type::int())))
         .unwrap();
     env.value("o", Type::option(Type::int())).unwrap();
@@ -1435,7 +1441,7 @@ fn list_of_optional_ints() {
 /// what it binds and what the caller's functions return.
 #[test]
 fn word_budget() {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
     env.value("l", Type::list(Type::option(Type::int())))
         .unwrap();
     env.value("o", Type::option(Type::int())).unwrap();

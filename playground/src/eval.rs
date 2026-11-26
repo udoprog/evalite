@@ -107,9 +107,9 @@ pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Do
     })
 }
 
-/// The builtins, with `bindings` declared.
+/// An environment with `bindings` declared.
 pub fn environment(bindings: &[Binding]) -> Result<Environment, Rc<Ran>> {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
 
     for binding in bindings {
         env.value(&binding.name, binding.ty.clone())

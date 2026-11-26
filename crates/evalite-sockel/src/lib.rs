@@ -68,11 +68,11 @@
 //!
 //! #[function_component]
 //! fn Formula() -> Html {
-//!     let source = use_state(|| AttrValue::from("min(wits, 3) + bonus"));
+//!     let source = use_state(|| AttrValue::from("Int::min(wits, 3) + bonus"));
 //!     let errors = use_state(|| None::<Rc<Diagnostics>>);
 //!
 //!     let environment = use_memo((), |_| {
-//!         let mut env = Environment::with_builtins();
+//!         let mut env = Environment::new();
 //!         let _ = env.value("wits", Type::int());
 //!         let _ = env.value("bonus", Type::int());
 //!         env
@@ -116,7 +116,7 @@
 //! # fn rows() -> Html {
 //! html! {
 //!     <tr>
-//!         <td><ExpressionPreview source="min(wits, 3) + bonus" /></td>
+//!         <td><ExpressionPreview source="Int::min(wits, 3) + bonus" /></td>
 //!         <td><TypeBadge ty={Type::option(Type::int())} /></td>
 //!     </tr>
 //! }
@@ -160,7 +160,7 @@
 //! fn Damage() -> Html {
 //!     let source = use_state(|| AttrValue::from("1 + 2"));
 //!     let ran = use_state(|| None::<Rc<Ran>>);
-//!     let environment = use_memo((), |_| Environment::with_builtins());
+//!     let environment = use_memo((), |_| Environment::new());
 //!
 //!     let on_input = {
 //!         let source = source.clone();

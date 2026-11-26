@@ -7,13 +7,13 @@ use syntree::{FlavorDefault, Node, Span};
 
 use crate::Type;
 use crate::debug::DebugInfo;
-use crate::env::{Builtin, Environment, Overload};
+use crate::env::{Environment, Overload};
 use crate::error::{Arity, Callee, Diagnostic, Diagnostics, ErrorKind, Reporter};
-use crate::methods::{self, MethodSig};
+use crate::methods::{self, Associated, MethodSig, PathError};
 use crate::parser::{Options, Parsed, parse_with};
 use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
 use crate::sig::Mismatch;
-use crate::syntax::{Syntax, unescape};
+use crate::syntax::{Syntax, callee, unescape};
 use crate::types::{TypeId, TypeNode, Types};
 
 type N<'a> = Node<'a, Syntax, FlavorDefault>;
@@ -34,11 +34,11 @@ type N<'a> = Node<'a, Syntax, FlavorDefault>;
 /// ```
 /// use evalite::{Environment, Type};
 ///
-/// let mut env = Environment::with_builtins();
+/// let mut env = Environment::new();
 /// env.value("wits", Type::int())?;
 /// env.value("bonus", Type::option(Type::int()))?;
 ///
-/// let program = evalite::compile("min(wits, 3) + bonus.unwrap_or(0)", &env)?;
+/// let program = evalite::compile("Int::min(wits, 3) + bonus.unwrap_or(0)", &env)?;
 /// assert_eq!(program.result_type(), Type::int());
 ///
 /// let errors = evalite::compile("wits + bonus", &env).unwrap_err();
@@ -47,10 +47,10 @@ type N<'a> = Node<'a, Syntax, FlavorDefault>;
 ///     "`+` takes Int and Int, found Int and Option<Int>, unwrap the optional value first with `.unwrap_or(...)`"
 /// );
 ///
-/// let errors = evalite::compile("min(wits, true) + nothing", &env).unwrap_err();
+/// let errors = evalite::compile("Int::min(wits, true) + nothing", &env).unwrap_err();
 /// assert_eq!(
 ///     errors.to_string(),
-///     "argument 2 of `min` must be Int, found Bool\nunknown name `nothing`"
+///     "argument 2 of `Int::min` must be Int, found Bool\nunknown name `nothing`"
 /// );
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
@@ -81,7 +81,7 @@ pub fn compile_with(
 /// ```
 /// use evalite::{Environment, Machine, Options, Type, Value};
 ///
-/// let mut env = Environment::with_builtins();
+/// let mut env = Environment::new();
 /// env.value("bonus", Type::int())?;
 /// let source = "1 + 9223372036854775807 + bonus";
 /// let (program, debug) = evalite::compile_debug(source, &env, &Options::new())?;
@@ -144,6 +144,8 @@ enum Work<'a> {
     Paren(N<'a>),
     /// After a call's arguments.
     Call(N<'a>, &'a [Overload], String),
+    /// After the arguments of a call of a path, such as `Int::min(...)`.
+    Path(N<'a>, Associated, String),
     /// After a method's receiver.
     Method(N<'a>),
     /// After a method's arguments.
@@ -177,6 +179,7 @@ impl<'a> Work<'a> {
             | Work::LogicExit(node)
             | Work::Paren(node)
             | Work::Call(node, ..)
+            | Work::Path(node, ..)
             | Work::Method(node)
             | Work::MethodExit(node, ..)
             | Work::Field(node)
@@ -368,6 +371,7 @@ impl<'a> Compiler<'a> {
                     value.span = *node.span();
                 }
                 Work::Call(node, overloads, name) => self.call(node, overloads, name)?,
+                Work::Path(node, associated, path) => self.path(node, associated, path)?,
                 Work::Method(node) => self.method(node, work)?,
                 Work::MethodExit(node, method, callee) => self.method_exit(node, method, callee)?,
                 Work::Field(node) => self.field(node)?,
@@ -444,13 +448,19 @@ impl<'a> Compiler<'a> {
                 work.push(Work::Enter(left));
             }
             Syntax::Call => {
-                let name = parts
-                    .next()
-                    .ok_or_else(|| internal("a call without a name"))?;
-                let text = self.text(name);
+                let (name, text) =
+                    callee(node, self.source).ok_or_else(|| internal("a call without a name"))?;
 
-                match self.function(text, *name.span()) {
-                    Ok(overloads) => work.push(Work::Call(node, overloads, text.to_owned())),
+                let found = if name.value() == Syntax::Path {
+                    self.find_path(name)
+                        .map(|associated| Work::Path(node, associated, text))
+                } else {
+                    self.function(&text, *name.span())
+                        .map(|overloads| Work::Call(node, overloads, text))
+                };
+
+                match found {
+                    Ok(found) => work.push(found),
                     Err(error) if error.is_fatal() => return Err(error),
                     Err(error) => {
                         self.report(error);
@@ -555,6 +565,29 @@ impl<'a> Compiler<'a> {
                 },
             )),
         }
+    }
+
+    fn find_path(&self, path: N<'_>) -> Result<Associated, Diagnostic> {
+        let mut names = path.children().filter(|n| n.value() == Syntax::NameToken);
+
+        let (Some(ty), Some(name)) = (names.next(), names.next()) else {
+            return Err(internal("a path without two names"));
+        };
+
+        methods::find_path(self.text(ty), self.text(name)).map_err(|error| match error {
+            PathError::UnknownType => Diagnostic::new(
+                *ty.span(),
+                ErrorKind::UnknownPathType(self.text(ty).to_owned()),
+            ),
+            PathError::Unknown(ty, available) => Diagnostic::new(
+                *name.span(),
+                ErrorKind::UnknownAssociated {
+                    ty,
+                    name: self.text(name).to_owned(),
+                    available,
+                },
+            ),
+        })
     }
 
     fn unary(&mut self, node: N<'a>, start: usize) -> Result<(), Diagnostic> {
@@ -711,7 +744,7 @@ impl<'a> Compiler<'a> {
 
         for overload in overloads {
             match self.overload(overload, &found, span)? {
-                Ok(resolved) => return self.emit_call(&name, overload, resolved, &found, span),
+                Ok(resolved) => return self.emit_call(&name, resolved, &found, span),
                 Err(mismatch) => {
                     first.get_or_insert(mismatch);
                 }
@@ -741,68 +774,89 @@ impl<'a> Compiler<'a> {
         found: &[TypeId],
         at: Span<u32>,
     ) -> Result<Result<TypeId, Mismatch>, Diagnostic> {
-        Ok(match overload {
-            Overload::Builtin(builtin) => {
-                let found = found.iter().map(|t| self.ty(*t)).collect::<Vec<_>>();
+        if overload.params.len() != found.len() {
+            return Ok(Err(Mismatch::Count(Arity::Exactly(overload.params.len()))));
+        }
 
-                match builtin.signature().call(&found, None) {
-                    Ok(ret) => Ok(self.intern(&ret, at)?),
-                    Err(mismatch) => Err(mismatch),
-                }
+        for (n, (param, found)) in overload.params.iter().zip(found).enumerate() {
+            if self.intern(param, at)? != *found {
+                return Ok(Err(Mismatch::Argument(n, param.to_string())));
             }
-            Overload::Host { params, ret } => {
-                if params.len() != found.len() {
-                    Err(Mismatch::Count(Arity::Exactly(params.len())))
-                } else {
-                    let mut result = Ok(self.intern(ret, at)?);
+        }
 
-                    for (n, (param, found)) in params.iter().zip(found).enumerate() {
-                        if self.intern(param, at)? != *found {
-                            result = Err(Mismatch::Argument(n, param.to_string()));
-                            break;
-                        }
-                    }
-
-                    result
-                }
-            }
-        })
+        Ok(Ok(self.intern(&overload.ret, at)?))
     }
 
     fn emit_call(
         &mut self,
         name: &str,
-        overload: &Overload,
         ret: TypeId,
         found: &[TypeId],
         span: Span<u32>,
     ) -> Result<(), Diagnostic> {
-        let n = found.len();
+        let key = (name.to_owned(), found.to_vec());
 
-        let instr = match overload {
-            Overload::Builtin(Builtin::Min) => Instr::Min(count(n)?),
-            Overload::Builtin(Builtin::Max) => Instr::Max(count(n)?),
-            Overload::Host { .. } => {
-                let key = (name.to_owned(), found.to_vec());
-
-                let f = match self.function_ids.get(&key) {
-                    Some(f) => *f,
-                    None => {
-                        let f = count(self.functions.len())?;
-                        self.functions.push(HostFunction {
-                            name: name.to_owned(),
-                            params: found.to_vec(),
-                            ret,
-                        });
-                        self.function_ids.insert(key, f);
-                        f
-                    }
-                };
-
-                Instr::Call(f)
+        let f = match self.function_ids.get(&key) {
+            Some(f) => *f,
+            None => {
+                let f = count(self.functions.len())?;
+                self.functions.push(HostFunction {
+                    name: name.to_owned(),
+                    params: found.to_vec(),
+                    ret,
+                });
+                self.function_ids.insert(key, f);
+                f
             }
         };
 
+        self.emit(Instr::Call(f));
+        self.push(ret, span);
+        Ok(())
+    }
+
+    /// After the arguments of a call of the path `path`.
+    fn path(
+        &mut self,
+        node: N<'a>,
+        associated: Associated,
+        path: String,
+    ) -> Result<(), Diagnostic> {
+        let args = args_of(node);
+        let values = self.pop_n(args.len())?;
+        let span = *node.span();
+
+        if self.any_error(&values) {
+            self.push(self.error, span);
+            return Ok(());
+        }
+
+        let found = values.iter().map(|v| self.ty(v.ty)).collect::<Vec<_>>();
+
+        let ret = match associated.call(&found) {
+            Ok(ret) => self.intern(&ret, span)?,
+            Err(mismatch) => {
+                let callee = Callee::Function(path);
+                return Err(self.mismatch(mismatch, callee, &values, &args, node));
+            }
+        };
+
+        let instr = match associated {
+            Associated::Function(function) => Some((function.instr)(count(values.len())?)),
+            Associated::Method(method) => {
+                let receiver = values
+                    .first()
+                    .ok_or_else(|| internal("a method's path without a receiver"))?;
+                let held = match self.types.get(receiver.ty) {
+                    Some(TypeNode::List(held) | TypeNode::Option(held)) => Some(*held),
+                    _ => None,
+                };
+                (method.instr)(receiver.ty, held)
+            }
+        };
+
+        let instr =
+            instr.ok_or_else(|| internal(format_args!("`{path}` without an instruction")))?;
         self.emit(instr);
         self.push(ret, span);
         Ok(())

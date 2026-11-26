@@ -2,93 +2,26 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::Type;
-use crate::sig::{Shape, Signature};
 use crate::types::{TypeFault, check_type, is_value_name};
 
-/// A function evalite itself provides, which a caller adds to an
-/// [`Environment`] with [`Environment::builtin`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum Builtin {
-    /// `min(a, b, ...)`: the least of one or more `Int`s.
-    Min,
-    /// `max(a, b, ...)`: the greatest of one or more `Int`s.
-    Max,
-}
-
-impl Builtin {
-    /// Every builtin, as [`Environment::with_builtins`] declares them.
-    ///
-    /// ```
-    /// use evalite::Builtin;
-    ///
-    /// let names = Builtin::ALL.map(Builtin::name);
-    /// assert_eq!(names, ["min", "max"]);
-    /// ```
-    pub const ALL: [Builtin; 2] = [Self::Min, Self::Max];
-
-    /// The name it is called by.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Min => "min",
-            Self::Max => "max",
-        }
-    }
-
-    /// What it takes and gives.
-    pub(crate) fn signature(self) -> Signature {
-        match self {
-            Self::Min | Self::Max => Signature::repeating(&[Shape::Int], Shape::Int),
-        }
-    }
-}
-
-/// Its signature.
-///
-/// ```
-/// use evalite::Builtin;
-///
-/// let signatures = Builtin::ALL.map(|b| b.to_string());
-/// assert_eq!(signatures, [
-///     "min(Int, ...) -> Int",
-///     "max(Int, ...) -> Int",
-/// ]);
-/// ```
-impl fmt::Display for Builtin {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.signature().describe(self.name()))
-    }
-}
-
-/// One way to call a function.
+/// One way to call a caller's function, which the machine asks the caller
+/// to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Overload {
-    Builtin(Builtin),
-    /// The caller's function, which the machine asks the caller to run.
-    Host {
-        params: Vec<Type>,
-        ret: Type,
-    },
+pub(crate) struct Overload {
+    pub(crate) params: Vec<Type>,
+    pub(crate) ret: Type,
 }
 
 impl Overload {
-    /// It in full, called `name`: `max(Int, ...) -> Int`.
+    /// It in full, called `name`: `rating(String) -> Int`.
     pub(crate) fn signature(&self, name: &str) -> String {
-        match self {
-            Self::Builtin(builtin) => builtin.signature().describe(name),
-            Self::Host { ret, .. } => format!("{name}{} -> {ret}", self.describe()),
-        }
+        format!("{name}{} -> {}", self.describe(), self.ret)
     }
 
-    /// Its parameters as an error lists them, such as `(Int, ...)`.
+    /// Its parameters as an error lists them, such as `(String, Int)`.
     pub(crate) fn describe(&self) -> String {
-        match self {
-            Self::Builtin(builtin) => builtin.signature().describe_params(),
-            Self::Host { params, .. } => {
-                let params = params.iter().map(Type::to_string).collect::<Vec<_>>();
-                format!("({})", params.join(", "))
-            }
-        }
+        let params = self.params.iter().map(Type::to_string).collect::<Vec<_>>();
+        format!("({})", params.join(", "))
     }
 }
 
@@ -163,12 +96,11 @@ impl std::error::Error for DeclareError {}
 /// may call, which [`compile`](crate::compile) checks expressions against.
 ///
 /// ```
-/// use evalite::{Builtin, Environment, Type};
+/// use evalite::{Environment, Type};
 ///
 /// let mut env = Environment::new();
 /// env.value("strength", Type::int())?;
 /// env.value("bonus", Type::option(Type::int()))?;
-/// env.builtin(Builtin::Min);
 /// env.function("rating", [Type::string()], Type::int())?;
 /// # Ok::<_, evalite::DeclareError>(())
 /// ```
@@ -184,17 +116,6 @@ impl Environment {
         Self::default()
     }
 
-    /// An environment with every [`Builtin`].
-    pub fn with_builtins() -> Self {
-        let mut env = Self::new();
-
-        for builtin in Builtin::ALL {
-            env.builtin(builtin);
-        }
-
-        env
-    }
-
     /// Declare a value `name` of type `ty`, replacing any value of that
     /// name.
     ///
@@ -208,15 +129,6 @@ impl Environment {
         check(name, &ty)?;
         self.values.insert(name.to_owned(), ty);
         Ok(())
-    }
-
-    /// Add a builtin function under its name.
-    pub fn builtin(&mut self, builtin: Builtin) {
-        let overloads = self.functions.entry(builtin.name().to_owned()).or_default();
-
-        if !overloads.contains(&Overload::Builtin(builtin)) {
-            overloads.push(Overload::Builtin(builtin));
-        }
     }
 
     /// Declare a function of the caller's, which takes `params` and gives
@@ -245,16 +157,12 @@ impl Environment {
 
         let overloads = self.functions.entry(name.to_owned()).or_default();
 
-        for overload in overloads.iter_mut() {
-            if let Overload::Host { params: p, ret: r } = overload
-                && *p == params
-            {
-                *r = ret;
-                return Ok(());
-            }
+        if let Some(overload) = overloads.iter_mut().find(|o| o.params == params) {
+            overload.ret = ret;
+            return Ok(());
         }
 
-        overloads.push(Overload::Host { params, ret });
+        overloads.push(Overload { params, ret });
         Ok(())
     }
 
@@ -276,22 +184,24 @@ impl Environment {
     }
 
     /// Every declared function with each of its overloads written out, such
-    /// as `max(Int, ...) -> Int`, in name order, and in
-    /// declaration order among a name's overloads.
+    /// as `rating(String) -> Int`, in name order, and in declaration order
+    /// among a name's overloads.
     ///
     /// ```
     /// use evalite::{Environment, Type};
     ///
-    /// let mut env = Environment::with_builtins();
+    /// let mut env = Environment::new();
     /// env.function("rating", [Type::string()], Type::int())?;
+    /// env.function("rating", [Type::string(), Type::int()], Type::int())?;
+    /// env.function("count", [], Type::int())?;
     ///
     /// let (name, signatures) = env.functions().next().unwrap();
-    /// assert_eq!(name, "max");
-    /// assert_eq!(signatures, ["max(Int, ...) -> Int"]);
+    /// assert_eq!(name, "count");
+    /// assert_eq!(signatures, ["count() -> Int"]);
     ///
     /// let (name, signatures) = env.functions().last().unwrap();
     /// assert_eq!(name, "rating");
-    /// assert_eq!(signatures, ["rating(String) -> Int"]);
+    /// assert_eq!(signatures, ["rating(String) -> Int", "rating(String, Int) -> Int"]);
     /// # Ok::<_, evalite::DeclareError>(())
     /// ```
     pub fn functions(&self) -> impl Iterator<Item = (&str, Vec<String>)> {

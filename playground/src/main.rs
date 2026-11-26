@@ -312,7 +312,7 @@ fn Hero() -> Html {
                 </Cluster>
                 <p class={class::LEAD}>
                     { "Let your users write formulas like " }
-                    <code class={class::CODE}>{ "min(wits, dexterity) + athletics" }</code>
+                    <code class={class::CODE}>{ "Int::min(wits, dexterity) + athletics" }</code>
                     { ". evalite type-checks them before they run, and nothing they type can crash or hang your program." }
                 </p>
                 <Cluster gap={Gap::Tight}>
@@ -619,7 +619,7 @@ fn Playground(props: &PlaygroundProps) -> Html {
     };
 
     let environment = use_memo(input.bindings(), |bindings| {
-        eval::environment(bindings).unwrap_or_else(|_| Environment::with_builtins())
+        eval::environment(bindings).unwrap_or_else(|_| Environment::new())
     });
 
     let limit = |label: &'static str,

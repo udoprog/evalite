@@ -12,7 +12,7 @@ pub struct Example {
 pub const EXAMPLES: &[Example] = &[
     Example {
         title: "Dice pool",
-        source: "min(wits, dexterity) + athletics + dice[0] + dice[1] + dice[2]",
+        source: "Int::min(wits, dexterity) + athletics + dice[0] + dice[1] + dice[2]",
         vars: &[
             ("wits", "Int", "3"),
             ("dexterity", "Int", "2"),

@@ -18,7 +18,7 @@ use crate::{Syntax, Type};
 /// ```
 /// use evalite::{Environment, Type};
 ///
-/// let mut env = Environment::with_builtins();
+/// let mut env = Environment::new();
 /// env.value("strength", Type::int())?;
 ///
 /// let errors = evalite::compile("strength + true", &env).unwrap_err();
@@ -45,7 +45,7 @@ impl Diagnostic {
     /// label.
     ///
     /// ```
-    /// let env = evalite::Environment::with_builtins();
+    /// let env = evalite::Environment::new();
     ///
     /// let errors = evalite::compile("1 +", &env).unwrap_err();
     /// let error = errors.iter().next().unwrap();
@@ -63,7 +63,7 @@ impl Diagnostic {
     /// A syntax error has one label:
     ///
     /// ```
-    /// let env = evalite::Environment::with_builtins();
+    /// let env = evalite::Environment::new();
     ///
     /// let errors = evalite::compile("1 $ 2", &env).unwrap_err();
     /// let error = errors.iter().next().unwrap();
@@ -75,7 +75,7 @@ impl Diagnostic {
     /// where it had to close:
     ///
     /// ```
-    /// let env = evalite::Environment::with_builtins();
+    /// let env = evalite::Environment::new();
     ///
     /// let errors = evalite::compile("(1 + 2", &env).unwrap_err();
     /// let error = errors.iter().next().unwrap();
@@ -91,7 +91,7 @@ impl Diagnostic {
     /// ```
     /// use evalite::{Environment, Type};
     ///
-    /// let mut env = Environment::with_builtins();
+    /// let mut env = Environment::new();
     /// env.value("skills", Type::list(Type::int()))?;
     ///
     /// let errors = evalite::compile("skills[true]", &env).unwrap_err();
@@ -106,7 +106,7 @@ impl Diagnostic {
     /// ```
     /// use evalite::{Environment, Options};
     ///
-    /// let env = Environment::with_builtins();
+    /// let env = Environment::new();
     /// let options = Options::new().max_depth(2);
     ///
     /// let errors = evalite::compile_with("(((1)))", &env, &options).unwrap_err();
@@ -175,7 +175,7 @@ impl fmt::Debug for Diagnostic {
 /// ```
 /// use evalite::{Environment, Type};
 ///
-/// let mut env = Environment::with_builtins();
+/// let mut env = Environment::new();
 /// env.value("rank", Type::int())?;
 ///
 /// let errors = evalite::compile("rank + true + bonus * nothing", &env).unwrap_err();
@@ -189,11 +189,11 @@ impl fmt::Debug for Diagnostic {
 /// ]);
 ///
 /// // A syntax error is recovered from, and what is around it checked.
-/// let errors = evalite::compile("min(rank, , true) + bonus", &env).unwrap_err();
+/// let errors = evalite::compile("Int::min(rank, , true) + bonus", &env).unwrap_err();
 /// let messages: Vec<_> = errors.iter().map(|e| (e.to_string(), e.span().range())).collect();
 /// assert_eq!(messages, [
-///     ("expected an expression, found `,`".to_owned(), 10..11),
-///     ("unknown name `bonus`".to_owned(), 20..25),
+///     ("expected an expression, found `,`".to_owned(), 15..16),
+///     ("unknown name `bonus`".to_owned(), 25..30),
 /// ]);
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
@@ -391,6 +391,10 @@ pub(crate) enum ErrorKind {
     },
     /// A `.` not followed by a name.
     ExpectedName(Found),
+    /// No function name after a type's `::`.
+    ExpectedPathName(Found),
+    /// A type's function used as a value, such as `Int::min + 1`.
+    PathAsValue(String),
     /// A group that was not closed at `close_span`, where it had to be.
     /// The diagnostic's span is its opener.
     Unclosed {
@@ -447,6 +451,14 @@ pub(crate) enum ErrorKind {
         function: String,
         found: Vec<Type>,
         candidates: Vec<String>,
+    },
+    /// A path whose type has no functions, such as `Foo::min`.
+    UnknownPathType(String),
+    /// A function the type of a path does not have, such as `Int::foo`.
+    UnknownAssociated {
+        ty: &'static str,
+        name: String,
+        available: Vec<&'static str>,
     },
     /// A method the receiver's type does not have.
     UnknownMethod {
@@ -696,7 +708,10 @@ impl fmt::Display for Diagnostic {
                 write!(f, "unknown name `{name}`")?;
                 did_you_mean(f, suggestion)
             }
-            ErrorKind::FunctionAsValue(name) => {
+            ErrorKind::ExpectedPathName(found) => {
+                write!(f, "expected a function name after `::`, found {found}")
+            }
+            ErrorKind::PathAsValue(name) | ErrorKind::FunctionAsValue(name) => {
                 write!(f, "`{name}` is a function, call it with `{name}(...)`")
             }
             ErrorKind::UnknownFunction { name, suggestion } => {
@@ -756,6 +771,18 @@ impl fmt::Display for Diagnostic {
                     list(candidates.iter().map(String::as_str), "or")
                 )
             }
+            ErrorKind::UnknownPathType(ty) => {
+                write!(f, "`{ty}` is not a type with functions, such as `Int`")
+            }
+            ErrorKind::UnknownAssociated {
+                ty,
+                name,
+                available,
+            } => write!(
+                f,
+                "{ty} has no function `{name}`, its functions are {}",
+                list(available.iter().map(|m| format!("`{m}`")), "and")
+            ),
             ErrorKind::UnknownMethod {
                 receiver,
                 method,

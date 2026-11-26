@@ -63,7 +63,7 @@ const MERITS: usize = 12;
 
 /// A character sheet's declarations.
 fn env() -> Environment {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
 
     for name in ATTRIBUTES.iter().chain(&SKILLS) {
         env.value(name, Type::int()).unwrap();
@@ -256,7 +256,7 @@ fn cases() -> Vec<(&'static str, String)> {
         ),
         (
             "clamp_chain",
-            "min(max(strength + brawl - armor.unwrap_or(0), 0), 5).clamp(0, 10).max(size).min(humanity) + max(wits, composure, 1)"
+            "Int::min(Int::max(strength + brawl - armor.unwrap_or(0), 0), 5).clamp(0, 10).max(size).min(humanity) + Int::max(wits, composure, 1)"
                 .to_owned(),
         ),
         (
@@ -282,7 +282,9 @@ fn sheet() -> Vec<String> {
             n % BONUSES
         ));
         out.push(format!("{skill} == 0 && specialties.{skill}.is_none()"));
-        out.push(format!("max({attribute} + {skill} - health.count[1], 0)"));
+        out.push(format!(
+            "Int::max({attribute} + {skill} - health.count[1], 0)"
+        ));
     }
 
     for (n, attribute) in ATTRIBUTES.iter().enumerate() {
@@ -298,8 +300,8 @@ fn sheet() -> Vec<String> {
             "health.boxes - health.count[1] - health.count[2]",
             "resolve + composure",
             "willpower.boxes - willpower.count[1]",
-            "min(dexterity, wits) + athletics",
-            "min(wits, dexterity) + armor.unwrap_or(0)",
+            "Int::min(dexterity, wits) + athletics",
+            "Int::min(wits, dexterity) + armor.unwrap_or(0)",
             "size + strength + dexterity",
             "[10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].get(blood_potency).unwrap_or(10)",
             "feeding.get(blood_potency).unwrap_or(0)",

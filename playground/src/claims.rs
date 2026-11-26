@@ -149,7 +149,7 @@ pub const CLAIMS: &[Claim] = &[
         cases: &[],
         rust: Some(
             "// When the user saves the formula:\n\
-             let bytes = evalite::compile(\"min(wits, dexterity) + athletics\", &env)?.to_bytes()?;\n\
+             let bytes = evalite::compile(\"Int::min(wits, dexterity) + athletics\", &env)?.to_bytes()?;\n\
              \n\
              // Later, whenever the values change:\n\
              let program = Program::from_bytes(&bytes)?;\n\
@@ -179,17 +179,17 @@ pub const CLAIMS: &[Claim] = &[
                you can underline it in your own UI. Errors while running point too.",
         cases: &[
             case(
-                "min(1, (2 + 3)",
+                "Int::min(1, (2 + 3)",
                 &[],
                 Gives::Error(
-                    "expected `)` to close the `(` at byte 3, found the end of the expression",
+                    "expected `)` to close the `(` at byte 8, found the end of the expression",
                 ),
             ),
             case(
-                "min(rank, true) + bonus",
+                "Int::min(rank, true) + bonus",
                 &[("rank", "Int", "3")],
                 Gives::Errors(&[
-                    "argument 2 of `min` must be Int, found Bool",
+                    "argument 2 of `Int::min` must be Int, found Bool",
                     "unknown name `bonus`",
                 ]),
             ),
@@ -211,7 +211,12 @@ pub const CLAIMS: &[Claim] = &[
                 "rank + ",
                 COMPLETE_VARS,
                 Gives::Offers {
-                    some: &["rank", "bonus.unwrap_or(_)", "min(_, _)", "max(_, _)"],
+                    some: &[
+                        "rank",
+                        "bonus.unwrap_or(_)",
+                        "Int::min(_, _)",
+                        "Int::max(_, _)",
+                    ],
                     not: &["name", "bonus"],
                     more: true,
                 },
@@ -301,13 +306,13 @@ mod tests {
     fn storing_and_loading_as_shown() {
         use evalite::{Environment, Limits, Machine, Program, Type, Value};
 
-        let mut env = Environment::with_builtins();
+        let mut env = Environment::new();
 
         for name in ["wits", "dexterity", "athletics"] {
             env.value(name, Type::int()).unwrap();
         }
 
-        let bytes = evalite::compile("min(wits, dexterity) + athletics", &env)
+        let bytes = evalite::compile("Int::min(wits, dexterity) + athletics", &env)
             .unwrap()
             .to_bytes()
             .unwrap();

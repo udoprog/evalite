@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn every_diagnostic_is_marked() {
-        let env = Environment::with_builtins();
+        let env = Environment::new();
         let errors = evalite::compile("a + b", &env).unwrap_err();
         let marks = marks_of("a + b", &errors);
         let ranges = marks.iter().map(|m| m.range.clone()).collect::<Vec<_>>();
@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn stale_marks_stay_in_the_source() {
-        let env = Environment::with_builtins();
+        let env = Environment::new();
         let errors = evalite::compile("é + nothing", &env).unwrap_err();
         let marks = marks_of("é", &errors);
         assert!(marks.iter().all(|m| m.range.end <= 2));

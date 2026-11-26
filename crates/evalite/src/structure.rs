@@ -318,8 +318,8 @@ impl Node {
     /// let mut s = Structure::new();
     /// let a = s.add(Node::int(1))?;
     /// let b = s.add(Node::hole())?;
-    /// s.replace(s.root(), Node::call("max", [a, b]))?;
-    /// assert_eq!(s.to_text(), "max(1, _)");
+    /// s.replace(s.root(), Node::call("Int::max", [a, b]))?;
+    /// assert_eq!(s.to_text(), "Int::max(1, _)");
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn call(function: impl Into<String>, args: impl IntoIterator<Item = NodeId>) -> Self {
@@ -545,9 +545,9 @@ impl Node {
     /// ```
     /// use evalite::{Node, Structure};
     ///
-    /// let s = Structure::from_text("max(1, 2)")?;
+    /// let s = Structure::from_text("Int::max(1, 2)")?;
     /// let (function, args) = s.get(s.root()).and_then(Node::as_call).ok_or("not a call")?;
-    /// assert_eq!(function, "max");
+    /// assert_eq!(function, "Int::max");
     /// assert_eq!(args.len(), 2);
     ///
     /// // A method is not a call.
@@ -1046,17 +1046,17 @@ struct Stored {
 /// ```
 /// use evalite::{Environment, Node, Structure, Type};
 ///
-/// let mut env = Environment::with_builtins();
+/// let mut env = Environment::new();
 /// env.value("bonus", Type::option(Type::int()))?;
 ///
 /// let mut s = Structure::new();
 /// let bonus = s.add(Node::name("bonus"))?;
 /// let zero = s.add(Node::int(0))?;
 /// let unwrap = s.add(Node::method(bonus, Some("unwrap_or"), [zero]))?;
-/// s.replace(s.root(), Node::call("max", [unwrap]))?;
+/// s.replace(s.root(), Node::call("Int::max", [unwrap]))?;
 ///
-/// assert_eq!(s.to_text(), "max(bonus.unwrap_or(0))");
-/// assert_eq!(Structure::from_text("max(bonus.unwrap_or(0))")?, s);
+/// assert_eq!(s.to_text(), "Int::max(bonus.unwrap_or(0))");
+/// assert_eq!(Structure::from_text("Int::max(bonus.unwrap_or(0))")?, s);
 /// assert_eq!(s.compile(&env)?.result_type(), Type::int());
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
@@ -1362,7 +1362,7 @@ impl Structure {
     /// ```
     /// use evalite::{Environment, Machine, Options, Structure};
     ///
-    /// let env = Environment::with_builtins();
+    /// let env = Environment::new();
     /// let structure = Structure::from_text("(1 + 2) * [3][4]")?;
     /// let (program, debug) = structure.compile_debug(&env, &Options::new())?;
     ///
@@ -1679,9 +1679,10 @@ fn compile_node_debug(
             StructureKind::Hole
         } else {
             let name = match node {
-                Node(Repr::Name(name)) | Node(Repr::Call { function: name, .. }) => {
+                Node(Repr::Name(name)) => {
                     Some(name).filter(|n| !is_value_name(n) || is_reserved(n))
                 }
+                Node(Repr::Call { function, .. }) => Some(function).filter(|n| !is_callee(n)),
                 Node(Repr::Method {
                     name: Some(name), ..
                 })
@@ -2037,13 +2038,10 @@ fn from_tree(source: &str, tree: &Tree) -> Result<Structure, Diagnostic> {
                 })
             }
             Syntax::Call => {
-                let function = node
-                    .children()
-                    .find(|n| n.value() == Syntax::Name)
-                    .map(text)
+                let (_, function) = crate::syntax::callee(node, source)
                     .ok_or_else(|| internal("a call without a name"))?;
                 Node(Repr::Call {
-                    function: function.to_owned(),
+                    function,
                     args: parts,
                 })
             }
@@ -2085,6 +2083,17 @@ fn from_tree(source: &str, tree: &Tree) -> Result<Structure, Diagnostic> {
 
     s.root = *root;
     Ok(s)
+}
+
+/// Whether a call may name `name`: a function, or a type's function such as
+/// `Int::min`.
+fn is_callee(name: &str) -> bool {
+    match name.split_once("::") {
+        Some((ty, name)) => {
+            is_field_name(ty) && is_field_name(name) && !is_reserved(ty) && !is_reserved(name)
+        }
+        None => is_value_name(name) && !is_reserved(name),
+    }
 }
 
 fn is_expr(kind: Syntax) -> bool {

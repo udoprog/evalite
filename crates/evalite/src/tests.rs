@@ -123,6 +123,7 @@ fn render(source: &str, node: N<'_>) -> String {
                     | Syntax::CloseBracket
                     | Syntax::Comma
                     | Syntax::Dot
+                    | Syntax::ColonColon
             )
         })
         .map(|n| render(source, n))
@@ -137,6 +138,7 @@ fn render(source: &str, node: N<'_>) -> String {
         Syntax::Unary => format!("({} {})", parts[0], parts[1]),
         Syntax::Paren => format!("(paren {})", parts[0]),
         Syntax::List => format!("[{}]", parts.join(" ")),
+        Syntax::Path => parts.join("::"),
         Syntax::Args => parts.join(" "),
         Syntax::Call => format!("(call {})", parts.join(" ").trim_end()),
         Syntax::Method => format!("(method {})", parts.join(" ").trim_end()),
@@ -321,6 +323,8 @@ fn groups() {
         ("f()", "(call f)"),
         ("f(a)", "(call f a)"),
         ("min(a, b)", "(call min a b)"),
+        ("Int::min(a, b)", "(call Int::min a b)"),
+        ("Int :: min(a)", "(call Int::min a)"),
         ("f(g(h(1)))", "(call f (call g (call h 1)))"),
         ("f([1, 2], \"t\")", "(call f [1 2] \"t\")"),
     ]);
@@ -668,6 +672,32 @@ fn error_expected_name() {
             "a.\"b\"",
             "expected a field or method name after `.`, found a string",
             2..5,
+        ),
+    ]);
+}
+
+#[test]
+fn error_paths() {
+    errors(&[
+        (
+            "Int::",
+            "expected a function name after `::`, found the end of the expression",
+            5..5,
+        ),
+        (
+            "Int::1 + a",
+            "expected a function name after `::`, found an integer",
+            5..6,
+        ),
+        (
+            "Int::min + 1",
+            "`Int::min` is a function, call it with `Int::min(...)`",
+            0..8,
+        ),
+        (
+            "Int :: min",
+            "`Int::min` is a function, call it with `Int::min(...)`",
+            0..10,
         ),
     ]);
 }
@@ -1362,7 +1392,7 @@ fn recover_too_deep() {
 /// nothing about the error is reported again.
 #[test]
 fn recover_checks_around() {
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
     env.value("rank", Type::int()).unwrap();
 
     let messages = |source: &str| {
@@ -1374,10 +1404,10 @@ fn recover_checks_around() {
     };
 
     assert_eq!(
-        messages("min(rank, , true) + nothing"),
+        messages("Int::min(rank, , true) + nothing"),
         [
-            ("expected an expression, found `,`".to_owned(), 10..11),
-            ("unknown name `nothing`".to_owned(), 20..27),
+            ("expected an expression, found `,`".to_owned(), 15..16),
+            ("unknown name `nothing`".to_owned(), 25..32),
         ]
     );
     assert_eq!(
@@ -1554,7 +1584,7 @@ fn check_any(source: &str, options: &Options, max_depth: usize) {
 
     assert!(deep <= 1, "{source:?}: {errors:?}");
 
-    let mut env = Environment::with_builtins();
+    let mut env = Environment::new();
     env.value("a", Type::int()).unwrap();
     env.value("b1", Type::list(Type::int())).unwrap();
     env.value("_x", Type::option(Type::bool())).unwrap();

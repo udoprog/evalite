@@ -1,7 +1,9 @@
-//! The methods each type has: the one table the checker resolves method
-//! calls with and completions offer methods from.
+//! The methods and functions each type has: the one table the checker
+//! resolves method calls and paths such as `Int::min(a, b)` with, and
+//! completions offer them from.
 
 use crate::Type;
+use crate::error::Arity;
 use crate::program::Instr;
 use crate::sig::{Mismatch, Shape, Signature};
 use crate::types::TypeId;
@@ -40,6 +42,29 @@ impl MethodSig {
     /// not take them.
     pub(crate) fn call(&self, receiver: &Type, args: &[Type]) -> Result<Type, Mismatch> {
         self.sig.call(args, self.bind(receiver).flatten())
+    }
+
+    /// What calling it by path with `args`, the receiver first, gives, or
+    /// why it does not take them.
+    fn call_by_path(&self, args: &[Type]) -> Result<Type, Mismatch> {
+        let count = || Mismatch::Count(Arity::Exactly(self.sig.params.len().saturating_add(1)));
+
+        let Some((receiver, rest)) = args.split_first() else {
+            return Err(count());
+        };
+
+        if rest.len() != self.sig.params.len() {
+            return Err(count());
+        }
+
+        let Some(t) = self.bind(receiver) else {
+            return Err(Mismatch::Argument(0, self.receiver.to_string()));
+        };
+
+        self.sig.call(rest, t).map_err(|mismatch| match mismatch {
+            Mismatch::Count(_) => count(),
+            Mismatch::Argument(n, ty) => Mismatch::Argument(n.saturating_add(1), ty),
+        })
     }
 
     /// It in full: `Option<T>.unwrap_or(T) -> T`.
@@ -136,4 +161,114 @@ pub(crate) fn find(ty: &Type, name: &str) -> Option<&'static MethodSig> {
 /// The names of the methods a value of type `ty` has, in name order.
 pub(crate) fn method_names(ty: &Type) -> Vec<&'static str> {
     methods_of(ty).map(|m| m.name).collect()
+}
+
+/// A function of a type, called by its path, such as `Int::min(a, b)`.
+#[derive(Debug)]
+pub(crate) struct FunctionSig {
+    pub(crate) ty: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) sig: Signature,
+    /// Its instruction, given how many arguments it is called with.
+    pub(crate) instr: fn(u32) -> Instr,
+}
+
+impl FunctionSig {
+    /// It in full: `Int::min(Int, ...) -> Int`.
+    pub(crate) fn describe(&self) -> String {
+        self.sig.describe(&self.path())
+    }
+
+    /// Its path: `Int::min`.
+    pub(crate) fn path(&self) -> String {
+        format!("{}::{}", self.ty, self.name)
+    }
+}
+
+/// Every function of a type, by type, in name order. A type's methods are
+/// its functions too, taking the receiver first, unless one here has the
+/// same name.
+pub(crate) const FUNCTIONS: &[FunctionSig] = &[
+    FunctionSig {
+        ty: "Int",
+        name: "max",
+        sig: Signature::repeating(&[Shape::Int], Shape::Int),
+        instr: Instr::Max,
+    },
+    FunctionSig {
+        ty: "Int",
+        name: "min",
+        sig: Signature::repeating(&[Shape::Int], Shape::Int),
+        instr: Instr::Min,
+    },
+];
+
+/// What a path such as `Int::min` calls.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Associated {
+    Function(&'static FunctionSig),
+    /// A method, called with the receiver as the first argument.
+    Method(&'static MethodSig),
+}
+
+impl Associated {
+    /// What calling it with `args` gives, or why it does not take them.
+    pub(crate) fn call(self, args: &[Type]) -> Result<Type, Mismatch> {
+        match self {
+            Self::Function(function) => function.sig.call(args, None),
+            Self::Method(method) => method.call_by_path(args),
+        }
+    }
+}
+
+/// The name a path calls a method receiving `shape` by: `Int` for
+/// `Int::abs`, `Option` for `Option::unwrap_or`.
+fn type_name(shape: Shape) -> Option<&'static str> {
+    match shape {
+        Shape::Int => Some("Int"),
+        Shape::Bool => Some("Bool"),
+        Shape::List(_) => Some("List"),
+        Shape::Option(_) => Some("Option"),
+        Shape::Var => None,
+    }
+}
+
+/// Why a path calls nothing.
+pub(crate) enum PathError {
+    /// No type of that name has functions.
+    UnknownType,
+    /// The type has no function of that name, only these.
+    Unknown(&'static str, Vec<&'static str>),
+}
+
+/// What the path `ty::name` calls.
+pub(crate) fn find_path(ty: &str, name: &str) -> Result<Associated, PathError> {
+    if let Some(function) = FUNCTIONS.iter().find(|f| f.ty == ty && f.name == name) {
+        return Ok(Associated::Function(function));
+    }
+
+    let methods = METHODS.iter().filter(|m| type_name(m.receiver) == Some(ty));
+
+    if let Some(method) = methods.clone().find(|m| m.name == name) {
+        return Ok(Associated::Method(method));
+    }
+
+    let functions = FUNCTIONS.iter().filter(|f| f.ty == ty);
+
+    let Some(ty) = functions
+        .clone()
+        .map(|f| f.ty)
+        .chain(methods.clone().filter_map(|m| type_name(m.receiver)))
+        .next()
+    else {
+        return Err(PathError::UnknownType);
+    };
+
+    let mut names = functions
+        .map(|f| f.name)
+        .chain(methods.map(|m| m.name))
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names.dedup();
+    Err(PathError::Unknown(ty, names))
 }
