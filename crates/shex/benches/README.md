@@ -67,11 +67,24 @@ all of them from compiled programs, with the bindings prepared
 
 ## Profiling
 
-There is no `perf` on the usual machine; callgrind works:
+There is no `perf` on the usual machine; callgrind works. Build with debug
+info and run one benchmark under it (cargo prints the executable's path):
 
 ```sh
 CARGO_PROFILE_BENCH_DEBUG=true cargo bench -p shex --bench shex --no-run
 valgrind --tool=callgrind --callgrind-out-file=/tmp/shex.cg \
-    target/release/deps/shex-<hash> --bench '^sheet/evaluate$' --profile-time 2
+    target/release/build/shex/<hash>/out/shex-<hash> --bench '^sheet/evaluate$' --profile-time 2
 callgrind_annotate --inclusive=yes /tmp/shex.cg | head -60
 ```
+
+## Where the time went (2026-11-26, `86ce38ce`)
+
+On a Ryzen 9 9950X3D with rustc 1.100.0, `sheet/evaluate` took about
+125 µs for 108 values, `sheet/compile` 460 µs and `sheet/from_bytes`
+180 µs. Under callgrind, `Run::bind` was 78% of `sheet/evaluate`'s
+instructions: `measure` 45% and `write` 23%, most of it comparing record
+field names and allocating. Cloning and dropping the bound `Value`s was
+most of the rest. `run_with` was 10%, reading the result 1% of that.
+The run loop costs about 5 ns an instruction (`stage/long`). Calling
+`Program::globals()` for every evaluation (`sheet/evaluate_lookup`)
+nearly doubles the time, since it builds each `Type` again.
