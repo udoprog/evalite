@@ -2,7 +2,7 @@ use std::fmt;
 
 use syntree::Span;
 
-use crate::message::Labels;
+use crate::message::{Labels, plural};
 use crate::types::Kind;
 use crate::{Syntax, Type};
 
@@ -303,8 +303,7 @@ impl fmt::Display for Arity {
             Self::AtLeast(n) => ("at least ", n),
         };
 
-        let s = if n == 1 { "" } else { "s" };
-        write!(f, "{prefix}{n} argument{s}")
+        write!(f, "{prefix}{}", plural(n, "argument", "arguments"))
     }
 }
 
@@ -443,11 +442,13 @@ impl fmt::Display for ParseError {
             }
             ErrorKind::TooDeep { nesting, max } => write!(
                 f,
-                "{nesting} nests too deeply, the limit is {max} levels of nesting"
+                "{nesting} nests too deeply, the limit is {} of nesting",
+                plural(*max, "level", "levels")
             ),
             ErrorKind::TooLong(len) => write!(
                 f,
-                "the expression is {len} bytes long, more than the {} that can be parsed",
+                "the expression is {} long, more than the {} that can be parsed",
+                plural(*len, "byte", "bytes"),
                 u32::MAX
             ),
             ErrorKind::Internal(message) => write!(f, "internal error in evalite: {message}"),
@@ -583,8 +584,8 @@ impl fmt::Display for ParseError {
             }
             ErrorKind::TypeTooDeep => write!(
                 f,
-                "this value's type nests more than {} levels",
-                crate::MAX_TYPE_DEPTH
+                "this value's type nests more than {}",
+                plural(crate::MAX_TYPE_DEPTH, "level", "levels")
             ),
             ErrorKind::TooLarge => f.write_str("this expression is too large to compile"),
         }

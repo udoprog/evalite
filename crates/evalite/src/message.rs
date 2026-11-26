@@ -202,17 +202,23 @@ impl fmt::Display for Invalid {
             Self::NotOneResult { values } => {
                 return write!(
                     f,
-                    "it ends with {values} values on the stack, not one of its result type"
+                    "it ends with {} on the stack, not one of its result type",
+                    plural(*values, "value", "values")
                 );
             }
             Self::MemoryMismatch { declared, used } if declared == used => {
                 return write!(
                     f,
-                    "it declares {declared} words of memory, but uses them otherwise"
+                    "it declares {} of memory, but uses them otherwise",
+                    plural(*declared, "word", "words")
                 );
             }
             Self::MemoryMismatch { declared, used } => {
-                return write!(f, "it declares {declared} words of memory but uses {used}");
+                return write!(
+                    f,
+                    "it declares {} of memory but uses {used}",
+                    plural(*declared, "word", "words")
+                );
             }
             Self::TooManyNodes => "there are too many nodes to number",
             Self::PartPastEnd => "the node has a part past the end",
@@ -396,7 +402,8 @@ impl fmt::Display for Shown<'_> {
         match self.message {
             Message::TooMuchMemory { needed, allowed } => write!(
                 f,
-                "the program needs {needed} words of memory, more than the {allowed} the machine allows"
+                "the program needs {} of memory, more than the {allowed} the machine allows",
+                plural(*needed, "word", "words")
             ),
             Message::UnknownValue => f.write_str("the program reads no value of that name"),
             Message::AlreadyBound { global } => match global_name(p, *global) {
@@ -442,7 +449,8 @@ impl fmt::Display for Shown<'_> {
             }
             Message::TooLarge { needed, left } => write!(
                 f,
-                "the value needs {needed} words of memory, {left} are left"
+                "the value needs {} of memory, {left} are left",
+                plural(*needed, "word", "words")
             ),
             Message::Unbound { global } => match (global_name(p, *global), global_type(p, *global))
             {
@@ -453,7 +461,8 @@ impl fmt::Display for Shown<'_> {
             },
             Message::OutOfFuel { fuel } => write!(
                 f,
-                "the expression took too long: it used all of its {fuel} steps"
+                "the expression took too long: it used all of its {}",
+                plural(*fuel, "step", "steps")
             ),
             Message::Overflow { op, a, b } => {
                 f.write_str("`")?;
@@ -466,10 +475,10 @@ impl fmt::Display for Shown<'_> {
                 f.write_str("` divides by zero")
             }
             Message::IndexOutOfRange { index, len } => {
-                let entries = if *len == 1 { "entry" } else { "entries" };
                 write!(
                     f,
-                    "index {index} is out of range of a list of {len} {entries}"
+                    "index {index} is out of range of a list of {}",
+                    plural(*len, "entry", "entries")
                 )
             }
             Message::EmptyLookup => f.write_str("`lookup` of an empty list has no entry to give"),
@@ -559,6 +568,29 @@ fn write_op(f: &mut fmt::Formatter<'_>, op: Op, a: i64, b: i64) -> fmt::Result {
     };
 
     write!(f, "{a} {op} {b}")
+}
+
+/// Displays a count with the singular or plural noun to match.
+pub(crate) struct Plural<T> {
+    n: T,
+    one: &'static str,
+    many: &'static str,
+}
+
+/// Shows `n` followed by `one` when it is 1 and `many` otherwise.
+pub(crate) fn plural<T>(n: T, one: &'static str, many: &'static str) -> Plural<T> {
+    Plural { n, one, many }
+}
+
+impl<T: fmt::Display + Copy + PartialEq + From<u8>> fmt::Display for Plural<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let noun = if self.n == T::from(1) {
+            self.one
+        } else {
+            self.many
+        };
+        write!(f, "{} {noun}", self.n)
+    }
 }
 
 fn index<T>(items: &[T], at: u32) -> Option<&T> {
@@ -1141,7 +1173,7 @@ impl<'a> Label<'a> {
     ///
     /// let messages: Vec<String> = error.labels(&program, None).map(|l| l.message().to_string()).collect();
     /// assert_eq!(messages, [
-    ///     "the expression took too long: it used all of its 1 steps",
+    ///     "the expression took too long: it used all of its 1 step",
     ///     "while running instruction 1",
     ///     "while running the program",
     /// ]);

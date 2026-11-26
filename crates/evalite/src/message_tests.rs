@@ -743,3 +743,13 @@ fn errors_are_one_word() {
     assert_eq!(size_of::<RunError>(), size_of::<usize>());
     assert_eq!(size_of::<Result<(), RunError>>(), size_of::<usize>());
 }
+
+#[test]
+fn counts_of_one_are_singular() {
+    use crate::message::plural;
+
+    assert_eq!(plural(1u32, "word", "words").to_string(), "1 word");
+    assert_eq!(plural(0u32, "word", "words").to_string(), "0 words");
+    assert_eq!(plural(1u64, "step", "steps").to_string(), "1 step");
+    assert_eq!(plural(2usize, "entry", "entries").to_string(), "2 entries");
+}

@@ -1271,7 +1271,7 @@ fn tampered_programs() {
         (
             "1 + 2",
             Box::new(|s| s.code[2] = Instr::Lt),
-            "it ends with 1 values on the stack, not one of its result type: while verifying the program",
+            "it ends with 1 value on the stack, not one of its result type: while verifying the program",
         ),
         (
             "1 + 2",
@@ -1495,7 +1495,7 @@ fn tampered_programs() {
         (
             "wits",
             Box::new(|s| s.result = TypeId(1)),
-            "it ends with 1 values on the stack, not one of its result type: while verifying the program",
+            "it ends with 1 value on the stack, not one of its result type: while verifying the program",
         ),
         (
             "wits",
@@ -1585,7 +1585,7 @@ fn stored_bytes_errors() {
     let error = load(&stored).unwrap_err();
     assert_eq!(
         format!("{error:#}"),
-        "it declares 1 words of memory but uses 3: while verifying the program"
+        "it declares 1 word of memory but uses 3: while verifying the program"
     );
 
     // The chain, frame by frame, as labels show it.
@@ -1596,7 +1596,7 @@ fn stored_bytes_errors() {
     assert_eq!(
         labels,
         [
-            ("it declares 1 words of memory but uses 3".to_owned(), true),
+            ("it declares 1 word of memory but uses 3".to_owned(), true),
             ("while verifying the program".to_owned(), false),
         ]
     );
