@@ -147,8 +147,13 @@ impl Session<'_> {
         let options = Options::new()
             .max_depth(self.cli.max_depth)
             .max_len(self.cli.max_len);
-        let (program, debug) = evalite::compile_debug(source, &self.env, &options)
-            .map_err(|error| render(source, error.labels()))?;
+        let (program, debug) =
+            evalite::compile_debug(source, &self.env, &options).map_err(|errors| {
+                errors
+                    .iter()
+                    .map(|error| render(source, error.labels()))
+                    .collect::<String>()
+            })?;
         let mut machine = Machine::new(Limits::new().memory(self.cli.memory).fuel(self.cli.fuel));
 
         let failed = |error: RunError| render(source, error.labels(&program, Some(&debug)));

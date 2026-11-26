@@ -13,7 +13,7 @@ use std::iter::FusedIterator;
 use syntree::Span;
 
 use crate::debug::DebugInfo;
-use crate::error::{ParseError, ParseText};
+use crate::error::{Diagnostic, ParseText};
 use crate::program::Program;
 use crate::types::is_field_name;
 use crate::types::{TypeId, TypeNode};
@@ -1042,7 +1042,7 @@ enum LabelsInner<'a> {
         first: bool,
     },
     Parse {
-        error: &'a ParseError,
+        error: &'a Diagnostic,
         /// The index of the next label.
         next: usize,
     },
@@ -1052,7 +1052,7 @@ enum LabelsInner<'a> {
 
 impl<'a> Labels<'a> {
     /// The labels of a parse or type error.
-    pub(crate) fn parse(error: &'a ParseError) -> Self {
+    pub(crate) fn parse(error: &'a Diagnostic) -> Self {
         Self {
             inner: LabelsInner::Parse { error, next: 0 },
         }

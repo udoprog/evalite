@@ -35,9 +35,9 @@ caught before it runs, and no input can crash, hang or exhaust the host.
   may be corrupt or tampered with, so [`Program::from_bytes`] checks them
   again and refuses anything that is not a valid, well-typed program.
   Cutting the last byte off gives "the bytes do not decode".
-- **Errors that point.** Each error says what it expected and what it found,
-  and its [labels] mark where, so you can underline it in your own UI.
-  `min(1, (2 + 3)` gives "expected `)` to close the `(` at byte 3, found the
+- **Errors that point.** Every mistake is reported, not only the first,
+  and each says what it expected and what it found, while its [labels]
+  mark where, so you can underline it in your own UI. `min(1, (2 + 3)` gives "expected `)` to close the `(` at byte 3, found the
   end of the expression", pointing at the end and noting where the `(` was
   opened. See [Errors](#errors).
 - **Autocomplete that only offers what fits.** Leave a hole in a
@@ -75,7 +75,8 @@ let outcome = run.run()?;
 assert_eq!(outcome.value().as_int(), Some(3));
 
 // Mistakes are caught when compiling, and point at the input.
-let error = evalite::compile("wits + bonus", &env).unwrap_err();
+let errors = evalite::compile("wits + bonus", &env).unwrap_err();
+let error = errors.iter().next().unwrap();
 assert_eq!(
     error.to_string(),
     "`+` takes Int and Int, found Int and Option<Int>, unwrap the optional value first with `.unwrap_or(...)`",
@@ -276,14 +277,19 @@ assert!(Program::from_bytes(&stored[..stored.len() - 1]).is_err());
 ## Errors
 
 Every error is opaque and implements `Display` and `std::error::Error`.
-Those that point into the input, [`ParseError`], [`StructureError`] and
-[`RunError`], give [`Label`]s: a message and the span it is about, the
+Compiling reports every mistake it finds as [`Diagnostics`], in source
+order, at most [`MAX_DIAGNOSTICS`] of them. Each mistake is reported once:
+an expression in error is not reported again by what uses it, so
+`rank + true + bonus` reports `rank + true`, not `+ bonus` as well.
+
+Those that point into the input, each [`Diagnostic`], [`StructureError`]
+and [`RunError`], give [`Label`]s: a message and the span it is about, the
 primary label first and then what explains it, such as where an unclosed
 bracket was opened or what was being done when a run failed. This is
 enough to draw them under the input, as the CLI does:
 
 ```rust
-use evalite::{Environment, Labels};
+use evalite::{Environment, Labels, Type};
 
 fn render(source: &str, labels: Labels<'_>) -> String {
     let mut out = String::new();
@@ -302,8 +308,25 @@ fn render(source: &str, labels: Labels<'_>) -> String {
     out
 }
 
+let mut env = Environment::with_builtins();
+env.value("rank", Type::int())?;
+
+let source = "min(rank, true) + bonus";
+let errors = evalite::compile(source, &env).unwrap_err();
+let rendered: String = errors.iter().map(|error| render(source, error.labels())).collect();
+
+assert_eq!(rendered, "\
+error: argument 2 of `min` must be Int, found Bool
+  min(rank, true) + bonus
+            ^^^^
+error: unknown name `bonus`
+  min(rank, true) + bonus
+                    ^^^^^
+");
+
 let source = "min(1, (2 + 3)";
-let error = evalite::compile(source, &Environment::with_builtins()).unwrap_err();
+let errors = evalite::compile(source, &env).unwrap_err();
+let error = errors.iter().next().unwrap();
 
 assert_eq!(render(source, error.labels()), "\
 error: expected `)` to close the `(` at byte 3, found the end of the expression
@@ -398,7 +421,7 @@ Callers build things through constructors, such as [`Value::int`], and
 read them through methods that never panic, such as [`Value::as_int`].
 Errors are opaque: they implement `Display` and `std::error::Error`, and
 where they point into source text they are inspected through
-`labels()`, as [`ParseError::labels`] is. A predicate is added only for a
+`labels()`, as [`Diagnostic::labels`] is. A predicate is added only for a
 named caller that must tell errors apart. Items only the crate's own
 tests use are `pub(crate)`. Every public item is documented, with an
 example covering its failure paths, which `#![deny(missing_docs)]` and
@@ -411,17 +434,19 @@ clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 [`DEFAULT_MAX_DEPTH`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MAX_DEPTH.html
 [`DEFAULT_MAX_LEN`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MAX_LEN.html
 [`DEFAULT_MEMORY`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MEMORY.html
+[`Diagnostic::labels`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html#method.labels
+[`Diagnostic`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html
+[`Diagnostics`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostics.html
 [`Environment::with_builtins`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html#method.with_builtins
 [`Label`]: https://docs.rs/evalite/latest/evalite/struct.Label.html
 [`Limits::fuel`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.fuel
 [`Limits::memory`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.memory
 [`Machine::load`]: https://docs.rs/evalite/latest/evalite/struct.Machine.html#method.load
+[`MAX_DIAGNOSTICS`]: https://docs.rs/evalite/latest/evalite/constant.MAX_DIAGNOSTICS.html
 [`Node`]: https://docs.rs/evalite/latest/evalite/struct.Node.html
 [`NodeId`]: https://docs.rs/evalite/latest/evalite/struct.NodeId.html
 [`Options::max_depth`]: https://docs.rs/evalite/latest/evalite/struct.Options.html#method.max_depth
 [`Options::max_len`]: https://docs.rs/evalite/latest/evalite/struct.Options.html#method.max_len
-[`ParseError::labels`]: https://docs.rs/evalite/latest/evalite/struct.ParseError.html#method.labels
-[`ParseError`]: https://docs.rs/evalite/latest/evalite/struct.ParseError.html
 [`Program::from_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Program.html#method.from_bytes
 [`Program::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Program.html#method.to_bytes
 [`Program`]: https://docs.rs/evalite/latest/evalite/struct.Program.html
@@ -434,4 +459,4 @@ clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 [`Value::as_int`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.as_int
 [`Value::int`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.int
 [completions]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.complete
-[labels]: https://docs.rs/evalite/latest/evalite/struct.ParseError.html#method.labels
+[labels]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html#method.labels

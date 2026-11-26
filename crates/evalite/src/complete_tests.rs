@@ -711,7 +711,9 @@ fn method_table_matches_the_checker() {
             };
             let error = compile(&format!("r{n}.{}({extra})", sig.name), &env).unwrap_err();
             assert!(
-                matches!(error.kind(), ErrorKind::ArgumentCount { .. }),
+                error
+                    .iter()
+                    .any(|e| matches!(e.kind(), ErrorKind::ArgumentCount { .. })),
                 "{text}: {error}"
             );
         }

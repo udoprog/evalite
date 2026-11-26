@@ -58,8 +58,12 @@ pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Do
     let env = environment(bindings)?;
 
     let options = Options::new().max_depth(bounds.depth).max_len(bounds.len);
-    let (program, debug) = evalite::compile_debug(source, &env, &options)
-        .map_err(|error| marks(source, error.labels()))?;
+    let (program, debug) = evalite::compile_debug(source, &env, &options).map_err(|errors| {
+        errors
+            .iter()
+            .flat_map(|error| marks(source, error.labels()))
+            .collect::<Vec<_>>()
+    })?;
 
     let mut machine = Machine::new(Limits::new().memory(bounds.memory).fuel(bounds.fuel));
     let failed = |error: RunError| marks(source, error.labels(&program, Some(&debug)));

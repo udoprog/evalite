@@ -92,12 +92,15 @@ fn error(source: &str) -> (String, Range<usize>) {
 fn error_in(source: &str, env: &Environment) -> (String, Range<usize>) {
     match compile(source, env) {
         Ok(program) => panic!("{source:?} compiled to {}", program.result_type()),
-        Err(error) => {
+        Err(errors) => {
             assert!(
-                !matches!(error.kind(), ErrorKind::Internal(..)),
-                "{source:?}: {error}"
+                !errors
+                    .iter()
+                    .any(|e| matches!(e.kind(), ErrorKind::Internal(..))),
+                "{source:?}: {errors}"
             );
-            (error.to_string(), error.span().range())
+            let first = errors.iter().next().map(|e| e.span().range());
+            (errors.to_string(), first.unwrap_or_default())
         }
     }
 }
@@ -384,7 +387,11 @@ fn error_names() {
         ),
         ("wits(1)", "`wits` is a value, not a function", "wits"),
         // Arguments are not checked before the function is found.
-        ("f(nothing)", "unknown function `f`", "f"),
+        (
+            "f(nothing)",
+            "unknown function `f`\nunknown name `nothing`",
+            "f",
+        ),
     ]);
 }
 
@@ -652,7 +659,7 @@ fn error_methods() {
         // The method is checked before its arguments.
         (
             "wits.nope(x)",
-            "Int has no method `nope`, its methods are `abs`, `clamp`, `max` and `min`",
+            "Int has no method `nope`, its methods are `abs`, `clamp`, `max` and `min`\nunknown name `x`",
             "nope",
         ),
     ]);
@@ -1885,13 +1892,15 @@ fn random_ill_typed() {
         let len = rng.below(16);
         let source = (0..len).map(|_| rng.pick(TOKENS)).collect::<String>();
 
-        if let Err(error) = compile(&source, &env) {
-            assert!(
-                !matches!(error.kind(), ErrorKind::Internal(..)),
-                "{source:?}: {error}"
-            );
-            let range = error.span().range();
-            assert!(range.end <= source.len(), "{source:?}");
+        if let Err(errors) = compile(&source, &env) {
+            for error in &errors {
+                assert!(
+                    !matches!(error.kind(), ErrorKind::Internal(..)),
+                    "{source:?}: {error}"
+                );
+                let range = error.span().range();
+                assert!(range.end <= source.len(), "{source:?}");
+            }
         }
     }
 }
@@ -1962,4 +1971,197 @@ fn long_unknown_names_are_cheap() {
         error.to_string(),
         "unknown name `strngth`, did you mean `strength`?"
     );
+}
+
+/// Every diagnostic compiling `source` gives: its message and the text it
+/// points at.
+fn diagnostics_in(source: &str, env: &Environment) -> Vec<(String, String)> {
+    let Err(errors) = compile(source, env) else {
+        panic!("{source:?} compiled");
+    };
+
+    errors
+        .iter()
+        .map(|e| (e.to_string(), source[e.span().range()].to_owned()))
+        .collect()
+}
+
+#[test]
+fn several_errors_in_order() {
+    let env = env();
+
+    let found = diagnostics_in(
+        "nothing + wits.nope() + levels[true] + [1, flag, name].len() + boxes()",
+        &env,
+    );
+
+    let found = found
+        .iter()
+        .map(|(m, at)| (m.as_str(), at.as_str()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        found,
+        [
+            ("unknown name `nothing`", "nothing"),
+            (
+                "Int has no method `nope`, its methods are `abs`, `clamp`, `max` and `min`",
+                "nope",
+            ),
+            ("a List<Int> is indexed by an Int, found Bool", "true"),
+            (
+                "entry 2 of this list is Bool, but the first is Int, a list's entries have one type",
+                "flag",
+            ),
+            (
+                "entry 3 of this list is String, but the first is Int, a list's entries have one type",
+                "name",
+            ),
+            ("`boxes` takes 1 argument, found 0", "()"),
+        ]
+    );
+
+    // Arguments and receivers of what is in error are still checked.
+    assert_eq!(diagnostics_in("nope(nothing, wits)", &env).len(), 2);
+    assert_eq!(diagnostics_in("nothing.abs(true + 1)", &env).len(), 2);
+    assert_eq!(diagnostics_in("nothing[flag + 1]", &env).len(), 2);
+    assert_eq!(diagnostics_in("m[nothing]", &env).len(), 2);
+    assert_eq!(diagnostics_in("wits[-flag]", &env).len(), 2);
+}
+
+#[test]
+fn one_error_is_reported_once() {
+    let env = env();
+
+    for source in [
+        "wits + true + bonus",
+        "-(wits + true) * 2 < 3 == flag",
+        "!nothing && flag || flag",
+        "nothing == 1",
+        "nothing.abs().max(1)",
+        "nothing.boxes + 1",
+        "nothing[0] + 1",
+        "nothing[\"x\"] + 1",
+        "nothing! + 1",
+        "nothing.unwrap_or(1) + 2",
+        "min(nothing, 1) + 1",
+        "count(nothing) + 1",
+        "label(nothing).unwrap_or(0)",
+        "[nothing, 1][0] + 1",
+        "[1, nothing][0] + 1",
+        "levels[nothing] + 1",
+        "lookup(nothing, levels)!",
+        "nope(1).abs()",
+        "wits.nope(1).abs()",
+        "(nothing)",
+    ] {
+        let found = diagnostics_in(source, &env);
+        assert_eq!(found.len(), 1, "{source:?}: {found:?}");
+    }
+}
+
+#[test]
+fn every_kind_keeps_going() {
+    let mut env = env();
+    let mut deep = Type::int();
+
+    for _ in 1..MAX_TYPE_DEPTH {
+        deep = Type::list(deep);
+    }
+
+    env.value("deep", deep).unwrap();
+
+    for (source, at) in [
+        ("nope", "nope"),
+        ("count", "count"),
+        ("nope(1)", "nope"),
+        ("wits(1)", "wits"),
+        ("wits + true", "wits + true"),
+        ("-flag", "-flag"),
+        ("boxes()", "()"),
+        ("label(true)", "true"),
+        ("count(1)", "count(1)"),
+        ("wits.nope()", "nope"),
+        ("wits.x", "x"),
+        ("health.nope", "nope"),
+        ("wits[0]", "wits"),
+        ("wits!", "wits!"),
+        ("levels[true]", "true"),
+        ("m[1]", "1"),
+        ("[1, true]", "true"),
+        ("[]", "[]"),
+        ("[deep]", "[deep]"),
+    ] {
+        let source = format!("({source}) + nothing");
+        let found = diagnostics_in(&source, &env);
+
+        assert_eq!(found.len(), 2, "{source:?}: {found:?}");
+        assert_eq!(found[0].1, at, "{source:?}: {found:?}");
+        assert_eq!(found[1].0, "unknown name `nothing`", "{source:?}");
+    }
+}
+
+#[test]
+fn diagnostics_are_capped() {
+    let env = Environment::new();
+    let options = Options::new().max_len(usize::MAX);
+
+    let at = |n: usize| (n * 4) as u32;
+
+    for (count, more) in [
+        (100, None),
+        (101, Some(1)),
+        (150, Some(50)),
+        (5000, Some(4900)),
+    ] {
+        let source = vec!["x"; count].join(" + ");
+        let errors = compile_with(&source, &env, &options).unwrap_err();
+        let errors = errors.iter().collect::<Vec<_>>();
+
+        let kept = errors.len().min(MAX_DIAGNOSTICS);
+
+        for (n, error) in errors.iter().take(kept).enumerate() {
+            assert_eq!(error.to_string(), "unknown name `x`");
+            assert_eq!(error.span().start, at(n));
+        }
+
+        match more {
+            None => assert_eq!(errors.len(), count),
+            Some(more) => {
+                assert_eq!(errors.len(), MAX_DIAGNOSTICS + 1);
+                let last = errors[MAX_DIAGNOSTICS];
+                assert_eq!(last.kind(), &ErrorKind::MoreErrors(more));
+                assert_eq!(last.span().start, at(MAX_DIAGNOSTICS));
+                let s = if more == 1 { "error" } else { "errors" };
+                assert_eq!(last.to_string(), format!("and {more} more {s}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn capped_diagnostics_keep_the_earliest() {
+    // `[...]` entries are found after what is inside them, so the list's own
+    // mistakes come later than the names past it would: the earliest are
+    // kept whatever order they are found in.
+    let env = env();
+    let entries = vec!["true"; 150].join(", ");
+    let names = vec!["x"; 150].join(" + ");
+    let source = format!("[1, {entries}].len() + {names}");
+
+    let errors = compile(&source, &env).unwrap_err();
+    let errors = errors.iter().collect::<Vec<_>>();
+
+    assert_eq!(errors.len(), MAX_DIAGNOSTICS + 1);
+
+    for pair in errors.windows(2) {
+        assert!(pair[0].span().start <= pair[1].span().start);
+    }
+
+    assert!(
+        errors[..MAX_DIAGNOSTICS]
+            .iter()
+            .all(|e| matches!(e.kind(), ErrorKind::ListEntry { .. }))
+    );
+    assert_eq!(errors[MAX_DIAGNOSTICS].kind(), &ErrorKind::MoreErrors(200));
 }

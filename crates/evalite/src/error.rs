@@ -6,8 +6,9 @@ use crate::message::{Labels, plural};
 use crate::types::Kind;
 use crate::{Syntax, Type};
 
-/// Why text is not an expression of its environment, and where: a syntax
-/// error, or a type error found when it is compiled.
+/// One reason text is not an expression of its environment, and where: a
+/// syntax error, or a type error found when it is compiled. Compiling
+/// reports them as [`Diagnostics`].
 ///
 /// It is opaque. Its [`Display`](fmt::Display) is the primary message, and
 /// it is inspected through its [`span`](Self::span) and its
@@ -19,18 +20,19 @@ use crate::{Syntax, Type};
 /// let mut env = Environment::with_builtins();
 /// env.value("strength", Type::int())?;
 ///
-/// let error = evalite::compile("strength + true", &env).unwrap_err();
+/// let errors = evalite::compile("strength + true", &env).unwrap_err();
+/// let error = errors.iter().next().unwrap();
 /// assert_eq!(error.to_string(), "`+` takes Int and Int, found Int and Bool");
 /// assert_eq!(error.span().range(), 0..15);
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Clone, PartialEq, Eq)]
-pub struct ParseError {
+pub struct Diagnostic {
     span: Span<u32>,
     kind: Box<ErrorKind>,
 }
 
-impl ParseError {
+impl Diagnostic {
     pub(crate) fn new(span: Span<u32>, kind: ErrorKind) -> Self {
         Self {
             span,
@@ -44,7 +46,8 @@ impl ParseError {
     /// ```
     /// let env = evalite::Environment::with_builtins();
     ///
-    /// let error = evalite::compile("1 +", &env).unwrap_err();
+    /// let errors = evalite::compile("1 +", &env).unwrap_err();
+    /// let error = errors.iter().next().unwrap();
     /// assert_eq!(error.to_string(), "expected an expression, found the end of the expression");
     /// assert_eq!(error.span().range(), 3..3);
     /// ```
@@ -61,7 +64,8 @@ impl ParseError {
     /// ```
     /// let env = evalite::Environment::with_builtins();
     ///
-    /// let error = evalite::compile("1 $ 2", &env).unwrap_err();
+    /// let errors = evalite::compile("1 $ 2", &env).unwrap_err();
+    /// let error = errors.iter().next().unwrap();
     /// let labels: Vec<_> = error.labels().map(|l| (l.message().to_string(), l.span().map(|s| s.range()), l.is_primary())).collect();
     /// assert_eq!(labels, [("unexpected character '$'".to_owned(), Some(2..3), true)]);
     /// ```
@@ -71,7 +75,8 @@ impl ParseError {
     /// ```
     /// let env = evalite::Environment::with_builtins();
     ///
-    /// let error = evalite::compile("(1 + 2", &env).unwrap_err();
+    /// let errors = evalite::compile("(1 + 2", &env).unwrap_err();
+    /// let error = errors.iter().next().unwrap();
     /// let labels: Vec<_> = error.labels().map(|l| (l.message().to_string(), l.span().map(|s| s.range()), l.is_primary())).collect();
     /// assert_eq!(labels, [
     ///     ("expected `)` to close the `(` at byte 0, found the end of the expression".to_owned(), Some(6..6), true),
@@ -87,7 +92,8 @@ impl ParseError {
     /// let mut env = Environment::with_builtins();
     /// env.value("skills", Type::list(Type::int()))?;
     ///
-    /// let error = evalite::compile("skills[true]", &env).unwrap_err();
+    /// let errors = evalite::compile("skills[true]", &env).unwrap_err();
+    /// let error = errors.iter().next().unwrap();
     /// let labels: Vec<_> = error.labels().map(|l| (l.message().to_string(), l.span().map(|s| s.range()))).collect();
     /// assert_eq!(labels, [("a List<Int> is indexed by an Int, found Bool".to_owned(), Some(7..11))]);
     /// # Ok::<_, Box<dyn std::error::Error>>(())
@@ -101,7 +107,8 @@ impl ParseError {
     /// let env = Environment::with_builtins();
     /// let options = Options::new().max_depth(2);
     ///
-    /// let error = evalite::compile_with("(((1)))", &env, &options).unwrap_err();
+    /// let errors = evalite::compile_with("(((1)))", &env, &options).unwrap_err();
+    /// let error = errors.iter().next().unwrap();
     /// let labels: Vec<_> = error.labels().map(|l| (l.message().to_string(), l.span().map(|s| s.range()))).collect();
     /// assert_eq!(labels, [("this parenthesis nests too deeply, the limit is 2 levels of nesting".to_owned(), Some(2..3))]);
     /// ```
@@ -123,6 +130,12 @@ impl ParseError {
         }
     }
 
+    /// Whether it is about evalite itself or the size of the whole
+    /// program, not one expression, so nothing after it can be checked.
+    pub(crate) fn is_fatal(&self) -> bool {
+        matches!(&*self.kind, ErrorKind::Internal(_) | ErrorKind::TooLarge)
+    }
+
     /// How many labels it has.
     pub(crate) fn label_count(&self) -> usize {
         match &*self.kind {
@@ -137,19 +150,201 @@ impl ParseError {
     }
 }
 
-impl fmt::Debug for ParseError {
+impl fmt::Debug for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ParseError")
+        f.debug_struct("Diagnostic")
             .field("span", &self.span)
             .field("kind", &self.kind)
             .finish()
     }
 }
 
-/// What a label of a [`ParseError`] says.
+/// Every reason text is not an expression of its environment, in source
+/// order: what [`compile`](crate::compile) returns when it fails. It is
+/// never empty.
+///
+/// Compiling keeps going after an error, so independent mistakes are all
+/// reported, while one mistake is reported once, not again by everything
+/// around it. At most [`MAX_DIAGNOSTICS`] are kept, followed by one saying
+/// how many more there were.
+///
+/// Its [`Display`](fmt::Display) is each [`Diagnostic`] on its own line.
+///
+/// ```
+/// use evalite::{Environment, Type};
+///
+/// let mut env = Environment::with_builtins();
+/// env.value("rank", Type::int())?;
+///
+/// let errors = evalite::compile("rank + true + bonus * nothing", &env).unwrap_err();
+/// assert_eq!(errors.len(), 3);
+///
+/// let messages: Vec<_> = errors.iter().map(|e| (e.to_string(), e.span().range())).collect();
+/// assert_eq!(messages, [
+///     ("`+` takes Int and Int, found Int and Bool".to_owned(), 0..11),
+///     ("unknown name `bonus`".to_owned(), 14..19),
+///     ("unknown name `nothing`".to_owned(), 22..29),
+/// ]);
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostics {
+    list: Vec<Diagnostic>,
+}
+
+/// The most [`Diagnostics`] keeps; past it, one more diagnostic says how
+/// many were left out.
+///
+/// ```
+/// let env = evalite::Environment::new();
+/// let source = vec!["x"; 150].join(" + ");
+///
+/// let errors = evalite::compile(&source, &env).unwrap_err();
+/// assert_eq!(errors.len(), evalite::MAX_DIAGNOSTICS + 1);
+/// assert_eq!(errors.iter().last().unwrap().to_string(), "and 50 more errors");
+/// ```
+pub const MAX_DIAGNOSTICS: usize = 100;
+
+impl Diagnostics {
+    /// Diagnostics of one diagnostic.
+    pub(crate) fn one(diagnostic: Diagnostic) -> Self {
+        Self {
+            list: vec![diagnostic],
+        }
+    }
+
+    /// How many diagnostics there are, at least one.
+    ///
+    /// ```
+    /// let env = evalite::Environment::new();
+    ///
+    /// assert_eq!(evalite::compile("a + b", &env).unwrap_err().len(), 2);
+    /// ```
+    #[allow(clippy::len_without_is_empty, reason = "it is never empty")]
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+
+    /// Each diagnostic, in source order.
+    ///
+    /// ```
+    /// let env = evalite::Environment::new();
+    ///
+    /// let errors = evalite::compile("a + b", &env).unwrap_err();
+    /// let spans: Vec<_> = errors.iter().map(|e| e.span().range()).collect();
+    /// assert_eq!(spans, [0..1, 4..5]);
+    /// ```
+    pub fn iter(&self) -> std::slice::Iter<'_, Diagnostic> {
+        self.list.iter()
+    }
+
+    /// The first diagnostic.
+    pub(crate) fn first(&self) -> Option<&Diagnostic> {
+        self.list.first()
+    }
+}
+
+impl<'a> IntoIterator for &'a Diagnostics {
+    type Item = &'a Diagnostic;
+    type IntoIter = std::slice::Iter<'a, Diagnostic>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.list.iter()
+    }
+}
+
+impl IntoIterator for Diagnostics {
+    type Item = Diagnostic;
+    type IntoIter = std::vec::IntoIter<Diagnostic>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.list.into_iter()
+    }
+}
+
+impl fmt::Display for Diagnostics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (n, diagnostic) in self.list.iter().enumerate() {
+            if n > 0 {
+                f.write_str("\n")?;
+            }
+
+            diagnostic.fmt(f)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl std::error::Error for Diagnostics {}
+
+/// Collects diagnostics as they are found, keeping the
+/// [`MAX_DIAGNOSTICS`] earliest in the source, so its memory is bounded
+/// whatever the input.
+#[derive(Default)]
+pub(crate) struct Reporter {
+    /// Each kept diagnostic, with the order it was found in.
+    kept: Vec<(Diagnostic, usize)>,
+    found: usize,
+    /// How many were left out, and the span of the earliest of them.
+    dropped: Option<(usize, Span<u32>)>,
+}
+
+impl Reporter {
+    pub(crate) fn report(&mut self, diagnostic: Diagnostic) {
+        let key = (diagnostic.span.start, self.found);
+        self.found = self.found.saturating_add(1);
+
+        let out = if self.kept.len() < MAX_DIAGNOSTICS {
+            self.kept.push((diagnostic, key.1));
+            None
+        } else {
+            let last = self
+                .kept
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, (d, seq))| (d.span.start, *seq))
+                .map(|(n, (d, seq))| (n, (d.span.start, *seq)));
+
+            match last {
+                Some((n, last)) if key < last => self
+                    .kept
+                    .get_mut(n)
+                    .map(|slot| std::mem::replace(slot, (diagnostic, key.1)).0),
+                _ => Some(diagnostic),
+            }
+        };
+
+        if let Some(out) = out {
+            self.dropped = Some(match self.dropped {
+                Some((n, span)) if span.start <= out.span.start => (n.saturating_add(1), span),
+                Some((n, _)) => (n.saturating_add(1), out.span),
+                None => (1, out.span),
+            });
+        }
+    }
+
+    /// The diagnostics found, in source order, if any were.
+    pub(crate) fn finish(mut self) -> Option<Diagnostics> {
+        if self.kept.is_empty() {
+            return None;
+        }
+
+        self.kept.sort_by_key(|(d, seq)| (d.span.start, *seq));
+        let mut list = self.kept.into_iter().map(|(d, _)| d).collect::<Vec<_>>();
+
+        if let Some((n, span)) = self.dropped {
+            list.push(Diagnostic::new(span, ErrorKind::MoreErrors(n)));
+        }
+
+        Some(Diagnostics { list })
+    }
+}
+
+/// What a label of a [`Diagnostic`] says.
 pub(crate) enum ParseText<'a> {
     /// The error itself.
-    Primary(&'a ParseError),
+    Primary(&'a Diagnostic),
     /// Where a group that was not closed was opened.
     Opened(Delimiter),
 }
@@ -274,6 +469,8 @@ pub(crate) enum ErrorKind {
     TypeTooDeep,
     /// A program too large to count its parts.
     TooLarge,
+    /// The diagnostics past [`MAX_DIAGNOSTICS`], which are left out.
+    MoreErrors(usize),
 }
 
 /// What a call calls, as an error names it.
@@ -383,7 +580,7 @@ impl fmt::Display for Nesting {
     }
 }
 
-impl fmt::Display for ParseError {
+impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &*self.kind {
             ErrorKind::UnexpectedCharacter(c) => {
@@ -601,6 +798,9 @@ impl fmt::Display for ParseError {
                 plural(crate::MAX_TYPE_DEPTH, "level", "levels")
             ),
             ErrorKind::TooLarge => f.write_str("this expression is too large to compile"),
+            ErrorKind::MoreErrors(n) => {
+                write!(f, "and {}", plural(*n, "more error", "more errors"))
+            }
         }
     }
 }
@@ -612,7 +812,7 @@ fn closer(open: Delimiter) -> char {
     }
 }
 
-impl std::error::Error for ParseError {}
+impl std::error::Error for Diagnostic {}
 
 fn did_you_mean(f: &mut fmt::Formatter<'_>, suggestion: &Option<String>) -> fmt::Result {
     match suggestion {

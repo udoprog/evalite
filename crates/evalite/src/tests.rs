@@ -854,15 +854,15 @@ fn error_kinds() {
     );
 
     assert_eq!(
-        ParseError::new(span(0, 0), ErrorKind::TooLong(5_000_000_000)).to_string(),
+        Diagnostic::new(span(0, 0), ErrorKind::TooLong(5_000_000_000)).to_string(),
         "the expression is 5000000000 bytes long, more than the 4294967295 that can be parsed"
     );
     assert_eq!(
-        ParseError::new(span(0, 0), ErrorKind::OverLimit { len: 9, max: 8 }).to_string(),
+        Diagnostic::new(span(0, 0), ErrorKind::OverLimit { len: 9, max: 8 }).to_string(),
         "the expression is 9 bytes long, the limit is 8"
     );
     assert_eq!(
-        ParseError::new(span(0, 0), ErrorKind::Internal("x".to_owned())).to_string(),
+        Diagnostic::new(span(0, 0), ErrorKind::Internal("x".to_owned())).to_string(),
         "internal error in evalite: x"
     );
 

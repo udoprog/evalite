@@ -1,6 +1,6 @@
 use syntree::Span;
 
-use crate::error::{ErrorKind, ParseError};
+use crate::error::{Diagnostic, ErrorKind};
 use crate::syntax::Syntax;
 
 #[derive(Debug, Clone, Copy)]
@@ -84,7 +84,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// The next token, whitespace included; `None` at the end.
-    pub(crate) fn next(&mut self) -> Result<Option<Token>, ParseError> {
+    pub(crate) fn next(&mut self) -> Result<Option<Token>, Diagnostic> {
         let rest = self.source.get(self.at..).unwrap_or_default();
         let mut chars = rest.chars();
 
@@ -147,12 +147,12 @@ impl<'a> Lexer<'a> {
         }))
     }
 
-    fn error(&self, len: usize, kind: ErrorKind) -> ParseError {
-        ParseError::new(span(self.at, self.at.saturating_add(len)), kind)
+    fn error(&self, len: usize, kind: ErrorKind) -> Diagnostic {
+        Diagnostic::new(span(self.at, self.at.saturating_add(len)), kind)
     }
 
     /// The length of the string literal `rest` starts with.
-    fn string(&self, rest: &str) -> Result<usize, ParseError> {
+    fn string(&self, rest: &str) -> Result<usize, Diagnostic> {
         let mut chars = rest.char_indices().skip(1);
 
         while let Some((at, c)) = chars.next() {
@@ -163,7 +163,7 @@ impl<'a> Lexer<'a> {
                     Some((e_at, e)) => {
                         let start = self.at.saturating_add(at);
                         let end = self.at.saturating_add(e_at).saturating_add(e.len_utf8());
-                        return Err(ParseError::new(
+                        return Err(Diagnostic::new(
                             span(start, end),
                             ErrorKind::InvalidEscape(e),
                         ));
@@ -174,7 +174,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        Err(ParseError::new(
+        Err(Diagnostic::new(
             span(self.at, self.source.len()),
             ErrorKind::UnterminatedString,
         ))

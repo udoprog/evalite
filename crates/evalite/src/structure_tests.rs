@@ -220,7 +220,7 @@ fn negative_integer_receivers_and_operands() {
     assert_eq!(error.node(), min.root());
     assert!(matches!(
         error.kind(),
-        StructureKind::Compile(e) if *e.kind() == ErrorKind::IntegerTooLarge
+        StructureKind::Compile(e) if e.first().map(Diagnostic::kind) == Some(&ErrorKind::IntegerTooLarge)
     ));
 }
 
@@ -382,7 +382,7 @@ fn parse_depth_limits_apply() {
     let error = b.compile(&env()).unwrap_err();
     assert!(matches!(
         error.kind(),
-        StructureKind::Compile(e) if matches!(e.kind(), ErrorKind::TooDeep { .. })
+        StructureKind::Compile(e) if matches!(e.first().map(Diagnostic::kind), Some(ErrorKind::TooDeep { .. }))
     ));
     assert!(matches!(b.get(error.node()), Some(Node(Repr::List { .. }))));
     assert!(
