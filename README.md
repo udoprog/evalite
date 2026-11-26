@@ -325,9 +325,8 @@ assert_eq!(form.compile(&env)?.result_type(), Type::int());
 ## The command line
 
 The `evalite` command runs expressions from the terminal, which is a quick
-way to try the language. Install it with `cargo install --git
-https://github.com/udoprog/evalite evalite-cli`. Variables are declared and
-bound with `--var name:Type=value`:
+way to try the language. Install it with `cargo install evalite-cli`.
+Variables are declared and bound with `--var name:Type=value`:
 
 ```text
 $ evalite eval 'min(wits, dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'

@@ -9,7 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
-evalite = { version = "0.0.0", path = "../crates/evalite" }
+evalite = { version = "0.1.0", path = "../crates/evalite" }
 gloo-timers = { version = "0.4.1", features = ["futures"] }
 sockel = "0.3.6"
 wasm-bindgen = "0.2.130"

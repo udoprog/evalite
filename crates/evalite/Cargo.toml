@@ -1,9 +1,16 @@
 [package]
 name = "evalite"
+version = "0.1.0"
+authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
-publish = false
+description = "Small, strictly typed expressions that are safe to run on anyone's input."
+documentation = "https://docs.rs/evalite"
+readme = "README.md"
+repository = "https://github.com/udoprog/evalite.git"
+license = "MIT OR Apache-2.0"
+keywords = ["eval", "expression", "formula", "language", "sandbox"]
+categories = ["compilers", "parser-implementations"]
 
 [lints]
 workspace = true
