@@ -245,6 +245,7 @@ mod structure;
 mod syntax;
 mod types;
 mod vm;
+mod word;
 
 #[cfg(test)]
 mod tests;

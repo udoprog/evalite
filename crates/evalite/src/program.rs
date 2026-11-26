@@ -13,7 +13,7 @@ pub(crate) const FORMAT: u32 = 2;
 /// the words its type's layout gives it: one for an `Int`, a `Bool` (0 or
 /// 1), and a string, list or record (a reference packing where its parts
 /// are and how many there are); an option is one word with
-/// [`NONE`](crate::types::NONE) for absent, except an `Option<Int>`,
+/// [`Word::NONE`](crate::word::Word::NONE) for absent, except an `Option<Int>`,
 /// which is two (present or not, then the `Int`). Operands are pushed in
 /// source order, so a binary operator finds its right operand on top.
 ///

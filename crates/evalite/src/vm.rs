@@ -7,7 +7,8 @@ use std::fmt;
 
 use crate::Type;
 use crate::program::{Constant, Instr, Program, Scalar};
-use crate::types::{NONE, TypeId, TypeNode};
+use crate::types::{TypeId, TypeNode};
+use crate::word::{Word, WordFault};
 
 /// The memory a [`Machine`] has unless [`Limits::memory`] says otherwise,
 /// in 64-bit words.
@@ -346,6 +347,14 @@ impl fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
+impl From<WordFault> for RunError {
+    #[cold]
+    #[inline(never)]
+    fn from(fault: WordFault) -> Self {
+        Self::Fault(fault.what().to_owned())
+    }
+}
+
 fn fault(what: &str) -> RunError {
     RunError::Fault(what.to_owned())
 }
@@ -392,13 +401,8 @@ pub struct Outcome {
 /// made, which runs programs one at a time.
 ///
 /// Memory is untyped: the verifier has proved what every word is, so the
-/// machine checks only that each access is inside memory. A word is an
-/// `Int` as `i64`, a `Bool` as 0 or 1, or a reference packing where a
-/// string's, list's or record's parts start (the low 32 bits) and how many
-/// there are (the high 32: a string's bytes, a list's entries or a
-/// record's words). An `Option<Int>` is two words, 1 or 0 for present or
-/// absent then the `Int`; every other option is one word, [`NONE`] when
-/// absent. A string's bytes are packed 8 to a word.
+/// machine checks only that each access is inside memory and that each
+/// word decodes as the kind it reads (the layout is in the `word` module).
 ///
 /// ```
 /// use evalite::{Environment, Limits, Machine, Type, Value};
@@ -423,7 +427,7 @@ pub struct Outcome {
 #[derive(Debug)]
 pub struct Machine {
     limits: Limits,
-    words: Box<[u64]>,
+    words: Box<[Word]>,
     /// Which of a loaded program's globals are bound.
     bound: Vec<bool>,
 }
@@ -435,7 +439,7 @@ impl Machine {
 
         Self {
             limits,
-            words: vec![0; len].into_boxed_slice(),
+            words: vec![Word::int(0); len].into_boxed_slice(),
             bound: Vec::new(),
         }
     }
@@ -504,7 +508,7 @@ impl Default for Machine {
 /// A program loaded on a [`Machine`], taking its bindings.
 #[derive(Debug)]
 pub struct Run<'a> {
-    words: &'a mut [u64],
+    words: &'a mut [Word],
     bound: &'a mut [bool],
     program: &'a Program,
     fuel: u64,
@@ -657,8 +661,8 @@ impl<'a> Run<'a> {
                 Constant::List { items, .. } => {
                     for (n, item) in items.iter().enumerate() {
                         let word = match *item {
-                            Scalar::Int(n) => n as u64,
-                            Scalar::Bool(b) => u64::from(b),
+                            Scalar::Int(n) => Word::int(n),
+                            Scalar::Bool(b) => Word::bool(b),
                             Scalar::Const(c) => self.constant(c)?,
                         };
 
@@ -672,7 +676,7 @@ impl<'a> Run<'a> {
     }
 
     /// The reference to the constant `c`.
-    fn constant(&self, c: u32) -> Result<u64, RunError> {
+    fn constant(&self, c: u32) -> Result<Word, RunError> {
         let (at, len) = index(&self.program.constant_at, c)
             .copied()
             .ok_or_else(|| fault("no such constant"))?;
@@ -680,7 +684,7 @@ impl<'a> Run<'a> {
             .limit
             .checked_add(size(at)?)
             .ok_or_else(|| fault("a constant outside memory"))?;
-        reference(at, size(len)?)
+        Ok(Word::reference(at, size(len)?)?)
     }
 
     /// Run one instruction at `pc`, giving the next.
@@ -689,8 +693,8 @@ impl<'a> Run<'a> {
         let types = &self.program.types;
 
         let push = match instr {
-            Instr::Int(n) => n as u64,
-            Instr::Bool(b) => u64::from(b),
+            Instr::Int(n) => Word::int(n),
+            Instr::Bool(b) => Word::bool(b),
             Instr::Const(c) => self.constant(c)?,
             Instr::Global { at, ty } => {
                 self.push_from(size(at)?, types.width(ty))?;
@@ -698,26 +702,26 @@ impl<'a> Run<'a> {
             }
             Instr::Neg => {
                 let a = self.pop_int()?;
-                int_word(a.checked_neg().ok_or_else(|| overflow(format!("-({a})")))?)
+                Word::int(a.checked_neg().ok_or_else(|| overflow(format!("-({a})")))?)
             }
             Instr::Abs => {
                 let a = self.pop_int()?;
-                int_word(
+                Word::int(
                     a.checked_abs()
                         .ok_or_else(|| overflow(format!("({a}).abs()")))?,
                 )
             }
-            Instr::Not => u64::from(!self.pop_bool()?),
+            Instr::Not => Word::bool(!self.pop_bool()?),
             Instr::Add | Instr::Sub | Instr::Mul | Instr::Div | Instr::Rem => {
                 let b = self.pop_int()?;
                 let a = self.pop_int()?;
-                int_word(arithmetic(instr, a, b)?)
+                Word::int(arithmetic(instr, a, b)?)
             }
             Instr::Lt | Instr::Le | Instr::Gt | Instr::Ge => {
                 let b = self.pop_int()?;
                 let a = self.pop_int()?;
 
-                u64::from(match instr {
+                Word::bool(match instr {
                     Instr::Lt => a < b,
                     Instr::Le => a <= b,
                     Instr::Gt => a > b,
@@ -727,7 +731,7 @@ impl<'a> Run<'a> {
             Instr::Eq | Instr::Ne => {
                 let b = self.pop()?;
                 let a = self.pop()?;
-                u64::from((a == b) == matches!(instr, Instr::Eq))
+                Word::bool((a == b) == matches!(instr, Instr::Eq))
             }
             Instr::And(skip) | Instr::Or(skip) => {
                 let top = self.pop_bool()?;
@@ -737,7 +741,7 @@ impl<'a> Run<'a> {
                     return Ok(next);
                 }
 
-                self.push(u64::from(top))?;
+                self.push(Word::bool(top))?;
 
                 return usize::try_from(skip)
                     .ok()
@@ -745,7 +749,7 @@ impl<'a> Run<'a> {
                     .ok_or_else(|| fault("jumps past the end"));
             }
             Instr::Field { at, ty } => {
-                let (start, len) = unpack(self.pop()?)?;
+                let (start, len) = self.pop()?.as_reference()?;
                 let width = types.width(ty);
                 let at = size(at)?;
 
@@ -761,7 +765,7 @@ impl<'a> Run<'a> {
             }
             Instr::Index(entry) => {
                 let i = self.pop_int()?;
-                let (start, len) = unpack(self.pop()?)?;
+                let (start, len) = self.pop()?.as_reference()?;
 
                 let at = usize::try_from(i)
                     .ok()
@@ -772,7 +776,7 @@ impl<'a> Run<'a> {
                 return Ok(next);
             }
             Instr::Lookup(entry) => {
-                let (start, len) = unpack(self.pop()?)?;
+                let (start, len) = self.pop()?.as_reference()?;
                 let i = self.pop_int()?;
                 let last = len.checked_sub(1).ok_or(RunError::EmptyLookup)?;
                 let at = usize::try_from(i.max(0)).unwrap_or(usize::MAX).min(last);
@@ -806,7 +810,7 @@ impl<'a> Run<'a> {
 
                 self.words.copy_within(from..end, at);
                 self.sp = top;
-                reference(at, n)?
+                Word::reference(at, n)?
             }
             Instr::Min(n) | Instr::Max(n) => {
                 self.spend(size(n)?)?;
@@ -822,7 +826,7 @@ impl<'a> Run<'a> {
                     };
                 }
 
-                int_word(best)
+                Word::int(best)
             }
             Instr::Clamp => {
                 let high = self.pop_int()?;
@@ -833,33 +837,33 @@ impl<'a> Run<'a> {
                     return Err(RunError::ClampBounds { low, high });
                 }
 
-                int_word(value.clamp(low, high))
+                Word::int(value.clamp(low, high))
             }
             Instr::UnwrapOr(option) => {
                 let default = self.pop()?;
 
                 if types.is_option_int(option) {
                     let value = self.pop()?;
-                    let present = self.pop()?;
-                    if present != 0 { value } else { default }
+                    let present = self.pop()?.as_bool()?;
+                    if present { value } else { default }
                 } else {
                     let value = self.pop()?;
-                    if value != NONE { value } else { default }
+                    if value.is_none() { default } else { value }
                 }
             }
             Instr::IsSome(option) | Instr::IsNone(option) => {
                 let none = if types.is_option_int(option) {
                     self.pop()?;
-                    self.pop()? == 0
+                    !self.pop()?.as_bool()?
                 } else {
-                    self.pop()? == NONE
+                    self.pop()?.is_none()
                 };
 
-                u64::from(none == matches!(instr, Instr::IsNone(..)))
+                Word::bool(none == matches!(instr, Instr::IsNone(..)))
             }
             Instr::Len => {
-                let (_, len) = unpack(self.pop()?)?;
-                i64::try_from(len).map_err(|_| fault("a list too long to count"))? as u64
+                let (_, len) = self.pop()?.as_reference()?;
+                Word::int(i64::try_from(len).map_err(|_| fault("a list too long to count"))?)
             }
             Instr::Call(f) => {
                 self.call(f, host)?;
@@ -960,7 +964,7 @@ impl<'a> Run<'a> {
         Ok(at)
     }
 
-    fn push(&mut self, word: u64) -> Result<(), RunError> {
+    fn push(&mut self, word: Word) -> Result<(), RunError> {
         let at = self.reserve(1)?;
         self.put(Some(at), word)
     }
@@ -986,7 +990,7 @@ impl<'a> Run<'a> {
         self.push_from(from, width)
     }
 
-    fn pop(&mut self) -> Result<u64, RunError> {
+    fn pop(&mut self) -> Result<Word, RunError> {
         let sp = self
             .sp
             .checked_sub(1)
@@ -997,21 +1001,21 @@ impl<'a> Run<'a> {
     }
 
     fn pop_int(&mut self) -> Result<i64, RunError> {
-        Ok(self.pop()? as i64)
+        Ok(self.pop()?.as_int())
     }
 
     fn pop_bool(&mut self) -> Result<bool, RunError> {
-        Ok(self.pop()? != 0)
+        Ok(self.pop()?.as_bool()?)
     }
 
     /// The word at `at`.
-    fn get(&self, at: Option<usize>) -> Result<u64, RunError> {
+    fn get(&self, at: Option<usize>) -> Result<Word, RunError> {
         at.and_then(|at| self.words.get(at))
             .copied()
             .ok_or_else(|| fault("a value outside memory"))
     }
 
-    fn put(&mut self, at: Option<usize>, word: u64) -> Result<(), RunError> {
+    fn put(&mut self, at: Option<usize>, word: Word) -> Result<(), RunError> {
         *at.and_then(|at| self.words.get_mut(at))
             .ok_or_else(|| fault("a value outside memory"))? = word;
         Ok(())
@@ -1026,7 +1030,7 @@ impl<'a> Run<'a> {
                 *b = *c;
             }
 
-            self.put(at.checked_add(n), u64::from_le_bytes(word))?;
+            self.put(at.checked_add(n), Word::bytes(word))?;
         }
 
         Ok(())
@@ -1132,14 +1136,14 @@ impl<'a> Run<'a> {
 
             let word = match (ty_node, value) {
                 (TypeNode::Option(_), Value::None) if types.is_option_int(ty) => {
-                    self.put(Some(dest), 0)?;
-                    self.put(dest.checked_add(1), 0)?;
+                    self.put(Some(dest), Word::present(false))?;
+                    self.put(dest.checked_add(1), Word::int(0))?;
                     continue;
                 }
-                (TypeNode::Option(_), Value::None) => NONE,
+                (TypeNode::Option(_), Value::None) => Word::NONE,
                 (TypeNode::Option(inner), Value::Some(value)) => {
                     let dest = if types.is_option_int(ty) {
-                        self.put(Some(dest), 1)?;
+                        self.put(Some(dest), Word::present(true))?;
                         dest.checked_add(1)
                             .ok_or_else(|| fault("a value outside memory"))?
                     } else {
@@ -1149,12 +1153,12 @@ impl<'a> Run<'a> {
                     work.push((value, *inner, dest));
                     continue;
                 }
-                (TypeNode::Int, Value::Int(n)) => *n as u64,
-                (TypeNode::Bool, Value::Bool(b)) => u64::from(*b),
+                (TypeNode::Int, Value::Int(n)) => Word::int(*n),
+                (TypeNode::Bool, Value::Bool(b)) => Word::bool(*b),
                 (TypeNode::String, Value::String(s)) => {
                     let at = self.alloc(s.len().div_ceil(8))?;
                     self.put_bytes(at, s.as_bytes())?;
-                    reference(at, s.len())?
+                    Word::reference(at, s.len())?
                 }
                 (TypeNode::List(entry), Value::List(items)) => {
                     let width = types.width(*entry);
@@ -1172,7 +1176,7 @@ impl<'a> Run<'a> {
                         work.push((item, *entry, dest));
                     }
 
-                    reference(at, items.len())?
+                    Word::reference(at, items.len())?
                 }
                 (TypeNode::Record(fields), Value::Record(map)) => {
                     let words = types.record_words(fields);
@@ -1188,7 +1192,7 @@ impl<'a> Run<'a> {
                         work.push((value, field.ty, dest));
                     }
 
-                    reference(at, words)?
+                    Word::reference(at, words)?
                 }
                 _ => return Err(fault("a value changed type")),
             };
@@ -1214,14 +1218,14 @@ impl<'a> Run<'a> {
                     match types.get(ty).ok_or_else(|| fault("no such type"))? {
                         TypeNode::Option(inner) => {
                             let at = if types.is_option_int(ty) {
-                                if word == 0 {
+                                if !word.as_bool()? {
                                     out.push(Value::None);
                                     continue;
                                 }
 
                                 at.checked_add(1)
                                     .ok_or_else(|| fault("a value outside memory"))?
-                            } else if word == NONE {
+                            } else if word.is_none() {
                                 out.push(Value::None);
                                 continue;
                             } else {
@@ -1231,14 +1235,14 @@ impl<'a> Run<'a> {
                             steps.push(Read::Some);
                             steps.push(Read::Visit(at, *inner));
                         }
-                        TypeNode::Int => out.push(Value::Int(word as i64)),
-                        TypeNode::Bool => out.push(Value::Bool(word != 0)),
+                        TypeNode::Int => out.push(Value::Int(word.as_int())),
+                        TypeNode::Bool => out.push(Value::Bool(word.as_bool()?)),
                         TypeNode::String => {
-                            let (at, len) = unpack(word)?;
+                            let (at, len) = word.as_reference()?;
                             out.push(Value::String(self.string(at, len)?));
                         }
                         TypeNode::List(entry) => {
-                            let (start, len) = unpack(word)?;
+                            let (start, len) = word.as_reference()?;
                             let width = types.width(*entry);
                             self.inside(start, len.checked_mul(width))?;
                             steps.push(Read::List(len));
@@ -1249,7 +1253,7 @@ impl<'a> Run<'a> {
                             }
                         }
                         TypeNode::Record(fields) => {
-                            let (start, len) = unpack(word)?;
+                            let (start, len) = word.as_reference()?;
 
                             if len != types.record_words(fields) {
                                 return Err(fault("a record of the wrong size"));
@@ -1319,7 +1323,7 @@ impl<'a> Run<'a> {
         let mut bytes = Vec::with_capacity(len);
 
         for n in 0..len.div_ceil(8) {
-            bytes.extend_from_slice(&self.get(at.checked_add(n))?.to_le_bytes());
+            bytes.extend_from_slice(&self.get(at.checked_add(n))?.as_bytes());
         }
 
         bytes.truncate(len);
@@ -1347,25 +1351,6 @@ fn arithmetic(instr: Instr, a: i64, b: i64) -> Result<i64, RunError> {
 
 fn overflow(expr: String) -> RunError {
     RunError::Overflow { expr }
-}
-
-fn int_word(n: i64) -> u64 {
-    n as u64
-}
-
-/// A reference to the `len` parts from `at`: `at` in the low 32 bits,
-/// `len` in the high.
-fn reference(at: usize, len: usize) -> Result<u64, RunError> {
-    let at = u32::try_from(at).map_err(|_| fault("memory past what a word can address"))?;
-    let len = u32::try_from(len).map_err(|_| fault("a value too long for a word"))?;
-    Ok(u64::from(at) | u64::from(len).wrapping_shl(32))
-}
-
-/// Where a reference's parts start, and how many there are.
-fn unpack(word: u64) -> Result<(usize, usize), RunError> {
-    let at = u32::try_from(word & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-    let len = u32::try_from(word.wrapping_shr(32)).unwrap_or(u32::MAX);
-    Ok((size(at)?, size(len)?))
 }
 
 fn path(root: &str, nodes: &[(usize, Seg<'_>)], mut node: usize) -> String {

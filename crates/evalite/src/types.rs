@@ -161,11 +161,6 @@ impl fmt::Display for Type {
     }
 }
 
-/// The word of an absent option, other than an `Option<Int>`: no `Bool`
-/// (0 or 1) or reference (an address and a length that fit in memory
-/// together) is ever all ones.
-pub(crate) const NONE: u64 = u64::MAX;
-
 /// A type in a program's type table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Encode, Decode)]
 #[musli(transparent)]
@@ -235,7 +230,7 @@ impl Types {
     /// `Option<Int>` (whether it is present, then the `Int`), one for
     /// every other type. Strings, lists and records are a word referring
     /// to their parts, and every other option is one word with
-    /// [`NONE`] for absent.
+    /// [`Word::NONE`](crate::word::Word::NONE) for absent.
     pub(crate) fn width(&self, id: TypeId) -> usize {
         if self.is_option_int(id) { 2 } else { 1 }
     }
