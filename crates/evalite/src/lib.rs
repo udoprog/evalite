@@ -189,12 +189,13 @@
 //!
 //! ## Limits and safety
 //!
-//! Three limits bound everything an expression can do, so it is safe to run
+//! Four limits bound everything an expression can do, so it is safe to run
 //! whatever a user typed:
 //!
 //! | Limit   | Bounds                                                              | Default                | Set with             |
 //! |---------|---------------------------------------------------------------------|------------------------|----------------------|
 //! | Nesting | each parenthesis, list, call, index and unary operator nests a level | [`DEFAULT_MAX_DEPTH`] (32) | [`Options::max_depth`] |
+//! | Length  | bytes of the expression's text, checked before it is lexed | [`DEFAULT_MAX_LEN`] (65536) | [`Options::max_len`] |
 //! | Memory  | 64-bit words for the stack, built lists, constants and bound values  | [`DEFAULT_MEMORY`] (1024)  | [`Limits::memory`]     |
 //! | Fuel    | steps: one per instruction, plus one per list entry built or word a function returns | [`DEFAULT_FUEL`] (1000) | [`Limits::fuel`] |
 //!
@@ -385,7 +386,7 @@
 //! steps: 7
 //! ```
 //!
-//! Without an expression it reads one per line from stdin. `--max-depth`,
+//! Without an expression it reads one per line from stdin. `--max-depth`, `--max-len`,
 //! `--memory` and `--fuel` set the limits, and `evalite --help` lists the
 //! rest.
 //!
@@ -410,6 +411,7 @@
 //! [`DebugInfo`]: https://docs.rs/evalite/latest/evalite/struct.DebugInfo.html
 //! [`DEFAULT_FUEL`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_FUEL.html
 //! [`DEFAULT_MAX_DEPTH`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MAX_DEPTH.html
+//! [`DEFAULT_MAX_LEN`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MAX_LEN.html
 //! [`DEFAULT_MEMORY`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MEMORY.html
 //! [`Environment::with_builtins`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html#method.with_builtins
 //! [`Label`]: https://docs.rs/evalite/latest/evalite/struct.Label.html
@@ -419,6 +421,7 @@
 //! [`Node`]: https://docs.rs/evalite/latest/evalite/struct.Node.html
 //! [`NodeId`]: https://docs.rs/evalite/latest/evalite/struct.NodeId.html
 //! [`Options::max_depth`]: https://docs.rs/evalite/latest/evalite/struct.Options.html#method.max_depth
+//! [`Options::max_len`]: https://docs.rs/evalite/latest/evalite/struct.Options.html#method.max_len
 //! [`ParseError::labels`]: https://docs.rs/evalite/latest/evalite/struct.ParseError.html#method.labels
 //! [`ParseError`]: https://docs.rs/evalite/latest/evalite/struct.ParseError.html
 //! [`Program::from_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Program.html#method.from_bytes
@@ -484,7 +487,7 @@ pub use self::debug::DebugInfo;
 pub use self::env::{Builtin, DeclareError, Environment};
 pub use self::error::ParseError;
 pub use self::message::{Label, Labels, RunError, StoreError};
-pub use self::parser::{DEFAULT_MAX_DEPTH, Options};
+pub use self::parser::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, Options};
 #[cfg(test)]
 pub(crate) use self::parser::{Tree, parse, parse_with};
 pub use self::program::{Memory, Program};

@@ -808,20 +808,21 @@ fn error_too_deep() {
 #[test]
 fn very_deep() {
     let n = 100_000;
+    let roomy = Options::new().max_len(usize::MAX);
     let parens = format!("{}1{}", "(".repeat(n), ")".repeat(n));
 
     assert_eq!(
-        error(&parens),
+        error_with(&parens, &roomy),
         (
             "this parenthesis nests too deeply, the limit is 32 levels of nesting".to_owned(),
             32..33
         )
     );
-    assert_eq!(error(&"(".repeat(n)).1, 32..33);
-    assert_eq!(error(&"-".repeat(n)).1, 32..33);
-    assert_eq!(error(&"f(".repeat(n)).1, 65..66);
+    assert_eq!(error_with(&"(".repeat(n), &roomy).1, 32..33);
+    assert_eq!(error_with(&"-".repeat(n), &roomy).1, 32..33);
+    assert_eq!(error_with(&"f(".repeat(n), &roomy).1, 65..66);
 
-    let unlimited = Options::new().max_depth(usize::MAX);
+    let unlimited = Options::new().max_depth(usize::MAX).max_len(usize::MAX);
     let tree = parse_with(&parens, &unlimited).unwrap();
     let depth = tree.walk().with_depths().map(|(d, _)| d).max().unwrap();
     assert_eq!(depth, n as isize + 2);
@@ -830,15 +831,15 @@ fn very_deep() {
     assert!(parse_with(&format!("{}1{}", "[".repeat(n), "]".repeat(n)), &unlimited).is_ok());
     assert_eq!(error_with(&"(".repeat(n), &unlimited).1, n..n);
 
-    // Chains do not nest, so the default allows them at any length.
+    // Chains do not nest, so the length limit aside, any length.
     let fields = format!("a{}", ".b".repeat(n));
-    assert!(parse(&fields).is_ok());
+    assert!(parse_with(&fields, &unlimited).is_ok());
     let methods = format!("a{}", ".m(1)".repeat(n));
-    assert!(parse(&methods).is_ok());
+    assert!(parse_with(&methods, &unlimited).is_ok());
     let sum = format!("1{}", " + 1".repeat(n));
-    assert!(parse(&sum).is_ok());
+    assert!(parse_with(&sum, &unlimited).is_ok());
     let list = format!("[{}1]", "1, ".repeat(n));
-    assert!(parse(&list).is_ok());
+    assert!(parse_with(&list, &unlimited).is_ok());
 }
 
 #[test]
@@ -855,6 +856,10 @@ fn error_kinds() {
     assert_eq!(
         ParseError::new(span(0, 0), ErrorKind::TooLong(5_000_000_000)).to_string(),
         "the expression is 5000000000 bytes long, more than the 4294967295 that can be parsed"
+    );
+    assert_eq!(
+        ParseError::new(span(0, 0), ErrorKind::OverLimit { len: 9, max: 8 }).to_string(),
+        "the expression is 9 bytes long, the limit is 8"
     );
     assert_eq!(
         ParseError::new(span(0, 0), ErrorKind::Internal("x".to_owned())).to_string(),
@@ -894,6 +899,16 @@ fn options() {
     assert_eq!(Options::default(), Options::new());
     assert_eq!(Options::new(), Options::new().max_depth(DEFAULT_MAX_DEPTH));
     assert_eq!(DEFAULT_MAX_DEPTH, 32);
+    assert_eq!(DEFAULT_MAX_LEN, 64 * 1024);
+}
+
+#[test]
+fn max_len() {
+    let options = Options::new().max_len(3);
+    assert!(parse_with("1+2", &options).is_ok());
+    let error = parse_with("1+22", &options).unwrap_err();
+    assert_eq!(*error.kind(), ErrorKind::OverLimit { len: 4, max: 3 });
+    assert!(parse_with(&" ".repeat(DEFAULT_MAX_LEN + 1), &Options::new()).is_err());
 }
 
 /// splitmix64.

@@ -201,6 +201,8 @@ pub(crate) enum ErrorKind {
     TooDeep { nesting: Nesting, max: usize },
     /// An input longer than spans can address.
     TooLong(usize),
+    /// An input longer than the configured `max_len`.
+    OverLimit { len: usize, max: usize },
     /// A fault in evalite itself, not in the input.
     Internal(String),
 
@@ -452,6 +454,11 @@ impl fmt::Display for ParseError {
                 "the expression is {} long, more than the {} that can be parsed",
                 plural(*len, "byte", "bytes"),
                 u32::MAX
+            ),
+            ErrorKind::OverLimit { len, max } => write!(
+                f,
+                "the expression is {} long, the limit is {max}",
+                plural(*len, "byte", "bytes"),
             ),
             ErrorKind::Internal(message) => write!(f, "internal error in evalite: {message}"),
             ErrorKind::UnknownName { name, suggestion } => {

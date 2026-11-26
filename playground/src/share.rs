@@ -1,5 +1,5 @@
 //! The page's state in a URL fragment, so a link reproduces it:
-//! `#e=<expression>&v=<name>,<type>,<value>&…&fuel=N&memory=N&depth=N`,
+//! `#e=<expression>&v=<name>,<type>,<value>&…&fuel=N&memory=N&depth=N&len=N`,
 //! each part percent-encoded (`,` and `&` included).
 
 /// What a link carries.
@@ -10,6 +10,7 @@ pub struct Shared {
     pub fuel: Option<u64>,
     pub memory: Option<u32>,
     pub depth: Option<usize>,
+    pub len: Option<usize>,
 }
 
 /// The fragment for `shared`, without its `#`.
@@ -35,6 +36,10 @@ pub fn encode(shared: &Shared) -> String {
 
     if let Some(depth) = shared.depth {
         out.push_str(&format!("&depth={depth}"));
+    }
+
+    if let Some(len) = shared.len {
+        out.push_str(&format!("&len={len}"));
     }
 
     out
@@ -72,6 +77,7 @@ pub fn decode(fragment: &str) -> Option<Shared> {
             "fuel" => shared.fuel = Some(value.parse().ok()?),
             "memory" => shared.memory = Some(value.parse().ok()?),
             "depth" => shared.depth = Some(value.parse().ok()?),
+            "len" => shared.len = Some(value.parse().ok()?),
             _ => return None,
         }
     }
@@ -132,6 +138,7 @@ mod tests {
             fuel: Some(20),
             memory: None,
             depth: Some(8),
+            len: Some(100),
         };
 
         let fragment = encode(&shared);

@@ -9,6 +9,10 @@ pub(crate) type Tree = syntree::Tree<Syntax, FlavorDefault>;
 
 type Checkpoint = syntree::Checkpoint<<FlavorDefault as syntree::Flavor>::Pointer>;
 
+/// How many bytes an expression may be unless [`Options::max_len`] says
+/// otherwise (64 KiB).
+pub const DEFAULT_MAX_LEN: usize = 64 * 1024;
+
 /// How deeply expressions nest unless [`Options::max_depth`] says
 /// otherwise.
 pub const DEFAULT_MAX_DEPTH: usize = 32;
@@ -17,11 +21,12 @@ pub const DEFAULT_MAX_DEPTH: usize = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
     max_depth: usize,
+    max_len: usize,
 }
 
 impl Options {
     /// The default options: at most [`DEFAULT_MAX_DEPTH`] levels of
-    /// nesting.
+    /// nesting and [`DEFAULT_MAX_LEN`] bytes of input.
     ///
     /// ```
     /// use evalite::{Environment, Options};
@@ -36,12 +41,28 @@ impl Options {
     pub const fn new() -> Self {
         Self {
             max_depth: DEFAULT_MAX_DEPTH,
+            max_len: DEFAULT_MAX_LEN,
         }
     }
 
     /// Allow at most `max_depth` levels of nesting.
     pub const fn max_depth(mut self, max_depth: usize) -> Self {
         self.max_depth = max_depth;
+        self
+    }
+
+    /// Refuse an expression longer than `max_len` bytes, before lexing it.
+    ///
+    /// ```
+    /// use evalite::{Environment, Options};
+    ///
+    /// let env = Environment::with_builtins();
+    ///
+    /// assert!(evalite::compile_with("1 + 2", &env, &Options::new().max_len(5)).is_ok());
+    /// assert!(evalite::compile_with("1 + 2", &env, &Options::new().max_len(4)).is_err());
+    /// ```
+    pub const fn max_len(mut self, max_len: usize) -> Self {
+        self.max_len = max_len;
         self
     }
 }
@@ -64,6 +85,16 @@ pub(crate) fn parse_with(source: &str, options: &Options) -> Result<Tree, ParseE
         return Err(ParseError::new(
             span(0, 0),
             ErrorKind::TooLong(source.len()),
+        ));
+    }
+
+    if source.len() > options.max_len {
+        return Err(ParseError::new(
+            span(0, 0),
+            ErrorKind::OverLimit {
+                len: source.len(),
+                max: options.max_len,
+            },
         ));
     }
 

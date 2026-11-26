@@ -393,13 +393,14 @@ fn parse_depth_limits_apply() {
 
 #[test]
 fn long_chains_do_not_recurse() {
+    let roomy = Options::new().max_len(usize::MAX);
     // 100 000 nodes deep through `+`, which does not nest.
     let text = (0..100_000).map(|_| "1").collect::<Vec<_>>().join(" + ");
-    let structure = s(&text);
+    let structure = Structure::from_text_with(&text, &roomy).unwrap();
     assert_eq!(structure.to_text(), text);
     let bytes = structure.to_bytes().unwrap();
     assert_eq!(Structure::from_bytes(&bytes).unwrap(), structure);
-    assert!(structure.compile(&env()).is_ok());
+    assert!(structure.compile_with(&env(), &roomy).is_ok());
 
     // 100 000 deep through `-x`, which nests: an error, not an overflow.
     let mut b = Structure::new();
@@ -415,7 +416,7 @@ fn long_chains_do_not_recurse() {
     }
 
     b.set_root(inner).unwrap();
-    assert!(b.compile(&env()).is_err());
+    assert!(b.compile_with(&env(), &roomy).is_err());
     let copy = Structure::from_bytes(&b.to_bytes().unwrap()).unwrap();
     assert_eq!(copy, b);
     drop(copy);

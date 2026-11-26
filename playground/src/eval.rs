@@ -3,8 +3,8 @@
 use std::ops::Range;
 
 use evalite::{
-    DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MEMORY, Environment, Labels, Limits, Machine, Options,
-    RunError, Type, Value,
+    DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, DEFAULT_MEMORY, Environment, Labels, Limits,
+    Machine, Options, RunError, Type, Value,
 };
 
 /// The machine's bounds, as the page sets them.
@@ -13,6 +13,7 @@ pub struct Bounds {
     pub fuel: u64,
     pub memory: u32,
     pub depth: usize,
+    pub len: usize,
 }
 
 impl Default for Bounds {
@@ -21,6 +22,7 @@ impl Default for Bounds {
             fuel: DEFAULT_FUEL,
             memory: DEFAULT_MEMORY,
             depth: DEFAULT_MAX_DEPTH,
+            len: DEFAULT_MAX_LEN,
         }
     }
 }
@@ -55,7 +57,7 @@ pub struct Mark {
 pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Done, Vec<Mark>> {
     let env = environment(bindings)?;
 
-    let options = Options::new().max_depth(bounds.depth);
+    let options = Options::new().max_depth(bounds.depth).max_len(bounds.len);
     let (program, debug) = evalite::compile_debug(source, &env, &options)
         .map_err(|error| marks(source, error.labels()))?;
 

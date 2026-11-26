@@ -1898,15 +1898,28 @@ fn random_ill_typed() {
 
 #[test]
 fn long_chains_do_not_recurse() {
+    let roomy = Options::new().max_len(usize::MAX);
     let source = vec!["wits"; 50_000].join(" + ");
-    let program = compile(&source, &env()).unwrap();
+    let program = compile_with(&source, &env(), &roomy).unwrap();
     assert_eq!(program.memory().stack, 2);
 
     let source = format!("wits{}", ".abs()".repeat(50_000));
-    assert_eq!(compile(&source, &env()).unwrap().memory().stack, 1);
+    assert_eq!(
+        compile_with(&source, &env(), &roomy)
+            .unwrap()
+            .memory()
+            .stack,
+        1
+    );
 
     let source = vec!["flag"; 50_000].join(" && ");
-    assert_eq!(compile(&source, &env()).unwrap().memory().stack, 1);
+    assert_eq!(
+        compile_with(&source, &env(), &roomy)
+            .unwrap()
+            .memory()
+            .stack,
+        1
+    );
 }
 
 #[test]
@@ -1940,7 +1953,7 @@ fn long_unknown_names_are_cheap() {
     env.value("strength", Type::int()).unwrap();
 
     let long = "a".repeat(10_000_000);
-    let error = compile(&long, &env).unwrap_err();
+    let error = compile_with(&long, &env, &Options::new().max_len(usize::MAX)).unwrap_err();
     assert!(error.to_string().starts_with("unknown name"), "{error}");
 
     // A near miss is still suggested.

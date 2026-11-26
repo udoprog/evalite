@@ -28,7 +28,7 @@ $ evalite --var strength:Int=3          # one expression per line from stdin
 6 : Int
 ```
 
-`--max-depth` (nesting), `--memory` (64-bit words) and `--fuel` (steps)
+`--max-depth` (nesting), `--max-len` (bytes), `--memory` (64-bit words) and `--fuel` (steps)
 set the limits, and `--explain` also prints the type, memory and steps.
 An error prints the expression with a caret under what is wrong, then
 what was being done, and exits non-zero.

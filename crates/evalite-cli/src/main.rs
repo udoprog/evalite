@@ -24,7 +24,7 @@
 //! 6 : Int
 //! ```
 //!
-//! `--max-depth` (nesting), `--memory` (64-bit words) and `--fuel` (steps)
+//! `--max-depth` (nesting), `--max-len` (bytes), `--memory` (64-bit words) and `--fuel` (steps)
 //! set the limits, and `--explain` also prints the type, memory and steps.
 //! An error prints the expression with a caret under what is wrong, then
 //! what was being done, and exits non-zero.
@@ -38,8 +38,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use evalite::{
-    DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MEMORY, Environment, Labels, Limits, Machine, Options,
-    RunError, Span,
+    DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, DEFAULT_MEMORY, Environment, Labels, Limits,
+    Machine, Options, RunError, Span,
 };
 
 use crate::vars::{Var, VarError, parse_var};
@@ -71,6 +71,9 @@ struct Cli {
     /// The deepest an expression may nest.
     #[arg(long, default_value_t = DEFAULT_MAX_DEPTH, global = true)]
     max_depth: usize,
+    /// The longest an expression may be, in bytes.
+    #[arg(long, default_value_t = DEFAULT_MAX_LEN, global = true)]
+    max_len: usize,
     /// The memory the machine has, in 64-bit words.
     #[arg(long, default_value_t = DEFAULT_MEMORY, global = true)]
     memory: u32,
@@ -141,7 +144,9 @@ impl Session<'_> {
     }
 
     fn try_eval(&self, source: &str) -> Result<String, String> {
-        let options = Options::new().max_depth(self.cli.max_depth);
+        let options = Options::new()
+            .max_depth(self.cli.max_depth)
+            .max_len(self.cli.max_len);
         let (program, debug) = evalite::compile_debug(source, &self.env, &options)
             .map_err(|error| render(source, error.labels()))?;
         let mut machine = Machine::new(Limits::new().memory(self.cli.memory).fuel(self.cli.fuel));

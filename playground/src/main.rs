@@ -166,6 +166,7 @@ impl Input {
                 fuel: shared.fuel.unwrap_or(defaults.fuel),
                 memory: shared.memory.unwrap_or(defaults.memory),
                 depth: shared.depth.unwrap_or(defaults.depth),
+                len: shared.len.unwrap_or(defaults.len),
             },
         }
     }
@@ -183,6 +184,7 @@ impl Input {
             fuel: (self.bounds.fuel != defaults.fuel).then_some(self.bounds.fuel),
             memory: (self.bounds.memory != defaults.memory).then_some(self.bounds.memory),
             depth: (self.bounds.depth != defaults.depth).then_some(self.bounds.depth),
+            len: (self.bounds.len != defaults.len).then_some(self.bounds.len),
         }
     }
 
@@ -593,6 +595,8 @@ fn Playground(props: &PlaygroundProps) -> Html {
                             |b, n| b.memory = u32::try_from(n).unwrap_or(1)) }
                         { limit("Depth", "limit-depth", i64::try_from(bounds.depth).unwrap_or(i64::MAX), 256, 1, None,
                             |b, n| b.depth = usize::try_from(n).unwrap_or(1)) }
+                        { limit("Length (bytes)", "limit-len", i64::try_from(bounds.len).unwrap_or(i64::MAX), 1 << 20, 1024, u64::try_from(input.source.len()).ok(),
+                            |b, n| b.len = usize::try_from(n).unwrap_or(1)) }
                     </Cluster>
                 </Disclosure>
             </Stack>
