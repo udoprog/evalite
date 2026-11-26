@@ -104,6 +104,7 @@ fn render(source: &str, node: N<'_>) -> String {
         Syntax::Method => format!("(method {})", parts.join(" ").trim_end()),
         Syntax::Field => format!("(field {})", parts.join(" ")),
         Syntax::Index => format!("(index {})", parts.join(" ")),
+        Syntax::Unwrap => format!("(unwrap {})", parts[0]),
         other => panic!("unexpected {other:?}"),
     }
 }
@@ -220,6 +221,20 @@ fn postfixes() {
     table(&[
         ("a.b", "(field a b)"),
         ("a.b.c", "(field (field a b) c)"),
+        // `!` after a value unwraps it, binding like `.` and `[`.
+        ("a!", "(unwrap a)"),
+        ("a.b!", "(unwrap (field a b))"),
+        ("a!.b", "(field (unwrap a) b)"),
+        ("a![0]", "(index (unwrap a) 0)"),
+        ("lookup(1, l)!", "(unwrap (call lookup 1 l))"),
+        ("a!!", "(unwrap (unwrap a))"),
+        ("-a!", "(- (unwrap a))"),
+        ("!a!", "(! (unwrap a))"),
+        ("(a + b)!", "(unwrap (paren (+ a b)))"),
+        ("a! + 1", "(+ (unwrap a) 1)"),
+        // `!=` is still one token.
+        ("a!=1", "(!= a 1)"),
+        ("a! == 1", "(== (unwrap a) 1)"),
         ("a.b()", "(method a b)"),
         ("a.b(1)", "(method a b 1)"),
         ("a.b(1, c)", "(method a b 1 c)"),
@@ -544,7 +559,8 @@ fn error_expected_operator() {
         ("a true", &format!("{top} `true`"), 2..6),
         ("a false", &format!("{top} `false`"), 2..7),
         ("a \"s\"", &format!("{top} a string"), 2..5),
-        ("a !b", &format!("{top} `!`"), 2..3),
+        // `a!` unwraps `a`, so the name after it is what is unexpected.
+        ("a !b", &format!("{top} a name"), 3..4),
         ("a, b", &format!("{top} `,`"), 1..2),
         ("f(a) b", &format!("{top} a name"), 5..6),
         ("(a b)", "expected an operator or `)`, found a name", 3..4),

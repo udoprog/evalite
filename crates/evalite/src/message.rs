@@ -47,6 +47,8 @@ pub(crate) enum Message {
     DivideByZero { op: Op, a: i64 },
     /// `list[index]` past either end of the list.
     IndexOutOfRange { index: i64, len: u64 },
+    /// `option!` of an absent option.
+    UnwrapNone,
     /// `value.clamp(low, high)` with `low` above `high`.
     ClampBounds { low: i64, high: i64 },
     /// A function of the caller's failed; its own error is the source.
@@ -479,6 +481,7 @@ impl fmt::Display for Shown<'_> {
                     plural(*len, "entry", "entries")
                 )
             }
+            Message::UnwrapNone => f.write_str("`!` found no value: the optional value is none"),
             Message::ClampBounds { low, high } => write!(
                 f,
                 "`clamp` needs its low bound {low} to be at most its high bound {high}"

@@ -467,6 +467,11 @@ impl Parser<'_> {
                 Ok(Some(State::Operator))
             }
             Syntax::OpenBracket => self.open(Delimiter::Index, primary, None, token).map(Some),
+            Syntax::Bang => {
+                self.bump()?;
+                self.close_at(&primary, Syntax::Unwrap)?;
+                Ok(Some(State::Operator))
+            }
             Syntax::Comma | Syntax::CloseParen | Syntax::CloseBracket => {
                 self.reduce(0, token.span())?;
 

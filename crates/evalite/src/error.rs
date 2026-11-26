@@ -253,6 +253,8 @@ pub(crate) enum ErrorKind {
     UnknownField { field: String, fields: Vec<String> },
     /// `[...]` after a value that is neither a list nor a record.
     NotIndexable(Type),
+    /// `!` after a value that is not an option.
+    UnwrapNonOption(Type),
     /// A list indexed by other than an `Int`.
     IndexType { list: Type, found: Type },
     /// A record indexed by other than a string literal.
@@ -565,6 +567,10 @@ impl fmt::Display for ParseError {
                 write!(f, "{ty} cannot be indexed, only a List or a record can")?;
                 unwrap_hint(f, std::slice::from_ref(ty))
             }
+            ErrorKind::UnwrapNonOption(ty) => write!(
+                f,
+                "`!` unwraps an optional value, found {ty}, which is never absent"
+            ),
             ErrorKind::IndexType { list, found } => {
                 write!(f, "a {list} is indexed by an Int, found {found}")
             }

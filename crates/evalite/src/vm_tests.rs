@@ -319,6 +319,18 @@ const CASES: &[(&str, &str)] = &[
     ("lookup(2, [bonus, label(3)])", "none"),
     ("lookup(0, [maybe])", "none"),
     ("lookup(1, [maybe])", "none"),
+    // Unwrap, `!`
+    ("bonus!", "2"),
+    ("bonus! + 1", "3"),
+    ("-bonus!", "-2"),
+    ("specialties.brawl!", "1"),
+    ("label(4)!", "4"),
+    ("lookup(1, levels)!", "20"),
+    ("maybe_track!.boxes", "5"),
+    ("maybe_track!.count[0]", "5"),
+    ("[bonus, label(8)][1]!", "8"),
+    ("lookup(0, [true])!", "true"),
+    ("lookup(0, [\"a\"])!", "\"a\""),
     // UnwrapOr, IsSome, IsNone
     ("bonus.unwrap_or(0)", "2"),
     ("maybe.unwrap_or(true)", "true"),
@@ -406,6 +418,7 @@ fn every_instruction_is_covered() {
         Instr::UnwrapOr(TypeId(0)),
         Instr::IsSome(TypeId(0)),
         Instr::IsNone(TypeId(0)),
+        Instr::Unwrap(TypeId(0)),
         Instr::Len,
         Instr::Call(0),
     ];
@@ -591,6 +604,19 @@ fn lookup_errors() {
         (
             "athletics.clamp(3, 2)",
             "`clamp` needs its low bound 3 to be at most its high bound 2",
+        ),
+        ("maybe!", "`!` found no value: the optional value is none"),
+        (
+            "label(3)!",
+            "`!` found no value: the optional value is none",
+        ),
+        (
+            "lookup(3, levels)! + 1",
+            "`!` found no value: the optional value is none",
+        ),
+        (
+            "lookup(1, [maybe_track])!.boxes",
+            "`!` found no value: the optional value is none",
         ),
     ];
 
@@ -1499,7 +1525,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
     let n = |rng: &mut Rng| rng.below(5) as u32;
     let ty = |rng: &mut Rng| TypeId(rng.below(types as usize + 2) as u32);
 
-    match rng.below(32) {
+    match rng.below(33) {
         0 => Instr::Int([0, 1, -1, i64::MIN, i64::MAX][rng.below(5)]),
         1 => Instr::Bool(rng.below(2) == 0),
         2 => Instr::Const(n(rng)),
@@ -1540,6 +1566,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
         28 => Instr::IsSome(ty(rng)),
         29 => Instr::IsNone(ty(rng)),
         30 => Instr::Len,
+        31 => Instr::Unwrap(ty(rng)),
         _ => Instr::Call(n(rng)),
     }
 }
@@ -1574,6 +1601,7 @@ fn nudge(rng: &mut Rng, instr: Instr) -> Instr {
         Instr::UnwrapOr(ty) => Instr::UnwrapOr(TypeId(d(ty.0))),
         Instr::IsSome(ty) => Instr::IsNone(TypeId(d(ty.0))),
         Instr::IsNone(ty) => Instr::IsSome(TypeId(d(ty.0))),
+        Instr::Unwrap(ty) => Instr::Unwrap(TypeId(d(ty.0))),
         Instr::Call(f) => Instr::Call(d(f)),
         Instr::Int(n) => Instr::Int(n.wrapping_add(1)),
         Instr::Bool(b) => Instr::Bool(!b),

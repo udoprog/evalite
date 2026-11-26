@@ -694,6 +694,16 @@ fn error_fields_and_indices() {
             "0",
         ),
         (
+            "wits!",
+            "`!` unwraps an optional value, found Int, which is never absent",
+            "wits!",
+        ),
+        (
+            "1 + levels!",
+            "`!` unwraps an optional value, found List<Int>, which is never absent",
+            "levels!",
+        ),
+        (
             "specialties[name]",
             "a record is indexed by a string literal naming its field, such as `m[\"name\"]`",
             "name",
@@ -1403,6 +1413,11 @@ fn tampered_programs() {
             "bonus.unwrap_or(1)",
             Box::new(|s| s.code[2] = Instr::UnwrapOr(TypeId(0))),
             "the instruction unwraps other than an option type: at instruction 2: while verifying the program",
+        ),
+        (
+            "bonus!",
+            Box::new(|s| s.code[1] = Instr::Unwrap(TypeId(0))),
+            "the instruction unwraps other than an option type: at instruction 1: while verifying the program",
         ),
         (
             "bonus.is_none()",

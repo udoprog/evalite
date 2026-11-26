@@ -98,10 +98,11 @@
 //!   error.
 //! - Records, such as `{boxes: Int, count: List<Int>}`: a field is read with
 //!   `.boxes`, or with `["Brawl (bar)"]` when its name is not a plain name.
-//! - `Option<T>`: a value that may be absent, which only comes from a name or
-//!   a function declared with it. It is never used as a `T`: unwrap it with
-//!   `x.unwrap_or(0)`, or test it with `x.is_some()` and `x.is_none()`.
-//!   `Option<Option<T>>` is not a type.
+//! - `Option<T>`: a value that may be absent, which comes from a name or a
+//!   function declared with it, or from `lookup`. It is never used as a `T`:
+//!   unwrap it with `x.unwrap_or(0)`, which gives `0` when it is absent, or
+//!   with `x!`, which stops the run with an error when it is absent. Test it
+//!   with `x.is_some()` and `x.is_none()`. `Option<Option<T>>` is not a type.
 //!
 //! Operators, tightest first. Binary operators are left-associative, except
 //! comparisons, which do not chain (`a < b < c` is an error):
@@ -109,6 +110,7 @@
 //! | Operators                    | Takes                        | Gives  |
 //! |------------------------------|------------------------------|--------|
 //! | `x.field`, `x.method(..)`, `list[i]` | a record, any value, a `List<T>` and an `Int` | its type |
+//! | postfix `x!`                 | an `Option<T>`               | `T`, or an error when absent |
 //! | unary `-`, `!`               | `Int`, `Bool`                | the same |
 //! | `*` `/` `%`                  | `Int`s                       | `Int`  |
 //! | `+` `-`                      | `Int`s                       | `Int`  |
@@ -171,7 +173,7 @@
 //! sum      = product (("+" | "-") product)*
 //! product  = unary (("*" | "/" | "%") unary)*
 //! unary    = ("-" | "!") unary | postfix
-//! postfix  = primary ("." name args? | "[" expr "]")*
+//! postfix  = primary ("." name args? | "[" expr "]" | "!")*
 //! primary  = integer | string | "true" | "false" | name args?
 //!          | "(" expr ")" | "[" (expr ("," expr)*)? "]"
 //! args     = "(" (expr ("," expr)*)? ")"
@@ -199,8 +201,9 @@
 //! more than the machine has. Running out of fuel stops the run. There are no
 //! loops, so most expressions use a few dozen steps. Faults are errors, never
 //! panics: `Int` overflow, division by zero, `list[i]` past either end
-//! (`lookup` gives `none` instead), `clamp` with its bounds the wrong way round, and
-//! a host function's failure or wrongly typed result.
+//! (`lookup` gives `none` instead), `x!` of an absent option, `clamp` with its
+//! bounds the wrong way round, and a host function's failure or wrongly typed
+//! result.
 //!
 //! ```
 //! use evalite::{Environment, Limits, Machine, Options};

@@ -413,6 +413,22 @@ impl Node {
         })
     }
 
+    /// `operand!`: the value of an option, which fails the run when it is
+    /// absent.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let mut s = Structure::new();
+    /// let bonus = s.add(Node::name("bonus"))?;
+    /// s.replace(s.root(), Node::unwrap(bonus))?;
+    /// assert_eq!(s.to_text(), "bonus!");
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn unwrap(operand: NodeId) -> Self {
+        Self(Repr::Unwrap { operand })
+    }
+
     /// The integer, if it is one.
     ///
     /// ```
@@ -619,6 +635,24 @@ impl Node {
         }
     }
 
+    /// The operand, if it is an unwrap, `operand!`.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text("lookup(1, dots)!")?;
+    /// let operand = s.get(s.root()).and_then(Node::as_unwrap).ok_or("not an unwrap")?;
+    /// assert!(s.get(operand).and_then(Node::as_call).is_some());
+    /// assert_eq!(Node::int(1).as_unwrap(), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_unwrap(&self) -> Option<NodeId> {
+        match self.0 {
+            Repr::Unwrap { operand } => Some(operand),
+            _ => None,
+        }
+    }
+
     /// The entries, if it is a list.
     ///
     /// ```
@@ -717,6 +751,10 @@ pub(crate) enum Repr {
     List {
         entries: Vec<NodeId>,
     },
+    /// `operand!`.
+    Unwrap {
+        operand: NodeId,
+    },
 }
 
 impl Repr {
@@ -726,7 +764,7 @@ impl Repr {
             Self::Hole | Self::Int(_) | Self::Bool(_) | Self::String(_) | Self::Name(_) => {
                 Vec::new()
             }
-            Self::Unary { operand, .. } => vec![*operand],
+            Self::Unary { operand, .. } | Self::Unwrap { operand } => vec![*operand],
             Self::Binary { left, right, .. } => vec![*left, *right],
             Self::Call { args, .. } | Self::List { entries: args } => args.clone(),
             Self::Method { receiver, args, .. } => {
@@ -1419,6 +1457,9 @@ impl Repr {
             Self::List { entries } => Self::List {
                 entries: map(entries)?,
             },
+            Self::Unwrap { operand } => Self::Unwrap {
+                operand: f(operand)?,
+            },
             leaf => leaf,
         })
     }
@@ -1448,6 +1489,7 @@ impl Repr {
             ) => a == b && x.len() == y.len(),
             (Self::Field { name: a, .. }, Self::Field { name: b, .. }) => a == b,
             (Self::Index { .. }, Self::Index { .. }) => true,
+            (Self::Unwrap { .. }, Self::Unwrap { .. }) => true,
             (Self::List { entries: x }, Self::List { entries: y }) => x.len() == y.len(),
             (a, b) => a == b,
         }
@@ -1741,6 +1783,10 @@ fn render(nodes: &[Node], root: NodeId) -> (String, Vec<(NodeId, Span<u32>)>) {
                 separated(&mut then, entries);
                 then.push(Emit::Text("]"));
             }
+            Node(Repr::Unwrap { operand }) => {
+                then.push(Emit::Node(*operand, power(*operand) < ATOM));
+                then.push(Emit::Text("!"));
+            }
         }
 
         if paren {
@@ -1928,6 +1974,9 @@ fn from_tree(source: &str, tree: &Tree) -> Result<Structure, ParseError> {
                 })
             }
             Syntax::List => Node(Repr::List { entries: parts }),
+            Syntax::Unwrap => Node(Repr::Unwrap {
+                operand: *parts.first().ok_or_else(|| internal("no operand"))?,
+            }),
             _ => return Err(internal("not an expression")),
         };
 
@@ -1956,6 +2005,7 @@ fn is_expr(kind: Syntax) -> bool {
             | Syntax::Method
             | Syntax::Field
             | Syntax::Index
+            | Syntax::Unwrap
             | Syntax::List
     )
 }

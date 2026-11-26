@@ -36,6 +36,9 @@ pub enum CompletionKind {
     Literal,
     /// An operator with holes for its operands, such as `_ + _`.
     Operator,
+    /// An optional value unwrapped with `!`, such as `bonus!`, which fails
+    /// the run when it is absent.
+    Unwrap,
 }
 
 /// How [`Structure::apply`] fills a hole with a [`Completion`].
@@ -264,6 +267,8 @@ enum Pattern {
     Type(Type),
     /// Any `List<T>`.
     List,
+    /// Any `Option<T>`.
+    Option,
     /// Any record.
     Record,
     /// A type with this method.
@@ -278,6 +283,8 @@ enum Up {
     Entry,
     /// A list indexed by an `Int`.
     ListOf,
+    /// An option unwrapped with `!`.
+    OptionOf,
 }
 
 /// The types a place takes.
@@ -298,6 +305,7 @@ impl Want {
             Self::OneOf(patterns) => patterns.iter().any(|p| match p {
                 Pattern::Type(t) => t == ty,
                 Pattern::List => matches!(ty, Type(Kind::List(_))),
+                Pattern::Option => matches!(ty, Type(Kind::Option(_))),
                 Pattern::Record => matches!(ty, Type(Kind::Record(_))),
                 Pattern::Method(name) => receiver_methods(ty).any(|m| m.name == name),
                 Pattern::Field(name) => {
@@ -321,6 +329,7 @@ impl Want {
         let mut fitting = patterns.iter().filter(|p| match p {
             Pattern::Type(ty) => shape.bind(ty, &mut None),
             Pattern::List => matches!(shape, Shape::List(_) | Shape::Var),
+            Pattern::Option => matches!(shape, Shape::Option(_) | Shape::Var),
             Pattern::Record | Pattern::Field(_) => shape == Shape::Var,
             Pattern::Method(name) => {
                 shape == Shape::Var
@@ -409,6 +418,51 @@ impl Want {
                 }
 
                 out
+            }
+        }
+    }
+
+    /// Options of what this takes, which `!` unwraps to it. An option
+    /// of an option is not a type, so an option taken has none.
+    fn option_of(self) -> Self {
+        match self {
+            Self::Any => Self::OneOf(vec![Pattern::Option]),
+            Self::OneOf(patterns) => {
+                let mut out = Self::OneOf(Vec::new());
+
+                for p in patterns {
+                    match p {
+                        Pattern::Type(Type(Kind::Option(_))) | Pattern::Option => {}
+                        Pattern::Type(t) => out.push(Pattern::Type(Type::option(t))),
+                        _ => out.push(Pattern::Option),
+                    }
+                }
+
+                out
+            }
+        }
+    }
+
+    /// The one type that is not an option this takes, if that is all it
+    /// takes: what `_!` gives in its place.
+    fn unwrapped(&self) -> Option<Option<Type>> {
+        match self {
+            Self::Any => Some(None),
+            Self::OneOf(patterns) => {
+                // `!` never gives an option, so a place only an option fits,
+                // such as before `.unwrap_or(...)`, takes no `_!`.
+                let mut takes = patterns.iter().filter(|p| match p {
+                    Pattern::Option | Pattern::Type(Type(Kind::Option(_))) => false,
+                    Pattern::Method(name) => methods::METHODS
+                        .iter()
+                        .any(|m| m.name == name && !matches!(m.receiver, Shape::Option(_))),
+                    _ => true,
+                });
+
+                match (takes.next()?, takes.next()) {
+                    (Pattern::Type(ty), None) => Some(Some(ty.clone())),
+                    _ => Some(None),
+                }
             }
         }
     }
@@ -647,6 +701,11 @@ impl Structure {
                         _ => Want::Any,
                     }
                 }
+                Node(Repr::Unwrap { .. }) => {
+                    steps_up.push(Up::OptionOf);
+                    at = parent;
+                    continue;
+                }
                 Node(Repr::List { entries }) => {
                     let sibling = entries
                         .iter()
@@ -669,6 +728,7 @@ impl Structure {
         steps_up.into_iter().rev().fold(want, |want, up| match up {
             Up::Entry => want.entry(),
             Up::ListOf => want.list_of(),
+            Up::OptionOf => want.option_of(),
         })
     }
 
@@ -874,6 +934,10 @@ impl Structure {
             expr(&mut out, label, CompletionKind::Operator, Some(ty.clone()));
         }
 
+        if let Some(ty) = want.unwrapped() {
+            expr(&mut out, format!("{HOLE}!"), CompletionKind::Operator, ty);
+        }
+
         out
     }
 }
@@ -926,6 +990,13 @@ fn paths(out: &mut Vec<Completion>, name: &str, ty: &Type, want: &Want) {
         if want.fits(&ty) {
             expr(out, path, CompletionKind::Value, Some(ty));
             continue;
+        }
+
+        if let Type(Kind::Option(value)) = &ty
+            && want.fits(value)
+        {
+            let label = format!("{path}!");
+            expr(out, label, CompletionKind::Unwrap, Some((**value).clone()));
         }
 
         for method in receiver_methods(&ty) {

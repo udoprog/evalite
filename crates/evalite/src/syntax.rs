@@ -30,6 +30,8 @@ pub(crate) enum Syntax {
     Field,
     /// A receiver, `[`, an expression and `]`.
     Index,
+    /// An optional value and `!`, which unwraps it.
+    Unwrap,
     /// `[` entries separated by `,` `]`.
     List,
     /// `(` arguments separated by `,` `)`.
@@ -102,6 +104,7 @@ impl Syntax {
             | Self::Method
             | Self::Field
             | Self::Index
+            | Self::Unwrap
             | Self::List
             | Self::Args => "an expression",
         }

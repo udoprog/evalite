@@ -685,6 +685,16 @@ impl<'a> Run<'a> {
                     if value.is_none() { default } else { value }
                 }
             }
+            Instr::Unwrap(option) => {
+                let value = if types.is_option_int(option) {
+                    let value = self.pop()?;
+                    self.pop()?.as_bool()?.then_some(value)
+                } else {
+                    Some(self.pop()?).filter(|value| !value.is_none())
+                };
+
+                value.ok_or_else(|| RunError::new(Message::UnwrapNone))?
+            }
             Instr::IsSome(option) | Instr::IsNone(option) => {
                 let none = if types.is_option_int(option) {
                     self.pop()?;

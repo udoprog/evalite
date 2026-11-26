@@ -80,6 +80,8 @@ pub(crate) enum Instr {
     Lookup(TypeId),
     /// `option.unwrap_or(default)` of this option type.
     UnwrapOr(TypeId),
+    /// `option!` of this option type, failing the run when it is absent.
+    Unwrap(TypeId),
     IsSome(TypeId),
     IsNone(TypeId),
     /// A list's length.
@@ -672,6 +674,14 @@ impl Verifier<'_> {
                     };
 
                     need(stack.pop(), Some(*value))?;
+                    need(stack.pop(), Some(option))?;
+                    *value
+                }
+                Instr::Unwrap(option) => {
+                    let Some(TypeNode::Option(value)) = self.types.get(option) else {
+                        return Err(fail(Invalid::UnwrapNonOption));
+                    };
+
                     need(stack.pop(), Some(option))?;
                     *value
                 }

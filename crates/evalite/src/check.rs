@@ -147,6 +147,8 @@ enum Work<'a> {
     /// After a method's arguments.
     MethodExit(N<'a>, &'static MethodSig, Callee),
     Field(N<'a>),
+    /// After an unwrap's operand.
+    Unwrap(N<'a>),
     /// After an index's receiver.
     Index(N<'a>),
     /// After a list index's index.
@@ -174,6 +176,7 @@ impl<'a> Work<'a> {
             | Work::Field(node)
             | Work::Index(node)
             | Work::IndexExit(node)
+            | Work::Unwrap(node)
             | Work::List { node, .. } => *node,
         }
     }
@@ -325,6 +328,7 @@ impl<'a> Compiler<'a> {
                 Work::Field(node) => self.field(node)?,
                 Work::Index(node) => self.index(node, &mut work)?,
                 Work::IndexExit(node) => self.index_exit(node)?,
+                Work::Unwrap(node) => self.unwrap(node)?,
                 Work::List { node, start } => self.list(node, start)?,
             }
         }
@@ -409,6 +413,11 @@ impl<'a> Compiler<'a> {
                     _ => Work::Index(node),
                 });
                 work.push(Work::Enter(receiver));
+            }
+            Syntax::Unwrap => {
+                let operand = parts.next().ok_or_else(|| internal("no operand"))?;
+                work.push(Work::Unwrap(node));
+                work.push(Work::Enter(operand));
             }
             Syntax::List => {
                 work.push(Work::List {
@@ -872,6 +881,23 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// `operand!`: the value of an option, which fails the run when absent.
+    fn unwrap(&mut self, node: N<'a>) -> Result<(), ParseError> {
+        let operand = self.pop()?;
+
+        let Some(TypeNode::Option(value)) = self.types.get(operand.ty) else {
+            return Err(ParseError::new(
+                *node.span(),
+                ErrorKind::UnwrapNonOption(self.ty(operand.ty)),
+            ));
+        };
+
+        let value = *value;
+        self.emit(Instr::Unwrap(operand.ty));
+        self.push(value, *node.span());
+        Ok(())
+    }
+
     fn index(&mut self, node: N<'a>, work: &mut Vec<Work<'a>>) -> Result<(), ParseError> {
         let receiver = *self
             .values
@@ -1023,6 +1049,7 @@ fn is_expr(kind: Syntax) -> bool {
             | Syntax::Method
             | Syntax::Field
             | Syntax::Index
+            | Syntax::Unwrap
             | Syntax::List
     )
 }

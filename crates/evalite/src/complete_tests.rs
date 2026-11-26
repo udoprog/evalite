@@ -56,6 +56,7 @@ fn labels(text: &str, n: usize, root: Option<&Type>) -> Vec<String> {
 
 /// What fits an `Int`'s place in [`env`].
 const INT: &[&str] = &[
+    "bonus!",
     "bonus.unwrap_or(_)",
     "dots.len()",
     "dots[_]",
@@ -64,6 +65,7 @@ const INT: &[&str] = &[
     "health.count[_]",
     r#"m["Brawl (bar)"]"#,
     "m.athletics",
+    "m.brawl!",
     "m.brawl.unwrap_or(_)",
     "wits",
     "count(_)",
@@ -78,6 +80,7 @@ const INT: &[&str] = &[
     "_ / _",
     "_ % _",
     "-_",
+    "_!",
 ];
 
 /// What fits a `Bool`'s place in [`env`].
@@ -99,6 +102,7 @@ const BOOL: &[&str] = &[
     "_ && _",
     "_ || _",
     "!_",
+    "_!",
 ];
 
 /// What fits anywhere in [`env`].
@@ -136,6 +140,7 @@ const ANY: &[&str] = &[
     "_ && _",
     "_ || _",
     "!_",
+    "_!",
 ];
 
 /// Text, which of its holes, the type the whole expression must have, and
@@ -146,6 +151,10 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         ("_", 0, None, ANY.to_vec()),
         ("_", 0, Some(Type::int()), INT.to_vec()),
         ("_", 0, Some(Type::bool()), BOOL.to_vec()),
+        // What `!` unwraps is an option, of the type its place takes.
+        ("1 + _!", 0, None, vec!["bonus", "m.brawl", "lookup(_, _)"]),
+        ("_!", 0, None, vec!["bonus", "m.brawl", "lookup(_, _)"]),
+        ("_!", 0, Some(Type::bool()), vec!["lookup(_, _)"]),
         // `lookup` gives an option, so it fits where one is wanted.
         (
             "_",
@@ -153,25 +162,25 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             Some(Type::option(Type::int())),
             vec!["bonus", "m.brawl", "lookup(_, _)"],
         ),
-        ("_", 0, Some(Type::string()), vec!["table", r#""""#]),
+        ("_", 0, Some(Type::string()), vec!["table", r#""""#, "_!"]),
         (
             "_",
             0,
             Some(Type::list(Type::int())),
-            vec!["dots", "health.count", "[_]"],
+            vec!["dots", "health.count", "[_]", "_!"],
         ),
-        ("_", 0, Some(Type::list(Type::bool())), vec!["[_]"]),
+        ("_", 0, Some(Type::list(Type::bool())), vec!["[_]", "_!"]),
         (
             "_",
             0,
             Some(crate::check_tests::track()),
-            vec!["health", "broken(_)"],
+            vec!["health", "broken(_)", "_!"],
         ),
         (
             "_",
             0,
             Some(Type::record([("nothing", Type::bool())])),
-            vec![],
+            vec!["_!"],
         ),
         // Operands.
         ("1 + _", 0, None, INT.to_vec()),
@@ -183,9 +192,9 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         ("wits != _", 0, None, INT.to_vec()),
         ("_ == _", 0, None, int_or_bool_sorted()),
         // Call arguments, by the overloads the other arguments leave.
-        ("count(_)", 0, None, vec!["health", "broken(_)"]),
+        ("count(_)", 0, None, vec!["health", "broken(_)", "_!"]),
         ("count(health, _)", 0, None, INT.to_vec()),
-        ("count(_, 1)", 0, None, vec!["health", "broken(_)"]),
+        ("count(_, 1)", 0, None, vec!["health", "broken(_)", "_!"]),
         ("count(_, _, _)", 0, None, vec![]),
         ("max(_)", 0, None, INT.to_vec()),
         ("min(1, _, 3)", 0, None, INT.to_vec()),
@@ -195,13 +204,13 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             "lookup(_, _)",
             1,
             None,
-            vec!["dots", "health.count", "table", r#""""#, "[_]"],
+            vec!["dots", "health.count", "table", r#""""#, "[_]", "_!"],
         ),
         (
             "lookup(1, _)",
             0,
             None,
-            vec!["dots", "health.count", "table", r#""""#, "[_]"],
+            vec!["dots", "health.count", "table", r#""""#, "[_]", "_!"],
         ),
         ("lookup(_, table)", 0, None, INT.to_vec()),
         ("unknown(_)", 0, None, ANY.to_vec()),
@@ -218,10 +227,10 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             None,
             vec!["bonus", "m.brawl", "lookup(_, _)"],
         ),
-        ("_.len()", 0, None, vec!["dots", "health.count"]),
+        ("_.len()", 0, None, vec!["dots", "health.count", "_!"]),
         ("_.abs()", 0, None, INT.to_vec()),
-        ("_.frenzy", 0, None, vec!["m.flags"]),
-        ("_.nothing", 0, None, vec![]),
+        ("_.frenzy", 0, None, vec!["m.flags", "_!"]),
+        ("_.nothing", 0, None, vec!["_!"]),
         // Indexes.
         ("dots[_]", 0, None, INT.to_vec()),
         (
@@ -235,14 +244,14 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
                 r#""flags""#,
             ],
         ),
-        ("_[1]", 0, None, vec!["dots", "health.count", "[_]"]),
+        ("_[1]", 0, None, vec!["dots", "health.count", "[_]", "_!"]),
         (
             "_[_]",
             0,
             None,
-            vec!["dots", "health", "m", "broken(_)", "[_]"],
+            vec!["dots", "health", "m", "broken(_)", "[_]", "_!"],
         ),
-        (r#"_["Brawl (bar)"]"#, 0, None, vec!["m"]),
+        (r#"_["Brawl (bar)"]"#, 0, None, vec!["m", "_!"]),
         // List entries, by a sibling or the list's own type.
         ("[1, _]", 0, None, INT.to_vec()),
         ("[_, dead]", 0, None, BOOL.to_vec()),
@@ -261,9 +270,9 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             "_[0]",
             0,
             Some(Type::int()),
-            vec!["dots", "health.count", "[_]"],
+            vec!["dots", "health.count", "[_]", "_!"],
         ),
-        ("_[0]", 0, Some(Type::bool()), vec!["[_]"]),
+        ("_[0]", 0, Some(Type::bool()), vec!["[_]", "_!"]),
         ("[_][0]", 0, Some(Type::bool()), BOOL.to_vec()),
         // Member holes, by the receiver's type and what the place takes.
         (
@@ -326,12 +335,18 @@ fn int_or_bool_sorted() -> Vec<&'static str> {
         .flat_map(|a| match a {
             // Paths and methods that are not in `ANY`, which lists only
             // values, go where their value is.
-            "bonus" => vec!["bonus.is_none()", "bonus.is_some()", "bonus.unwrap_or(_)"],
+            "bonus" => vec![
+                "bonus!",
+                "bonus.is_none()",
+                "bonus.is_some()",
+                "bonus.unwrap_or(_)",
+            ],
             "dots" => vec!["dots.len()", "dots[_]"],
             "health" => vec!["health.boxes", "health.count.len()", "health.count[_]"],
             "m" => vec![
                 r#"m["Brawl (bar)"]"#,
                 "m.athletics",
+                "m.brawl!",
                 "m.brawl.is_none()",
                 "m.brawl.is_some()",
                 "m.brawl.unwrap_or(_)",

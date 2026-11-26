@@ -178,6 +178,7 @@ fn kind_name(kind: CompletionKind) -> &'static str {
         CompletionKind::Function => "function",
         CompletionKind::Literal => "literal",
         CompletionKind::Operator => "operator",
+        CompletionKind::Unwrap => "unwrap",
         _ => "other",
     }
 }
