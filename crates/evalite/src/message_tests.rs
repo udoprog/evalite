@@ -1,0 +1,745 @@
+//! Tests of the error core: every message's text with and without a
+//! program, the context chain of each kind of failure, labels and their
+//! spans, and debug info.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice
+)]
+
+use crate::message::{Fault, Found, Location, Message, Op, Root, Seg, show};
+use crate::types::TypeId;
+use crate::*;
+
+fn env() -> Environment {
+    let mut env = Environment::with_builtins();
+    env.value("strength", Type::Int).unwrap();
+    env.value(
+        "health",
+        Type::record([("boxes", Type::Int), ("count", Type::list(Type::Int))]),
+    )
+    .unwrap();
+    env.value("bonus", Type::option(Type::Int)).unwrap();
+    env.function("count", [Type::Int], Type::record([("n", Type::Int)]))
+        .unwrap();
+    env
+}
+
+/// Each label's message, and its span's text in `source`.
+fn labels(
+    error: &RunError,
+    program: &Program,
+    debug: Option<&DebugInfo>,
+    source: &str,
+) -> Vec<(String, Option<String>)> {
+    error
+        .labels(program, debug)
+        .map(|l| {
+            let span = l.span().map(|s| source[s.range()].to_owned());
+            (l.message().to_string(), span)
+        })
+        .collect()
+}
+
+fn messages(error: &RunError, program: &Program) -> Vec<String> {
+    error
+        .labels(program, None)
+        .map(|l| l.message().to_string())
+        .collect()
+}
+
+#[test]
+fn every_message_with_and_without_a_program() {
+    let env = env();
+    let program = compile(
+        "strength + health.boxes + count(1).n + bonus.unwrap_or(0)",
+        &env,
+    )
+    .unwrap();
+    let int = program
+        .globals
+        .iter()
+        .find(|g| g.name == "strength")
+        .unwrap()
+        .ty;
+    let health = program
+        .globals
+        .iter()
+        .find(|g| g.name == "health")
+        .unwrap()
+        .ty;
+    let g = |name: &str| program.globals.iter().position(|g| g.name == name).unwrap() as u32;
+    let strength = g("strength");
+
+    let cases: Vec<(Message, &str, &str)> = vec![
+        (
+            Message::TooMuchMemory {
+                needed: 8,
+                allowed: 2,
+            },
+            "the program needs 8 words of memory, more than the 2 the machine allows",
+            "the program needs 8 words of memory, more than the 2 the machine allows",
+        ),
+        (
+            Message::UnknownValue,
+            "the program reads no value of that name",
+            "the program reads no value of that name",
+        ),
+        (
+            Message::AlreadyBound { global: strength },
+            "`strength` is already bound",
+            "the value is already bound",
+        ),
+        (
+            Message::Mistyped {
+                expected: int,
+                found: Found::Bool,
+                in_some: false,
+            },
+            "expected Int, found Bool",
+            "expected another type, found Bool",
+        ),
+        (
+            Message::Mistyped {
+                expected: int,
+                found: Found::String,
+                in_some: true,
+            },
+            "expected Int, found some(String)",
+            "expected another type, found some(String)",
+        ),
+        (
+            Message::Mistyped {
+                expected: int,
+                found: Found::Int,
+                in_some: false,
+            },
+            "expected Int, found Int",
+            "expected another type, found Int",
+        ),
+        (
+            Message::Mistyped {
+                expected: int,
+                found: Found::List,
+                in_some: false,
+            },
+            "expected Int, found a list",
+            "expected another type, found a list",
+        ),
+        (
+            Message::Mistyped {
+                expected: int,
+                found: Found::Record,
+                in_some: false,
+            },
+            "expected Int, found a record",
+            "expected another type, found a record",
+        ),
+        (
+            Message::Mistyped {
+                expected: int,
+                found: Found::None,
+                in_some: false,
+            },
+            "expected Int, found none",
+            "expected another type, found none",
+        ),
+        (
+            Message::Mistyped {
+                expected: int,
+                found: Found::Some,
+                in_some: false,
+            },
+            "expected Int, found some(..)",
+            "expected another type, found some(..)",
+        ),
+        (
+            Message::Mistyped {
+                expected: health,
+                found: Found::RecordWithout {
+                    record: health,
+                    field: 1,
+                },
+                in_some: false,
+            },
+            "expected {boxes: Int, count: List<Int>}, found a record without `count`",
+            "expected another type, found a record without one of its fields",
+        ),
+        (
+            Message::Mistyped {
+                expected: health,
+                found: Found::RecordWithExtra,
+                in_some: false,
+            },
+            "expected {boxes: Int, count: List<Int>}, found a record with an extra field",
+            "expected another type, found a record with an extra field",
+        ),
+        (
+            Message::TooLarge { needed: 4, left: 1 },
+            "the value needs 4 words of memory, 1 are left",
+            "the value needs 4 words of memory, 1 are left",
+        ),
+        (
+            Message::Unbound { global: strength },
+            "`strength` is not bound, bind a Int before running",
+            "a value the program reads is not bound",
+        ),
+        (
+            Message::OutOfFuel { fuel: 3 },
+            "the expression took too long: it used all of its 3 steps",
+            "the expression took too long: it used all of its 3 steps",
+        ),
+        (
+            Message::Overflow {
+                op: Op::Add,
+                a: i64::MAX,
+                b: 1,
+            },
+            "`9223372036854775807 + 1` overflows an Int",
+            "`9223372036854775807 + 1` overflows an Int",
+        ),
+        (
+            Message::Overflow {
+                op: Op::Neg,
+                a: i64::MIN,
+                b: 0,
+            },
+            "`-(-9223372036854775808)` overflows an Int",
+            "`-(-9223372036854775808)` overflows an Int",
+        ),
+        (
+            Message::Overflow {
+                op: Op::Abs,
+                a: i64::MIN,
+                b: 0,
+            },
+            "`(-9223372036854775808).abs()` overflows an Int",
+            "`(-9223372036854775808).abs()` overflows an Int",
+        ),
+        (
+            Message::Overflow {
+                op: Op::Sub,
+                a: i64::MIN,
+                b: 1,
+            },
+            "`-9223372036854775808 - 1` overflows an Int",
+            "`-9223372036854775808 - 1` overflows an Int",
+        ),
+        (
+            Message::Overflow {
+                op: Op::Mul,
+                a: i64::MAX,
+                b: 2,
+            },
+            "`9223372036854775807 * 2` overflows an Int",
+            "`9223372036854775807 * 2` overflows an Int",
+        ),
+        (
+            Message::Overflow {
+                op: Op::Div,
+                a: i64::MIN,
+                b: -1,
+            },
+            "`-9223372036854775808 / -1` overflows an Int",
+            "`-9223372036854775808 / -1` overflows an Int",
+        ),
+        (
+            Message::DivideByZero { op: Op::Rem, a: 7 },
+            "`7 % 0` divides by zero",
+            "`7 % 0` divides by zero",
+        ),
+        (
+            Message::IndexOutOfRange { index: 7, len: 1 },
+            "index 7 is out of range of a list of 1 entry",
+            "index 7 is out of range of a list of 1 entry",
+        ),
+        (
+            Message::IndexOutOfRange { index: -1, len: 3 },
+            "index -1 is out of range of a list of 3 entries",
+            "index -1 is out of range of a list of 3 entries",
+        ),
+        (
+            Message::EmptyLookup,
+            "`lookup` of an empty list has no entry to give",
+            "`lookup` of an empty list has no entry to give",
+        ),
+        (
+            Message::ClampBounds { low: 3, high: 1 },
+            "`clamp` needs its low bound 3 to be at most its high bound 1",
+            "`clamp` needs its low bound 3 to be at most its high bound 1",
+        ),
+        (
+            Message::HostFailed,
+            "the function failed",
+            "the function failed",
+        ),
+        (
+            Message::Fault(Fault::NotABool),
+            "the program is faulty: a Bool other than 0 or 1",
+            "the program is faulty: a Bool other than 0 or 1",
+        ),
+        (
+            Message::LoadingProgram,
+            "while loading the program",
+            "while loading the program",
+        ),
+        (
+            Message::Binding { global: strength },
+            "while binding `strength`",
+            "while binding a value",
+        ),
+        (
+            Message::AtPath {
+                root: Root::Global(g("health")),
+                path: Box::new([
+                    Seg::Field {
+                        record: health,
+                        field: 1,
+                    },
+                    Seg::Index(7),
+                ]),
+            },
+            "at `health.count[7]`",
+            "at `_._[7]`",
+        ),
+        (
+            Message::AtPath {
+                root: Root::Returned(0),
+                path: Box::new([Seg::Index(2)]),
+            },
+            "at `count(..)[2]`",
+            "at `_(..)[2]`",
+        ),
+        (
+            Message::CallingHost { function: 0 },
+            "while calling `count`",
+            "while calling a function",
+        ),
+        (
+            Message::ReadingHostResult { function: 0 },
+            "while reading what `count` returned",
+            "while reading what a function returned",
+        ),
+        (
+            Message::Instruction { pc: 12 },
+            "while running instruction 12",
+            "while running instruction 12",
+        ),
+        (
+            Message::Running,
+            "while running the program",
+            "while running the program",
+        ),
+        (
+            Message::ReadingResult,
+            "while reading the program's value",
+            "while reading the program's value",
+        ),
+    ];
+
+    for (message, named, unnamed) in &cases {
+        assert_eq!(show(message, Some(&program)), *named, "{message:?}");
+        assert_eq!(show(message, None), *unnamed, "{message:?}");
+    }
+
+    // Ids the program does not have show as if there were no program.
+    assert_eq!(
+        show(&Message::Binding { global: 99 }, Some(&program)),
+        "while binding a value"
+    );
+    assert_eq!(
+        show(
+            &Message::Mistyped {
+                expected: TypeId(999),
+                found: Found::Int,
+                in_some: false
+            },
+            Some(&program)
+        ),
+        "expected another type, found Int"
+    );
+}
+
+#[test]
+fn every_fault_has_its_own_text() {
+    use std::collections::HashSet;
+
+    let faults = [
+        Fault::WideAddress,
+        Fault::WideLength,
+        Fault::NoneReference,
+        Fault::NotABool,
+        Fault::PastAddressSpace,
+        Fault::StackLargerThanMachine,
+        Fault::ConstantsLargerThanMachine,
+        Fault::OutsideMemory,
+        Fault::StackOutsideMemory,
+        Fault::ConstantOutsideMemory,
+        Fault::NotOneResult,
+        Fault::NoSuchConstant,
+        Fault::NoSuchFunction,
+        Fault::NoSuchType,
+        Fault::CodeTooLong,
+        Fault::JumpPastEnd,
+        Fault::FieldPastRecord,
+        Fault::ListTooLarge,
+        Fault::ListPastStack,
+        Fault::ArgumentsPastStack,
+        Fault::UndeclaredHeap,
+        Fault::UndeclaredMemory,
+        Fault::UndeclaredStack,
+        Fault::ListTooLongToCount,
+        Fault::EmptyStack,
+        Fault::ValueChangedType,
+        Fault::RecordLostField,
+        Fault::RecordWrongSize,
+        Fault::RecordNotRecordType,
+        Fault::ListLostEntries,
+        Fault::RecordLostFields,
+        Fault::OptionLostValue,
+        Fault::ReadAsSeveral,
+        Fault::NotUtf8,
+    ];
+
+    let texts = faults
+        .iter()
+        .map(|f| show(&Message::Fault(*f), None))
+        .collect::<HashSet<_>>();
+    assert_eq!(texts.len(), faults.len());
+    assert!(
+        texts
+            .iter()
+            .all(|t| t.starts_with("the program is faulty: "))
+    );
+}
+
+#[test]
+fn mistyped_nested_binding_gives_path_then_binding() {
+    let env = env();
+    let program = compile("health.boxes + strength + bonus.unwrap_or(0)", &env).unwrap();
+    let mut machine = Machine::default();
+    let mut run = machine.load(&program).unwrap();
+
+    let error = run
+        .bind(
+            "health",
+            Value::record([
+                ("boxes", Value::Int(1)),
+                ("count", Value::List(vec![Value::Int(1), Value::Bool(true)])),
+            ]),
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        messages(&error, &program),
+        [
+            "expected Int, found Bool",
+            "at `health.count[1]`",
+            "while binding `health`",
+        ]
+    );
+    assert_eq!(
+        format!("{error:#}"),
+        "expected another type, found Bool: at `_._[1]`: while binding a value"
+    );
+
+    // A whole value of the wrong type has no path.
+    let error = run.bind("strength", Value::None).unwrap_err();
+    assert_eq!(
+        messages(&error, &program),
+        ["expected Int, found none", "while binding `strength`"]
+    );
+
+    let error = run
+        .bind("bonus", Value::some(Value::Bool(true)))
+        .unwrap_err();
+    assert_eq!(
+        messages(&error, &program),
+        [
+            "expected Option<Int>, found some(Bool)",
+            "while binding `bonus`"
+        ]
+    );
+
+    let error = run.bind("nothing", Value::Int(1)).unwrap_err();
+    assert_eq!(
+        messages(&error, &program),
+        ["the program reads no value of that name"]
+    );
+}
+
+#[test]
+fn mistyped_host_result_gives_path_function_then_instruction() {
+    let env = env();
+    let source = "1 + count(2).n";
+    let (program, debug) = compile_debug(source, &env, &Options::new()).unwrap();
+    let mut machine = Machine::default();
+    let run = machine.load(&program).unwrap();
+
+    let mut host = |_: &str, _: Vec<Value>| Ok(Value::record([("n", Value::Bool(false))]));
+    let error = run.run_with(&mut host).unwrap_err();
+
+    assert_eq!(
+        labels(&error, &program, Some(&debug), source),
+        [
+            (
+                "expected Int, found Bool".to_owned(),
+                Some("count(2)".to_owned())
+            ),
+            ("at `count(..).n`".to_owned(), None),
+            ("while reading what `count` returned".to_owned(), None),
+            (
+                "while running instruction 2".to_owned(),
+                Some("count(2)".to_owned())
+            ),
+            ("while running the program".to_owned(), None),
+        ]
+    );
+
+    let run = machine.load(&program).unwrap();
+    let mut host = |_: &str, _: Vec<Value>| Ok(Value::Int(1));
+    let error = run.run_with(&mut host).unwrap_err();
+    assert_eq!(
+        messages(&error, &program),
+        [
+            "expected {n: Int}, found Int",
+            "while reading what `count` returned",
+            "while running instruction 2",
+            "while running the program",
+        ]
+    );
+}
+
+#[test]
+fn host_failure_keeps_the_hosts_error_as_source() {
+    use std::error::Error as _;
+
+    let env = env();
+    let program = compile("count(2).n", &env).unwrap();
+    let mut machine = Machine::default();
+    let run = machine.load(&program).unwrap();
+
+    let mut host = |_: &str, _: Vec<Value>| Err("no table".to_owned());
+    let error = run.run_with(&mut host).unwrap_err();
+
+    assert_eq!(
+        messages(&error, &program),
+        [
+            "the function failed",
+            "while calling `count`",
+            "while running instruction 1",
+            "while running the program",
+        ]
+    );
+    assert_eq!(error.source().unwrap().to_string(), "no table");
+
+    // Errors evalite makes have no source.
+    let error = Machine::default()
+        .load(&compile("1 / 0", &env).unwrap())
+        .unwrap()
+        .run()
+        .unwrap_err();
+    assert!(error.source().is_none());
+}
+
+#[test]
+fn runtime_errors_give_instruction_then_running() {
+    let env = env();
+
+    for (source, primary, span) in [
+        (
+            "1 + strength * 9223372036854775807",
+            "`2 * 9223372036854775807` overflows an Int",
+            "strength * 9223372036854775807",
+        ),
+        (
+            "(strength - 2) / (strength - 2)",
+            "`0 / 0` divides by zero",
+            "(strength - 2) / (strength - 2)",
+        ),
+        (
+            "health.count[strength + 5]",
+            "index 7 is out of range of a list of 1 entry",
+            "health.count[strength + 5]",
+        ),
+        (
+            "strength.clamp(3, 1)",
+            "`clamp` needs its low bound 3 to be at most its high bound 1",
+            "strength.clamp(3, 1)",
+        ),
+        (
+            "-(strength - 9223372036854775807 - 3)",
+            "`-(-9223372036854775808)` overflows an Int",
+            "-(strength - 9223372036854775807 - 3)",
+        ),
+    ] {
+        let (program, debug) = compile_debug(source, &env, &Options::new()).unwrap();
+        let mut machine = Machine::default();
+        let mut run = machine.load(&program).unwrap();
+
+        for (name, _) in run.globals() {
+            let value = match name {
+                "strength" => Value::Int(2),
+                "health" => Value::record([
+                    ("boxes", Value::Int(1)),
+                    ("count", Value::List(vec![Value::Int(1)])),
+                ]),
+                _ => Value::None,
+            };
+
+            run.bind(name, value).unwrap();
+        }
+
+        let error = run.run().unwrap_err();
+        let got = labels(&error, &program, Some(&debug), source);
+
+        assert_eq!(got.len(), 3, "{source}: {got:?}");
+        assert_eq!(
+            got[0],
+            (primary.to_owned(), Some(span.to_owned())),
+            "{source}"
+        );
+        assert!(
+            got[1].0.starts_with("while running instruction "),
+            "{source}"
+        );
+        assert_eq!(got[1].1.as_deref(), Some(span), "{source}");
+        assert_eq!(
+            got[2],
+            ("while running the program".to_owned(), None),
+            "{source}"
+        );
+
+        let primary_flags = error
+            .labels(&program, None)
+            .map(|l| l.is_primary())
+            .collect::<Vec<_>>();
+        assert_eq!(primary_flags, [true, false, false]);
+        assert!(error.labels(&program, None).all(|l| l.span().is_none()));
+
+        let instr = error
+            .frames()
+            .iter()
+            .filter_map(|f| f.location)
+            .collect::<Vec<_>>();
+        assert!(matches!(instr.as_slice(), [Location::Instr(_)]), "{source}");
+        assert_eq!(error.to_string(), primary);
+        assert!(
+            format!("{error:#}").starts_with(&format!("{primary}: while running instruction "))
+        );
+    }
+}
+
+#[test]
+fn out_of_fuel_gives_instruction_then_running() {
+    let env = env();
+    let source = "1 + 2 + 3";
+    let (program, debug) = compile_debug(source, &env, &Options::new()).unwrap();
+    let mut machine = Machine::new(Limits::new().fuel(3));
+    let error = machine.load(&program).unwrap().run().unwrap_err();
+
+    assert_eq!(
+        labels(&error, &program, Some(&debug), source),
+        [
+            (
+                "the expression took too long: it used all of its 3 steps".to_owned(),
+                Some("3".to_owned())
+            ),
+            (
+                "while running instruction 3".to_owned(),
+                Some("3".to_owned())
+            ),
+            ("while running the program".to_owned(), None),
+        ]
+    );
+    assert_eq!(error.message(), &Message::OutOfFuel { fuel: 3 });
+}
+
+#[test]
+fn load_and_unbound_errors_have_context() {
+    let env = env();
+    let program = compile("strength", &env).unwrap();
+
+    let error = Machine::new(Limits::new().memory(0))
+        .load(&program)
+        .unwrap_err();
+    assert_eq!(
+        messages(&error, &program),
+        [
+            "the program needs 2 words of memory, more than the 0 the machine allows",
+            "while loading the program",
+        ]
+    );
+
+    let mut machine = Machine::default();
+    let error = machine.load(&program).unwrap().run().unwrap_err();
+    assert_eq!(
+        messages(&error, &program),
+        [
+            "`strength` is not bound, bind a Int before running",
+            "while running the program",
+        ]
+    );
+
+    let mut run = machine.load(&program).unwrap();
+    run.bind("strength", Value::Int(1)).unwrap();
+    let error = run.bind("strength", Value::Int(1)).unwrap_err();
+    assert_eq!(
+        messages(&error, &program),
+        ["`strength` is already bound", "while binding `strength`"]
+    );
+}
+
+#[test]
+fn structural_compile_spans_point_into_its_text() {
+    let env = env();
+    let structure = Structure::from_text("(strength + 1) * [1, 2][strength]").unwrap();
+    let (program, debug) = structure.compile_debug(&env, &Options::new()).unwrap();
+    let text = structure.to_text();
+
+    let mut machine = Machine::default();
+    let mut run = machine.load(&program).unwrap();
+    run.bind("strength", Value::Int(2)).unwrap();
+    let error = run.run().unwrap_err();
+
+    let got = labels(&error, &program, Some(&debug), &text);
+    assert_eq!(got[0].1.as_deref(), Some("[1, 2][strength]"));
+    assert_eq!(
+        compile_debug(&text, &env, &Options::new()).unwrap().1,
+        debug
+    );
+}
+
+#[test]
+fn debug_info_has_a_span_per_instruction_and_round_trips() {
+    let env = env();
+    let source = "strength.max(health.boxes) + count(1).n + [1, 2].len()";
+    let (program, debug) = compile_debug(source, &env, &Options::new()).unwrap();
+
+    for pc in 0..program.code.len() as u32 {
+        let span = debug.span(pc).unwrap();
+        assert!(source.get(span.range()).is_some(), "{pc}");
+    }
+
+    assert_eq!(debug.span(program.code.len() as u32), None);
+
+    let bytes = debug.to_bytes().unwrap();
+    assert_eq!(DebugInfo::from_bytes(&bytes).unwrap(), debug);
+    assert!(DebugInfo::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+
+    // The same program compiles with and without debug info.
+    assert_eq!(
+        compile(source, &env).unwrap().to_bytes().unwrap(),
+        program.to_bytes().unwrap()
+    );
+}
+
+#[test]
+fn errors_are_one_word() {
+    assert_eq!(size_of::<RunError>(), size_of::<usize>());
+    assert_eq!(size_of::<Result<(), RunError>>(), size_of::<usize>());
+}

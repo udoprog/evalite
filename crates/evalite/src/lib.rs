@@ -142,6 +142,12 @@
 //! clamps instead), `clamp` with its bounds the wrong way round, and a
 //! function's failure or wrongly typed result.
 //!
+//! A [`RunError`] is opaque. It shows its message, `{:#}` shows the whole
+//! chain of what was being done, and [`RunError::labels`] gives each part
+//! with the program's names. With the [`DebugInfo`] from
+//! [`compile_debug`], each label also has the span of the expression that
+//! failed.
+//!
 //! ```
 //! use evalite::{Environment, Limits, Machine, Type, Value};
 //!
@@ -235,9 +241,11 @@
 
 mod check;
 mod complete;
+mod debug;
 mod env;
 mod error;
 mod lexer;
+mod message;
 mod methods;
 mod parser;
 mod program;
@@ -262,10 +270,15 @@ mod structure_tests;
 #[cfg(test)]
 mod complete_tests;
 
-pub use self::check::{compile, compile_with};
+#[cfg(test)]
+mod message_tests;
+
+pub use self::check::{compile, compile_debug, compile_with};
 pub use self::complete::{CompleteError, Completion, CompletionKind, Insert};
+pub use self::debug::DebugInfo;
 pub use self::env::{Builtin, DeclareError, Environment};
 pub use self::error::{Arity, Callee, Delimiter, Error, ErrorKind, Found, Nesting};
+pub use self::message::{Label, Labels, RunError};
 pub use self::parser::{DEFAULT_MAX_DEPTH, Options, Tree, parse, parse_with};
 pub use self::program::{Memory, Program, StoreError};
 pub use self::structure::{
@@ -274,7 +287,5 @@ pub use self::structure::{
 };
 pub use self::syntax::{Syntax, unescape};
 pub use self::types::{MAX_TYPE_DEPTH, Type};
-pub use self::vm::{
-    DEFAULT_FUEL, DEFAULT_MEMORY, Host, Limits, Machine, Outcome, Run, RunError, Value,
-};
+pub use self::vm::{DEFAULT_FUEL, DEFAULT_MEMORY, Host, Limits, Machine, Outcome, Run, Value};
 pub use syntree::Span;

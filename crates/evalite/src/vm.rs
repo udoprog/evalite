@@ -6,9 +6,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::Type;
-use crate::program::{Constant, Instr, Program, Scalar};
+use crate::message::{Context, Fault, Found, Location, Message, Op, Root, RunError, Seg};
+use crate::program::{Constant, HostFunction, Instr, Program, Scalar};
 use crate::types::{TypeId, TypeNode};
-use crate::word::{Word, WordFault};
+use crate::word::Word;
 
 /// The memory a [`Machine`] has unless [`Limits::memory`] says otherwise,
 /// in 64-bit words.
@@ -98,15 +99,15 @@ impl Value {
     }
 
     /// What it is, as an error names it.
-    fn describe(&self) -> String {
+    fn describe(&self) -> Found {
         match self {
-            Self::Int(_) => "Int".to_owned(),
-            Self::Bool(_) => "Bool".to_owned(),
-            Self::String(_) => "String".to_owned(),
-            Self::List(_) => "a list".to_owned(),
-            Self::Record(_) => "a record".to_owned(),
-            Self::None => "none".to_owned(),
-            Self::Some(_) => "some(..)".to_owned(),
+            Self::Int(_) => Found::Int,
+            Self::Bool(_) => Found::Bool,
+            Self::String(_) => Found::String,
+            Self::List(_) => Found::List,
+            Self::Record(_) => Found::Record,
+            Self::None => Found::None,
+            Self::Some(_) => Found::Some,
         }
     }
 }
@@ -212,7 +213,7 @@ fn write_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
     f.write_str("\"")
 }
 
-fn is_field_name(name: &str) -> bool {
+pub(crate) fn is_field_name(name: &str) -> bool {
     let mut chars = name.chars();
 
     chars
@@ -221,147 +222,19 @@ fn is_field_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Why a program could not be loaded, bound or run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RunError {
-    /// The program needs more memory than the machine has.
-    TooMuchMemory { needed: u64, allowed: u32 },
-    /// A binding names a value the program does not read.
-    UnknownValue { name: String },
-    /// A value is bound twice.
-    AlreadyBound { name: String },
-    /// A bound value is not of its declared type: the part at `path`, such
-    /// as `stats.wits` or `health[2]`, is `found` instead.
-    Mistyped {
-        path: String,
-        expected: Type,
-        found: String,
-    },
-    /// A bound value does not fit in the memory left.
-    BindingTooLarge {
-        name: String,
-        needed: u64,
-        left: u64,
-    },
-    /// A value the program reads was not bound before it ran.
-    Unbound { name: String, ty: Type },
-    /// The run took every step it was allowed.
-    OutOfFuel { fuel: u64 },
-    /// Arithmetic past the range of an `Int`, such as `9223372036854775807 + 1`.
-    Overflow { expr: String },
-    /// `a / 0` or `a % 0`.
-    DivideByZero { expr: String },
-    /// `list[index]` past either end of the list.
-    IndexOutOfRange { index: i64, len: usize },
-    /// `lookup(index, list)` of an empty list.
-    EmptyLookup,
-    /// `value.clamp(low, high)` with `low` above `high`.
-    ClampBounds { low: i64, high: i64 },
-    /// A function of the caller's failed with `message`.
-    Host { name: String, message: String },
-    /// A function of the caller's returned a value of another type than it
-    /// declares; `path` is the mismatched part, empty for the whole value.
-    HostResult {
-        name: String,
-        path: String,
-        expected: Type,
-        found: String,
-    },
-    /// A function of the caller's returned a value too large for the
-    /// memory left.
-    HostResultTooLarge {
-        name: String,
-        needed: u64,
-        left: u64,
-    },
-    /// The program is not one evalite made. Programs from
-    /// [`compile`](crate::compile) and [`Program::from_bytes`] never give
-    /// it.
-    Fault(String),
-}
-
-impl fmt::Display for RunError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TooMuchMemory { needed, allowed } => write!(
-                f,
-                "the program needs {needed} words of memory, more than the {allowed} the machine allows"
-            ),
-            Self::UnknownValue { name } => write!(f, "the program reads no value `{name}`"),
-            Self::AlreadyBound { name } => write!(f, "`{name}` is already bound"),
-            Self::Mistyped {
-                path,
-                expected,
-                found,
-            } => write!(f, "`{path}` must be {expected}, found {found}"),
-            Self::BindingTooLarge { name, needed, left } => write!(
-                f,
-                "binding `{name}` needs {needed} words of memory, {left} are left"
-            ),
-            Self::Unbound { name, ty } => {
-                write!(f, "`{name}` is not bound, bind a {ty} before running")
-            }
-            Self::OutOfFuel { fuel } => write!(
-                f,
-                "the expression took too long: it used all of its {fuel} steps"
-            ),
-            Self::Overflow { expr } => write!(f, "`{expr}` overflows an Int"),
-            Self::DivideByZero { expr } => write!(f, "`{expr}` divides by zero"),
-            Self::IndexOutOfRange { index, len } => {
-                let entries = if *len == 1 { "entry" } else { "entries" };
-                write!(
-                    f,
-                    "index {index} is out of range of a list of {len} {entries}"
-                )
-            }
-            Self::EmptyLookup => f.write_str("`lookup` of an empty list has no entry to give"),
-            Self::ClampBounds { low, high } => write!(
-                f,
-                "`clamp` needs its low bound {low} to be at most its high bound {high}"
-            ),
-            Self::Host { name, message } => write!(f, "`{name}` failed: {message}"),
-            Self::HostResult {
-                name,
-                path,
-                expected,
-                found,
-            } => {
-                if path.is_empty() {
-                    write!(f, "`{name}` must return {expected}, returned {found}")
-                } else {
-                    write!(
-                        f,
-                        "`{name}` returned a value whose `{path}` must be {expected}, found {found}"
-                    )
-                }
-            }
-            Self::HostResultTooLarge { name, needed, left } => write!(
-                f,
-                "the value `{name}` returned needs {needed} words of memory, {left} are left"
-            ),
-            Self::Fault(what) => write!(f, "the program is faulty: {what}"),
-        }
-    }
-}
-
-impl std::error::Error for RunError {}
-
-impl From<WordFault> for RunError {
-    #[cold]
-    #[inline(never)]
-    fn from(fault: WordFault) -> Self {
-        Self::Fault(fault.what().to_owned())
-    }
-}
-
-fn fault(what: &str) -> RunError {
-    RunError::Fault(what.to_owned())
+#[cold]
+#[inline(never)]
+fn fault(fault: Fault) -> RunError {
+    RunError::from(fault)
 }
 
 /// The caller's functions, which a program calls by the names and types
 /// its environment declared. Each call gets its arguments in order and
 /// gives a value of the declared return type, or an error message.
+///
+/// The message is the caller's own, so it is not one of evalite's: a
+/// failed call's [`RunError`] says which function failed, and has the
+/// message as its [`source`](std::error::Error::source).
 ///
 /// A closure `FnMut(&str, Vec<Value>) -> Result<Value, String>` is a host.
 pub trait Host {
@@ -421,7 +294,8 @@ pub struct Outcome {
 ///
 /// let mut run = machine.load(&program)?;
 /// let error = run.bind("strength", Value::Bool(true)).unwrap_err();
-/// assert_eq!(error.to_string(), "`strength` must be Int, found Bool");
+/// let labels: Vec<String> = error.labels(&program, None).map(|l| l.message().to_string()).collect();
+/// assert_eq!(labels, ["expected Int, found Bool", "while binding `strength`"]);
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug)]
@@ -457,21 +331,28 @@ impl Machine {
         let needed = memory.total();
 
         if needed > u64::from(self.limits.memory) {
-            return Err(RunError::TooMuchMemory {
+            return Err(RunError::new(Message::TooMuchMemory {
                 needed,
                 allowed: self.limits.memory,
-            });
+            }))
+            .context(Message::LoadingProgram);
         }
+
+        self.load_checked(program).context(Message::LoadingProgram)
+    }
+
+    fn load_checked<'a>(&'a mut self, program: &'a Program) -> Result<Run<'a>, RunError> {
+        let memory = program.memory();
 
         let stack_cap = size(memory.stack)?;
         let stack_base = self
             .words
             .len()
             .checked_sub(stack_cap)
-            .ok_or_else(|| fault("a stack larger than the machine"))?;
+            .ok_or_else(|| fault(Fault::StackLargerThanMachine))?;
         let limit = stack_base
             .checked_sub(size(memory.constants)?)
-            .ok_or_else(|| fault("constants larger than the machine"))?;
+            .ok_or_else(|| fault(Fault::ConstantsLargerThanMachine))?;
 
         self.bound.clear();
         self.bound.resize(program.globals.len(), false);
@@ -528,25 +409,11 @@ pub struct Run<'a> {
     peak_sp: usize,
 }
 
-#[derive(Clone, Copy)]
-enum Seg<'v> {
-    Root,
-    Field(&'v str),
-    Index(usize),
-}
-
 enum Read {
     Visit(usize, TypeId),
     List(usize),
     Record(TypeId),
     Some,
-}
-
-/// Why a value does not fit its type.
-struct Mismatch {
-    path: String,
-    expected: Type,
-    found: String,
 }
 
 impl<'a> Run<'a> {
@@ -565,40 +432,37 @@ impl<'a> Run<'a> {
             .iter()
             .enumerate()
             .find(|(_, g)| g.name == name)
-            .ok_or_else(|| RunError::UnknownValue {
-                name: name.to_owned(),
-            })?;
+            .ok_or_else(|| RunError::new(Message::UnknownValue))?;
+
+        let id = u32::try_from(n).map_err(|_| fault(Fault::PastAddressSpace))?;
+        self.bind_global(n, global.ty, &value)
+            .context(Message::Binding { global: id })
+    }
+
+    fn bind_global(&mut self, n: usize, ty: TypeId, value: &Value) -> Result<(), RunError> {
+        let program = self.program;
+        let id = u32::try_from(n).map_err(|_| fault(Fault::PastAddressSpace))?;
 
         if self.bound.get(n).copied().unwrap_or(true) {
-            return Err(RunError::AlreadyBound {
-                name: name.to_owned(),
-            });
+            return Err(RunError::new(Message::AlreadyBound { global: id }));
         }
 
-        let needed = self
-            .measure(&value, global.ty, name)?
-            .map_err(|m| RunError::Mistyped {
-                path: m.path,
-                expected: m.expected,
-                found: m.found,
-            })?;
-
+        let needed = self.measure(value, ty, Root::Global(id))?;
         let left = self.left();
 
         if needed > left {
-            return Err(RunError::BindingTooLarge {
-                name: name.to_owned(),
+            return Err(RunError::new(Message::TooLarge {
                 needed: count(needed),
                 left: count(left),
-            });
+            }));
         }
 
         let at = program
             .global_at
             .get(n)
             .copied()
-            .ok_or_else(|| fault("a value outside memory"))?;
-        self.write(&value, global.ty, size(at)?)?;
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+        self.write(value, ty, size(at)?)?;
 
         if let Some(bound) = self.bound.get_mut(n) {
             *bound = true;
@@ -616,28 +480,27 @@ impl<'a> Run<'a> {
     pub fn run_with(mut self, host: &mut dyn Host) -> Result<Outcome, RunError> {
         let program = self.program;
 
-        for (global, bound) in program.globals.iter().zip(self.bound.iter()) {
-            if !bound {
-                return Err(RunError::Unbound {
-                    name: global.name.clone(),
-                    ty: program.type_of(global.ty),
-                });
-            }
+        if let Some(n) = self.bound.iter().position(|bound| !bound) {
+            let global = u32::try_from(n).map_err(|_| fault(Fault::PastAddressSpace));
+            return Err(RunError::new(Message::Unbound { global: global? }))
+                .context(Message::Running);
         }
 
         let code = program.code.as_slice();
         let mut pc = 0usize;
 
         while let Some(instr) = code.get(pc) {
-            self.spend(1)?;
-            pc = self.step(*instr, pc, host)?;
+            let at = u32::try_from(pc).unwrap_or(u32::MAX);
+
+            pc = self
+                .spend(1)
+                .and_then(|()| self.step(*instr, pc, host))
+                .with_context(|| Message::Instruction { pc: at })
+                .at(Location::Instr(at))
+                .context(Message::Running)?;
         }
 
-        if self.sp != program.types.width(program.result) {
-            return Err(fault("not one value is left on the stack"));
-        }
-
-        let value = self.read(self.stack_base, program.result)?;
+        let value = self.result().context(Message::ReadingResult)?;
 
         Ok(Outcome {
             value,
@@ -648,13 +511,24 @@ impl<'a> Run<'a> {
         })
     }
 
+    /// The program's value, left on the stack.
+    fn result(&self) -> Result<Value, RunError> {
+        let program = self.program;
+
+        if self.sp != program.types.width(program.result) {
+            return Err(fault(Fault::NotOneResult));
+        }
+
+        self.read(self.stack_base, program.result)
+    }
+
     /// Copy the program's constants into memory from `limit`.
     fn load_constants(&mut self) -> Result<(), RunError> {
         let program = self.program;
 
         for (constant, (at, _)) in program.constants.iter().zip(&program.constant_at) {
             let at = self.limit.checked_add(size(*at)?);
-            let at = at.ok_or_else(|| fault("a constant outside memory"))?;
+            let at = at.ok_or_else(|| fault(Fault::ConstantOutsideMemory))?;
 
             match constant {
                 Constant::String(s) => self.put_bytes(at, s.as_bytes())?,
@@ -679,17 +553,17 @@ impl<'a> Run<'a> {
     fn constant(&self, c: u32) -> Result<Word, RunError> {
         let (at, len) = index(&self.program.constant_at, c)
             .copied()
-            .ok_or_else(|| fault("no such constant"))?;
+            .ok_or_else(|| fault(Fault::NoSuchConstant))?;
         let at = self
             .limit
             .checked_add(size(at)?)
-            .ok_or_else(|| fault("a constant outside memory"))?;
+            .ok_or_else(|| fault(Fault::ConstantOutsideMemory))?;
         Ok(Word::reference(at, size(len)?)?)
     }
 
     /// Run one instruction at `pc`, giving the next.
     fn step(&mut self, instr: Instr, pc: usize, host: &mut dyn Host) -> Result<usize, RunError> {
-        let next = pc.checked_add(1).ok_or_else(|| fault("code too long"))?;
+        let next = pc.checked_add(1).ok_or_else(|| fault(Fault::CodeTooLong))?;
         let types = &self.program.types;
 
         let push = match instr {
@@ -702,14 +576,11 @@ impl<'a> Run<'a> {
             }
             Instr::Neg => {
                 let a = self.pop_int()?;
-                Word::int(a.checked_neg().ok_or_else(|| overflow(format!("-({a})")))?)
+                Word::int(a.checked_neg().ok_or_else(|| overflow(Op::Neg, a, 0))?)
             }
             Instr::Abs => {
                 let a = self.pop_int()?;
-                Word::int(
-                    a.checked_abs()
-                        .ok_or_else(|| overflow(format!("({a}).abs()")))?,
-                )
+                Word::int(a.checked_abs().ok_or_else(|| overflow(Op::Abs, a, 0))?)
             }
             Instr::Not => Word::bool(!self.pop_bool()?),
             Instr::Add | Instr::Sub | Instr::Mul | Instr::Div | Instr::Rem => {
@@ -746,7 +617,7 @@ impl<'a> Run<'a> {
                 return usize::try_from(skip)
                     .ok()
                     .and_then(|skip| next.checked_add(skip))
-                    .ok_or_else(|| fault("jumps past the end"));
+                    .ok_or_else(|| fault(Fault::JumpPastEnd));
             }
             Instr::Field { at, ty } => {
                 let (start, len) = self.pop()?.as_reference()?;
@@ -754,12 +625,12 @@ impl<'a> Run<'a> {
                 let at = size(at)?;
 
                 if at.checked_add(width).is_none_or(|end| end > len) {
-                    return Err(fault("reads a field the record does not have"));
+                    return Err(fault(Fault::FieldPastRecord));
                 }
 
                 let from = start
                     .checked_add(at)
-                    .ok_or_else(|| fault("a value outside memory"))?;
+                    .ok_or_else(|| fault(Fault::OutsideMemory))?;
                 self.push_from(from, width)?;
                 return Ok(next);
             }
@@ -770,7 +641,12 @@ impl<'a> Run<'a> {
                 let at = usize::try_from(i)
                     .ok()
                     .filter(|at| *at < len)
-                    .ok_or(RunError::IndexOutOfRange { index: i, len })?;
+                    .ok_or_else(|| {
+                        RunError::new(Message::IndexOutOfRange {
+                            index: i,
+                            len: count(len),
+                        })
+                    })?;
 
                 self.push_entry(start, at, types.width(entry))?;
                 return Ok(next);
@@ -778,7 +654,9 @@ impl<'a> Run<'a> {
             Instr::Lookup(entry) => {
                 let (start, len) = self.pop()?.as_reference()?;
                 let i = self.pop_int()?;
-                let last = len.checked_sub(1).ok_or(RunError::EmptyLookup)?;
+                let last = len
+                    .checked_sub(1)
+                    .ok_or_else(|| RunError::new(Message::EmptyLookup))?;
                 let at = usize::try_from(i.max(0)).unwrap_or(usize::MAX).min(last);
                 self.push_entry(start, at, types.width(entry))?;
                 return Ok(next);
@@ -789,23 +667,23 @@ impl<'a> Run<'a> {
 
                 let words = n
                     .checked_mul(types.width(entry))
-                    .ok_or_else(|| fault("a list too large"))?;
+                    .ok_or_else(|| fault(Fault::ListTooLarge))?;
                 let top = self
                     .sp
                     .checked_sub(words)
-                    .ok_or_else(|| fault("makes a list of more entries than the stack has"))?;
+                    .ok_or_else(|| fault(Fault::ListPastStack))?;
                 let from = self
                     .stack_base
                     .checked_add(top)
-                    .ok_or_else(|| fault("a stack outside memory"))?;
+                    .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
                 let end = from
                     .checked_add(words)
                     .filter(|end| *end <= self.words.len())
-                    .ok_or_else(|| fault("a stack outside memory"))?;
+                    .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
                 self.heap = self
                     .heap
                     .checked_sub(words)
-                    .ok_or_else(|| fault("builds more lists than it declares"))?;
+                    .ok_or_else(|| fault(Fault::UndeclaredHeap))?;
                 let at = self.alloc(words)?;
 
                 self.words.copy_within(from..end, at);
@@ -834,7 +712,7 @@ impl<'a> Run<'a> {
                 let value = self.pop_int()?;
 
                 if low > high {
-                    return Err(RunError::ClampBounds { low, high });
+                    return Err(RunError::new(Message::ClampBounds { low, high }));
                 }
 
                 Word::int(value.clamp(low, high))
@@ -863,7 +741,7 @@ impl<'a> Run<'a> {
             }
             Instr::Len => {
                 let (_, len) = self.pop()?.as_reference()?;
-                Word::int(i64::try_from(len).map_err(|_| fault("a list too long to count"))?)
+                Word::int(i64::try_from(len).map_err(|_| fault(Fault::ListTooLongToCount))?)
             }
             Instr::Call(f) => {
                 self.call(f, host)?;
@@ -877,8 +755,23 @@ impl<'a> Run<'a> {
 
     fn call(&mut self, f: u32, host: &mut dyn Host) -> Result<(), RunError> {
         let program = self.program;
-        let function = index(&program.functions, f).ok_or_else(|| fault("no such function"))?;
+        let function = index(&program.functions, f).ok_or_else(|| fault(Fault::NoSuchFunction))?;
 
+        let value = self
+            .call_host(function, host)
+            .context(Message::CallingHost { function: f })?;
+
+        self.returned(f, function, &value)
+            .context(Message::ReadingHostResult { function: f })
+    }
+
+    /// Call `function` with its arguments from the stack.
+    fn call_host(
+        &mut self,
+        function: &HostFunction,
+        host: &mut dyn Host,
+    ) -> Result<Value, RunError> {
+        let program = self.program;
         let words = function
             .params
             .iter()
@@ -886,13 +779,13 @@ impl<'a> Run<'a> {
         let top = self
             .sp
             .checked_sub(words)
-            .ok_or_else(|| fault("calls with more arguments than the stack has"))?;
+            .ok_or_else(|| fault(Fault::ArgumentsPastStack))?;
 
         let mut args = Vec::with_capacity(function.params.len());
         let mut at = self
             .stack_base
             .checked_add(top)
-            .ok_or_else(|| fault("a stack outside memory"))?;
+            .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
 
         for ty in &function.params {
             args.push(self.read(at, *ty)?);
@@ -901,36 +794,27 @@ impl<'a> Run<'a> {
 
         self.sp = top;
 
-        let value = host
-            .call(&function.name, args)
-            .map_err(|message| RunError::Host {
-                name: function.name.clone(),
-                message,
-            })?;
+        host.call(&function.name, args)
+            .map_err(|message| RunError::new(Message::HostFailed).with_source(message))
+    }
 
-        let needed = self
-            .measure(&value, function.ret, "")?
-            .map_err(|m| RunError::HostResult {
-                name: function.name.clone(),
-                path: m.path,
-                expected: m.expected,
-                found: m.found,
-            })?;
+    /// Check and push what `function`, the program's `f`, returned.
+    fn returned(&mut self, f: u32, function: &HostFunction, value: &Value) -> Result<(), RunError> {
+        let needed = self.measure(value, function.ret, Root::Returned(f))?;
 
         self.spend(needed)?;
         let left = self.left();
 
         if needed > left {
-            return Err(RunError::HostResultTooLarge {
-                name: function.name.clone(),
+            return Err(RunError::new(Message::TooLarge {
                 needed: count(needed),
                 left: count(left),
-            });
+            }));
         }
 
-        let width = program.types.width(function.ret);
+        let width = self.program.types.width(function.ret);
         let dest = self.reserve(width)?;
-        self.write(&value, function.ret, dest)
+        self.write(value, function.ret, dest)
     }
 
     /// The words left for bound and returned values.
@@ -944,7 +828,7 @@ impl<'a> Run<'a> {
         self.left = self
             .left
             .checked_sub(count(steps))
-            .ok_or(RunError::OutOfFuel { fuel: self.fuel })?;
+            .ok_or_else(|| RunError::new(Message::OutOfFuel { fuel: self.fuel }))?;
         Ok(())
     }
 
@@ -954,11 +838,11 @@ impl<'a> Run<'a> {
             .sp
             .checked_add(n)
             .filter(|sp| *sp <= self.stack_cap)
-            .ok_or_else(|| fault("the stack grows past the depth it declares"))?;
+            .ok_or_else(|| fault(Fault::UndeclaredStack))?;
         let at = self
             .stack_base
             .checked_add(self.sp)
-            .ok_or_else(|| fault("a stack outside memory"))?;
+            .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
         self.sp = sp;
         self.peak_sp = self.peak_sp.max(sp);
         Ok(at)
@@ -974,7 +858,7 @@ impl<'a> Run<'a> {
         let end = from
             .checked_add(n)
             .filter(|end| *end <= self.words.len())
-            .ok_or_else(|| fault("a value outside memory"))?;
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
         let at = self.reserve(n)?;
         self.words.copy_within(from..end, at);
         Ok(())
@@ -986,7 +870,7 @@ impl<'a> Run<'a> {
         let from = at
             .checked_mul(width)
             .and_then(|at| at.checked_add(start))
-            .ok_or_else(|| fault("a value outside memory"))?;
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
         self.push_from(from, width)
     }
 
@@ -994,7 +878,7 @@ impl<'a> Run<'a> {
         let sp = self
             .sp
             .checked_sub(1)
-            .ok_or_else(|| fault("pops an empty stack"))?;
+            .ok_or_else(|| fault(Fault::EmptyStack))?;
         let word = self.get(self.stack_base.checked_add(sp))?;
         self.sp = sp;
         Ok(word)
@@ -1012,12 +896,12 @@ impl<'a> Run<'a> {
     fn get(&self, at: Option<usize>) -> Result<Word, RunError> {
         at.and_then(|at| self.words.get(at))
             .copied()
-            .ok_or_else(|| fault("a value outside memory"))
+            .ok_or_else(|| fault(Fault::OutsideMemory))
     }
 
     fn put(&mut self, at: Option<usize>, word: Word) -> Result<(), RunError> {
         *at.and_then(|at| self.words.get_mut(at))
-            .ok_or_else(|| fault("a value outside memory"))? = word;
+            .ok_or_else(|| fault(Fault::OutsideMemory))? = word;
         Ok(())
     }
 
@@ -1042,27 +926,24 @@ impl<'a> Run<'a> {
         let len = at
             .checked_add(n)
             .filter(|len| *len <= self.limit)
-            .ok_or_else(|| fault("uses more memory than it declares"))?;
+            .ok_or_else(|| fault(Fault::UndeclaredMemory))?;
         self.len = len;
         self.peak_len = self.peak_len.max(len);
         Ok(at)
     }
 
-    /// Check `value` is of type `ty`, giving the words its parts take.
-    fn measure(
-        &self,
-        value: &Value,
-        ty: TypeId,
-        root: &str,
-    ) -> Result<Result<usize, Mismatch>, RunError> {
+    /// Check `value` is of type `ty`, giving the words its parts take;
+    /// a mismatch names its path from `root`.
+    fn measure(&self, value: &Value, ty: TypeId, root: Root) -> Result<usize, RunError> {
         let program = self.program;
         let types = &program.types;
-        let mut nodes = vec![(0usize, Seg::Root)];
+        // Each node's parent and the step to it; the root has none.
+        let mut nodes = vec![(0usize, None::<Seg>)];
         let mut work = vec![(value, ty, 0usize, None)];
         let mut total = 0usize;
 
         while let Some((value, ty, node, option)) = work.pop() {
-            let ty_node = types.get(ty).ok_or_else(|| fault("no such type"))?;
+            let ty_node = types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))?;
 
             let found = match (ty_node, value) {
                 (TypeNode::Option(_), Value::None)
@@ -1082,25 +963,35 @@ impl<'a> Run<'a> {
 
                     for (i, item) in items.iter().enumerate() {
                         work.push((item, *entry, nodes.len(), None));
-                        nodes.push((node, Seg::Index(i)));
+                        nodes.push((node, Some(Seg::Index(count(i)))));
                     }
 
                     continue;
                 }
                 (TypeNode::Record(fields), Value::Record(map)) => {
-                    let missing = fields.iter().find(|f| !map.contains_key(&f.name));
-                    let extra = map.keys().find(|k| !fields.iter().any(|f| f.name == **k));
+                    let missing = fields.iter().position(|f| !map.contains_key(&f.name));
+                    let extra = map.keys().any(|k| !fields.iter().any(|f| f.name == **k));
 
                     match (missing, extra) {
-                        (Some(field), _) => format!("a record without `{}`", field.name),
-                        (None, Some(key)) => format!("a record with an extra field `{key}`"),
-                        (None, None) => {
+                        (Some(field), _) => Found::RecordWithout {
+                            record: ty,
+                            field: u32::try_from(field).unwrap_or(u32::MAX),
+                        },
+                        (None, true) => Found::RecordWithExtra,
+                        (None, false) => {
                             total = total.saturating_add(types.record_words(fields));
 
-                            for field in fields {
+                            for (n, field) in fields.iter().enumerate() {
                                 if let Some(value) = map.get(&field.name) {
+                                    let field_id = u32::try_from(n).unwrap_or(u32::MAX);
                                     work.push((value, field.ty, nodes.len(), None));
-                                    nodes.push((node, Seg::Field(&field.name)));
+                                    nodes.push((
+                                        node,
+                                        Some(Seg::Field {
+                                            record: ty,
+                                            field: field_id,
+                                        }),
+                                    ));
                                 }
                             }
 
@@ -1111,17 +1002,17 @@ impl<'a> Run<'a> {
                 _ => value.describe(),
             };
 
-            return Ok(Err(Mismatch {
-                path: path(root, &nodes, node),
-                expected: program.type_of(option.unwrap_or(ty)),
-                found: match option {
-                    Some(_) => format!("some({found})"),
-                    None => found,
-                },
-            }));
+            return Err(mistyped(
+                option.unwrap_or(ty),
+                found,
+                option.is_some(),
+                root,
+                &nodes,
+                node,
+            ));
         }
 
-        Ok(Ok(total))
+        Ok(total)
     }
 
     /// Write `value`, already measured against `ty`, at `dest`, taking
@@ -1132,7 +1023,7 @@ impl<'a> Run<'a> {
         let mut work = vec![(value, ty, dest)];
 
         while let Some((value, ty, dest)) = work.pop() {
-            let ty_node = types.get(ty).ok_or_else(|| fault("no such type"))?;
+            let ty_node = types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))?;
 
             let word = match (ty_node, value) {
                 (TypeNode::Option(_), Value::None) if types.is_option_int(ty) => {
@@ -1145,7 +1036,7 @@ impl<'a> Run<'a> {
                     let dest = if types.is_option_int(ty) {
                         self.put(Some(dest), Word::present(true))?;
                         dest.checked_add(1)
-                            .ok_or_else(|| fault("a value outside memory"))?
+                            .ok_or_else(|| fault(Fault::OutsideMemory))?
                     } else {
                         dest
                     };
@@ -1165,14 +1056,14 @@ impl<'a> Run<'a> {
                     let words = items
                         .len()
                         .checked_mul(width)
-                        .ok_or_else(|| fault("a list too large"))?;
+                        .ok_or_else(|| fault(Fault::ListTooLarge))?;
                     let at = self.alloc(words)?;
 
                     for (n, item) in items.iter().enumerate() {
                         let dest = n
                             .checked_mul(width)
                             .and_then(|n| n.checked_add(at))
-                            .ok_or_else(|| fault("a value outside memory"))?;
+                            .ok_or_else(|| fault(Fault::OutsideMemory))?;
                         work.push((item, *entry, dest));
                     }
 
@@ -1185,16 +1076,16 @@ impl<'a> Run<'a> {
                     for (offset, field) in types.field_offsets(fields) {
                         let value = map
                             .get(&field.name)
-                            .ok_or_else(|| fault("a record lost a field"))?;
+                            .ok_or_else(|| fault(Fault::RecordLostField))?;
                         let dest = at
                             .checked_add(offset)
-                            .ok_or_else(|| fault("a value outside memory"))?;
+                            .ok_or_else(|| fault(Fault::OutsideMemory))?;
                         work.push((value, field.ty, dest));
                     }
 
                     Word::reference(at, words)?
                 }
-                _ => return Err(fault("a value changed type")),
+                _ => return Err(fault(Fault::ValueChangedType)),
             };
 
             self.put(Some(dest), word)?;
@@ -1215,7 +1106,7 @@ impl<'a> Run<'a> {
                 Read::Visit(at, ty) => {
                     let word = self.get(Some(at))?;
 
-                    match types.get(ty).ok_or_else(|| fault("no such type"))? {
+                    match types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))? {
                         TypeNode::Option(inner) => {
                             let at = if types.is_option_int(ty) {
                                 if !word.as_bool()? {
@@ -1224,7 +1115,7 @@ impl<'a> Run<'a> {
                                 }
 
                                 at.checked_add(1)
-                                    .ok_or_else(|| fault("a value outside memory"))?
+                                    .ok_or_else(|| fault(Fault::OutsideMemory))?
                             } else if word.is_none() {
                                 out.push(Value::None);
                                 continue;
@@ -1256,7 +1147,7 @@ impl<'a> Run<'a> {
                             let (start, len) = word.as_reference()?;
 
                             if len != types.record_words(fields) {
-                                return Err(fault("a record of the wrong size"));
+                                return Err(fault(Fault::RecordWrongSize));
                             }
 
                             self.inside(start, Some(len))?;
@@ -1277,19 +1168,19 @@ impl<'a> Run<'a> {
                     let at = out
                         .len()
                         .checked_sub(n)
-                        .ok_or_else(|| fault("a list lost entries"))?;
+                        .ok_or_else(|| fault(Fault::ListLostEntries))?;
                     let items = out.split_off(at);
                     out.push(Value::List(items));
                 }
                 Read::Record(ty) => {
                     let Some(TypeNode::Record(fields)) = types.get(ty) else {
-                        return Err(fault("a record of other than a record type"));
+                        return Err(fault(Fault::RecordNotRecordType));
                     };
 
                     let at = out
                         .len()
                         .checked_sub(fields.len())
-                        .ok_or_else(|| fault("a record lost fields"))?;
+                        .ok_or_else(|| fault(Fault::RecordLostFields))?;
                     let values = out.split_off(at);
 
                     out.push(Value::Record(
@@ -1297,7 +1188,7 @@ impl<'a> Run<'a> {
                     ));
                 }
                 Read::Some => {
-                    let value = out.pop().ok_or_else(|| fault("an option lost its value"))?;
+                    let value = out.pop().ok_or_else(|| fault(Fault::OptionLostValue))?;
                     out.push(Value::some(value));
                 }
             }
@@ -1305,7 +1196,7 @@ impl<'a> Run<'a> {
 
         match (out.pop(), out.is_empty()) {
             (Some(value), true) => Ok(value),
-            _ => Err(fault("a value read as several")),
+            _ => Err(fault(Fault::ReadAsSeveral)),
         }
     }
 
@@ -1314,7 +1205,7 @@ impl<'a> Run<'a> {
         len.and_then(|len| at.checked_add(len))
             .filter(|end| *end <= self.words.len())
             .map(|_| ())
-            .ok_or_else(|| fault("a value outside memory"))
+            .ok_or_else(|| fault(Fault::OutsideMemory))
     }
 
     /// The string of `len` bytes packed from `at`.
@@ -1327,62 +1218,70 @@ impl<'a> Run<'a> {
         }
 
         bytes.truncate(len);
-        String::from_utf8(bytes).map_err(|_| fault("a string is not UTF-8"))
+        String::from_utf8(bytes).map_err(|_| fault(Fault::NotUtf8))
     }
 }
 
 fn arithmetic(instr: Instr, a: i64, b: i64) -> Result<i64, RunError> {
     let (op, value) = match instr {
-        Instr::Add => ("+", a.checked_add(b)),
-        Instr::Sub => ("-", a.checked_sub(b)),
-        Instr::Mul => ("*", a.checked_mul(b)),
-        Instr::Div => ("/", a.checked_div(b)),
-        _ => ("%", a.checked_rem(b)),
+        Instr::Add => (Op::Add, a.checked_add(b)),
+        Instr::Sub => (Op::Sub, a.checked_sub(b)),
+        Instr::Mul => (Op::Mul, a.checked_mul(b)),
+        Instr::Div => (Op::Div, a.checked_div(b)),
+        _ => (Op::Rem, a.checked_rem(b)),
     };
-
-    let expr = || format!("{a} {op} {b}");
 
     match value {
         Some(value) => Ok(value),
-        None if b == 0 && matches!(op, "/" | "%") => Err(RunError::DivideByZero { expr: expr() }),
-        None => Err(overflow(expr())),
+        None if b == 0 && matches!(op, Op::Div | Op::Rem) => {
+            Err(RunError::new(Message::DivideByZero { op, a }))
+        }
+        None => Err(overflow(op, a, b)),
     }
 }
 
-fn overflow(expr: String) -> RunError {
-    RunError::Overflow { expr }
+#[cold]
+#[inline(never)]
+fn overflow(op: Op, a: i64, b: i64) -> RunError {
+    RunError::new(Message::Overflow { op, a, b })
 }
 
-fn path(root: &str, nodes: &[(usize, Seg<'_>)], mut node: usize) -> String {
-    let mut segs = Vec::new();
+/// The error of a value found to be `found` where `expected` was, at
+/// `node` of the path from `root`.
+#[cold]
+#[inline(never)]
+fn mistyped(
+    expected: TypeId,
+    found: Found,
+    in_some: bool,
+    root: Root,
+    nodes: &[(usize, Option<Seg>)],
+    mut node: usize,
+) -> RunError {
+    let mut path = Vec::new();
 
-    while let Some((parent, seg)) = nodes.get(node) {
-        if let Seg::Root = seg {
-            break;
-        }
-
-        segs.push(*seg);
+    while let Some((parent, Some(seg))) = nodes.get(node) {
+        path.push(*seg);
         node = *parent;
     }
 
-    let mut path = root.to_owned();
+    path.reverse();
 
-    for seg in segs.iter().rev() {
-        match seg {
-            Seg::Root => {}
-            Seg::Field(name) if is_field_name(name) => {
-                if !path.is_empty() {
-                    path.push('.');
-                }
+    let error = RunError::new(Message::Mistyped {
+        expected,
+        found,
+        in_some,
+    });
 
-                path.push_str(name);
-            }
-            Seg::Field(name) => path.push_str(&format!("[{name:?}]")),
-            Seg::Index(i) => path.push_str(&format!("[{i}]")),
-        }
+    // A whole value is named by the binding's or the function's context.
+    if path.is_empty() {
+        return error;
     }
 
-    path
+    error.context(Message::AtPath {
+        root,
+        path: path.into_boxed_slice(),
+    })
 }
 
 fn index<T>(items: &[T], at: u32) -> Option<&T> {
@@ -1390,7 +1289,7 @@ fn index<T>(items: &[T], at: u32) -> Option<&T> {
 }
 
 fn size(n: u32) -> Result<usize, RunError> {
-    usize::try_from(n).map_err(|_| fault("a size past the address space"))
+    usize::try_from(n).map_err(|_| fault(Fault::PastAddressSpace))
 }
 
 fn count(n: usize) -> u64 {

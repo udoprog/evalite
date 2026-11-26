@@ -16,6 +16,8 @@
 //!
 //! Nothing outside this module sees the raw `u64`.
 
+use crate::message::Fault;
+
 /// A word of memory, built and taken apart only as one of its kinds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(transparent)]
@@ -50,13 +52,13 @@ impl Word {
     /// (`u32::MAX` parts from `u32::MAX`) that would be [`Word::NONE`],
     /// which ends past any memory.
     #[inline]
-    pub(crate) fn reference(at: usize, len: usize) -> Result<Self, WordFault> {
-        let at = u32::try_from(at).map_err(|_| WordFault::WideAddress)?;
-        let len = u32::try_from(len).map_err(|_| WordFault::WideLength)?;
+    pub(crate) fn reference(at: usize, len: usize) -> Result<Self, Fault> {
+        let at = u32::try_from(at).map_err(|_| Fault::WideAddress)?;
+        let len = u32::try_from(len).map_err(|_| Fault::WideLength)?;
         let word = Self(u64::from(at) | (u64::from(len) << 32));
 
         if word.is_none() {
-            return Err(WordFault::NoneReference);
+            return Err(Fault::NoneReference);
         }
 
         Ok(word)
@@ -76,9 +78,9 @@ impl Word {
 
     /// The word as a `Bool`, a fault on anything but 0 or 1.
     #[inline]
-    pub(crate) fn as_bool(self) -> Result<bool, WordFault> {
+    pub(crate) fn as_bool(self) -> Result<bool, Fault> {
         if self.0 > 1 {
-            return Err(WordFault::NotABool);
+            return Err(Fault::NotABool);
         }
 
         Ok(self.0 == 1)
@@ -87,12 +89,12 @@ impl Word {
     /// The word as a reference: where its parts start, and how many there
     /// are.
     #[inline]
-    pub(crate) fn as_reference(self) -> Result<(usize, usize), WordFault> {
+    pub(crate) fn as_reference(self) -> Result<(usize, usize), Fault> {
         let at = (self.0 & u64::from(u32::MAX)) as u32;
         let len = (self.0 >> 32) as u32;
         match (usize::try_from(at), usize::try_from(len)) {
             (Ok(at), Ok(len)) => Ok((at, len)),
-            _ => Err(WordFault::PastAddressSpace),
+            _ => Err(Fault::PastAddressSpace),
         }
     }
 
@@ -109,34 +111,10 @@ impl Word {
     }
 }
 
-/// Why a word does not decode, or a reference cannot be packed: one
-/// byte, so the checks inlined into the run loop stay a compare and a
-/// branch, and only a fault builds a [`RunError`](crate::RunError).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum WordFault {
-    WideAddress,
-    WideLength,
-    NoneReference,
-    NotABool,
-    PastAddressSpace,
-}
-
-impl WordFault {
-    /// What the program did wrong, for its fault.
-    pub(crate) const fn what(self) -> &'static str {
-        match self {
-            Self::WideAddress => "memory past what a word can address",
-            Self::WideLength => "a value too long for a word",
-            Self::NoneReference => "a reference past the end of memory",
-            Self::NotABool => "a Bool other than 0 or 1",
-            Self::PastAddressSpace => "a size past the address space",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Word, WordFault};
+    use super::Word;
+    use crate::message::Fault;
 
     #[test]
     fn ints_round_trip() {
@@ -155,9 +133,9 @@ mod tests {
 
     #[test]
     fn bools_other_than_0_or_1_fault() {
-        assert_eq!(Word::int(2).as_bool(), Err(WordFault::NotABool));
-        assert_eq!(Word::int(-1).as_bool(), Err(WordFault::NotABool));
-        assert_eq!(Word::NONE.as_bool(), Err(WordFault::NotABool));
+        assert_eq!(Word::int(2).as_bool(), Err(Fault::NotABool));
+        assert_eq!(Word::int(-1).as_bool(), Err(Fault::NotABool));
+        assert_eq!(Word::NONE.as_bool(), Err(Fault::NotABool));
     }
 
     #[test]
@@ -173,10 +151,10 @@ mod tests {
     #[test]
     fn references_past_32_bits_are_refused() {
         let past = u32::MAX as usize + 1;
-        assert_eq!(Word::reference(past, 0), Err(WordFault::WideAddress));
-        assert_eq!(Word::reference(0, past), Err(WordFault::WideLength));
+        assert_eq!(Word::reference(past, 0), Err(Fault::WideAddress));
+        assert_eq!(Word::reference(0, past), Err(Fault::WideLength));
         let max = u32::MAX as usize;
-        assert_eq!(Word::reference(max, max), Err(WordFault::NoneReference));
+        assert_eq!(Word::reference(max, max), Err(Fault::NoneReference));
     }
 
     #[test]

@@ -20,7 +20,8 @@
 //!
 //! Limits are `--max-depth` (nesting), `--memory` (64-bit words) and `--fuel`
 //! (steps); `--explain` also prints the type, memory and steps. Errors
-//! print the expression with a caret under what is wrong and exit non-zero.
+//! print the expression with a caret under what is wrong, then what was
+//! being done, and exit non-zero.
 //! With no expression, `evalite` reads expressions from stdin until the end.
 
 mod vars;
@@ -31,6 +32,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use evalite::{
     DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MEMORY, Environment, Limits, Machine, Options,
+    RunError, Span,
 };
 
 use crate::vars::{Var, VarError, parse_var};
@@ -111,18 +113,26 @@ impl Session<'_> {
                 true
             }
             Err(failure) => {
-                eprint!("{}", failure.render(source));
+                eprint!("{failure}");
                 false
             }
         }
     }
 
-    fn try_eval(&self, source: &str) -> Result<String, Failure> {
+    fn try_eval(&self, source: &str) -> Result<String, String> {
         let options = Options::new().max_depth(self.cli.max_depth);
-        let program =
-            evalite::compile_with(source, &self.env, &options).map_err(Failure::Compile)?;
+        let (program, debug) = evalite::compile_debug(source, &self.env, &options)
+            .map_err(|error| render(source, [(error.to_string(), Some(error.span()), true)]))?;
         let mut machine = Machine::new(Limits::new().memory(self.cli.memory).fuel(self.cli.fuel));
-        let mut run = machine.load(&program).map_err(Failure::Run)?;
+
+        let failed = |error: RunError| {
+            let labels = error
+                .labels(&program, Some(&debug))
+                .map(|l| (l.message().to_string(), l.span(), l.is_primary()));
+            render(source, labels)
+        };
+
+        let mut run = machine.load(&program).map_err(failed)?;
 
         // Variables the expression does not read are not bound.
         let read = run
@@ -133,12 +143,11 @@ impl Session<'_> {
 
         for var in &self.cli.vars {
             if read.contains(&var.name.as_str()) {
-                run.bind(&var.name, var.value.clone())
-                    .map_err(Failure::Run)?;
+                run.bind(&var.name, var.value.clone()).map_err(failed)?;
             }
         }
 
-        let outcome = run.run().map_err(Failure::Run)?;
+        let outcome = run.run().map_err(failed)?;
         let ty = program.result_type();
         let mut out = format!("{} : {ty}", outcome.value);
 
@@ -190,36 +199,59 @@ impl Session<'_> {
     }
 }
 
-enum Failure {
-    Compile(evalite::Error),
-    Run(evalite::RunError),
-}
+/// An error as text, from its labels, each a message, where in `source`
+/// it is about and whether it is the error itself: the primary message,
+/// the expression with a caret under the primary span, then every other
+/// label, with a caret line of its own when it points elsewhere.
+fn render<I>(source: &str, labels: I) -> String
+where
+    I: IntoIterator<Item = (String, Option<Span<u32>>, bool)>,
+{
+    let mut out = String::new();
+    let mut context = Vec::new();
+    let mut shown = None;
 
-impl Failure {
-    /// The error as text: for a compile error, the expression with a caret
-    /// under the span; runtime errors carry no span.
-    fn render(&self, source: &str) -> String {
-        match self {
-            Failure::Run(error) => format!("error: {error}\n"),
-            Failure::Compile(error) => {
-                let span = error.span();
-                let start = usize::try_from(span.start).unwrap_or(usize::MAX);
-                let end = usize::try_from(span.end).unwrap_or(usize::MAX);
-                let before = source.get(..start).unwrap_or(source);
-                let column = before.chars().count();
-                let width = source
-                    .get(start..end)
-                    .map_or(1, |s| s.chars().count())
-                    .max(1);
+    for (message, span, primary) in labels {
+        if primary {
+            shown = span;
 
-                format!(
-                    "error: {error}\n  | {source}\n  | {}{}\n",
-                    " ".repeat(column),
-                    "^".repeat(width)
-                )
+            out.push_str(&format!("error: {message}\n"));
+
+            if let Some(span) = span {
+                out.push_str(&caret(source, span));
             }
+        } else {
+            context.push((message, span));
         }
     }
+
+    for (message, span) in context {
+        out.push_str(&format!("  = {message}\n"));
+
+        if let Some(span) = span.filter(|span| Some(*span) != shown) {
+            out.push_str(&caret(source, span));
+        }
+    }
+
+    out
+}
+
+/// `source` with a caret line under `span`.
+fn caret(source: &str, span: Span<u32>) -> String {
+    let start = usize::try_from(span.start).unwrap_or(usize::MAX);
+    let end = usize::try_from(span.end).unwrap_or(usize::MAX);
+    let before = source.get(..start).unwrap_or(source);
+    let column = before.chars().count();
+    let width = source
+        .get(start..end)
+        .map_or(1, |s| s.chars().count())
+        .max(1);
+
+    format!(
+        "  | {source}\n  | {}{}\n",
+        " ".repeat(column),
+        "^".repeat(width)
+    )
 }
 
 impl From<String> for VarError {

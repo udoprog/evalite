@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use syntree::{FlavorDefault, Node, Span};
 
 use crate::Type;
+use crate::debug::DebugInfo;
 use crate::env::{Builtin, Environment, Overload};
 use crate::error::{Arity, Callee, Error, ErrorKind};
 use crate::methods::{self, MethodSig, Receiver, Slot};
@@ -46,8 +47,54 @@ pub fn compile_with(source: &str, env: &Environment, options: &Options) -> Resul
     compile_tree(source, &tree, env)
 }
 
+/// Parse `source` with `options` and compile it against `env`, also giving
+/// the [`DebugInfo`] that says where each instruction came from, for a
+/// [`RunError`](crate::RunError)'s labels.
+///
+/// ```
+/// use evalite::{Environment, Machine, Options, Type, Value};
+///
+/// let mut env = Environment::with_builtins();
+/// env.value("bonus", Type::Int)?;
+/// let source = "1 + 9223372036854775807 + bonus";
+/// let (program, debug) = evalite::compile_debug(source, &env, &Options::new())?;
+///
+/// let mut machine = Machine::default();
+/// let mut run = machine.load(&program)?;
+/// run.bind("bonus", Value::Int(0))?;
+/// let error = run.run().unwrap_err();
+///
+/// let span = error.labels(&program, Some(&debug)).next().and_then(|l| l.span());
+/// assert_eq!(span.map(|s| &source[s.range()]), Some("1 + 9223372036854775807"));
+///
+/// assert!(evalite::compile_debug("1 +", &env, &Options::new()).is_err());
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
+///
+/// # Errors
+///
+/// The same as [`compile_with`].
+pub fn compile_debug(
+    source: &str,
+    env: &Environment,
+    options: &Options,
+) -> Result<(Program, DebugInfo), Error> {
+    let tree = parse_with(source, options)?;
+    compile_tree_debug(source, &tree, env)
+}
+
 /// Compile a tree [`parse`](crate::parse) made of `source`.
 pub(crate) fn compile_tree(source: &str, tree: &Tree, env: &Environment) -> Result<Program, Error> {
+    Ok(compile_tree_debug(source, tree, env)?.0)
+}
+
+/// Compile a tree [`parse`](crate::parse) made of `source`, with its debug
+/// information.
+pub(crate) fn compile_tree_debug(
+    source: &str,
+    tree: &Tree,
+    env: &Environment,
+) -> Result<(Program, DebugInfo), Error> {
     let mut compiler = Compiler::new(source, env)?;
 
     let root = tree
@@ -88,6 +135,27 @@ enum Work<'a> {
     },
 }
 
+impl<'a> Work<'a> {
+    /// The node it is about.
+    fn node(&self) -> N<'a> {
+        match self {
+            Work::Enter(node)
+            | Work::Unary(node, _)
+            | Work::Binary(node)
+            | Work::Logic(node)
+            | Work::LogicExit(node)
+            | Work::Paren(node)
+            | Work::Call(node, ..)
+            | Work::Method(node)
+            | Work::MethodExit(node, ..)
+            | Work::Field(node)
+            | Work::Index(node)
+            | Work::IndexExit(node)
+            | Work::List { node, .. } => *node,
+        }
+    }
+}
+
 /// A value the code so far leaves on the stack.
 #[derive(Debug, Clone, Copy)]
 struct Value {
@@ -108,6 +176,10 @@ struct Compiler<'a> {
     functions: Vec<HostFunction>,
     function_ids: HashMap<(String, Vec<TypeId>), u32>,
     code: Vec<Instr>,
+    /// The span of each instruction of `code`.
+    spans: Vec<Span<u32>>,
+    /// The span of the expression whose code is being emitted.
+    span: Span<u32>,
     /// The words the globals so far take.
     global_words: usize,
     values: Vec<Value>,
@@ -136,6 +208,8 @@ impl<'a> Compiler<'a> {
             functions: Vec::new(),
             function_ids: HashMap::new(),
             code: Vec::new(),
+            spans: Vec::new(),
+            span: Span::point(0),
             global_words: 0,
             values: Vec::new(),
             jumps: Vec::new(),
@@ -166,6 +240,13 @@ impl<'a> Compiler<'a> {
     /// when the program is finished.
     fn emit(&mut self, instr: Instr) {
         self.code.push(instr);
+        self.spans.push(self.span);
+    }
+
+    /// Drop the code from `start`.
+    fn truncate(&mut self, start: usize) {
+        self.code.truncate(start);
+        self.spans.truncate(start);
     }
 
     fn push(&mut self, ty: TypeId, span: Span<u32>) {
@@ -192,6 +273,8 @@ impl<'a> Compiler<'a> {
         let mut work = vec![Work::Enter(root)];
 
         while let Some(item) = work.pop() {
+            self.span = *item.node().span();
+
             match item {
                 Work::Enter(node) => self.enter(node, &mut work)?,
                 Work::Unary(node, start) => self.unary(node, start)?,
@@ -408,8 +491,8 @@ impl<'a> Compiler<'a> {
 
         match folded {
             Some(n) => {
-                self.code.truncate(start);
-                self.code.push(Instr::Int(n));
+                self.truncate(start);
+                self.emit(Instr::Int(n));
             }
             None => self.emit(instr),
         }
@@ -901,7 +984,7 @@ impl<'a> Compiler<'a> {
 
         match items {
             Some(items) if items.len() == n => {
-                self.code.truncate(start);
+                self.truncate(start);
 
                 let c = count(self.constants.len())?;
                 self.constants.push(Constant::List { entry, items });
@@ -919,7 +1002,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn finish(self) -> Result<Program, Error> {
+    fn finish(self) -> Result<(Program, DebugInfo), Error> {
         let [value] = self.values.as_slice() else {
             return Err(internal("not one value at the end"));
         };
@@ -934,7 +1017,7 @@ impl<'a> Compiler<'a> {
         )
         .map_err(|e| internal(format!("the compiled program is invalid: {e}")))?;
 
-        Ok(program)
+        Ok((program, DebugInfo::new(self.spans)))
     }
 }
 

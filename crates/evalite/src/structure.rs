@@ -7,7 +7,8 @@ use std::fmt;
 use musli::{Decode, Encode};
 use syntree::{FlavorDefault, Node as TreeNode, Span};
 
-use crate::check::compile_tree;
+use crate::check::compile_tree_debug;
+use crate::debug::DebugInfo;
 use crate::env::Environment;
 use crate::error::Error;
 use crate::parser::{Options, Tree, parse_with};
@@ -610,6 +611,38 @@ impl Structure {
         compile_node(&self.nodes, self.root, env, options)
     }
 
+    /// Compile against `env` as [`compile_with`](Self::compile_with) does,
+    /// also giving the [`DebugInfo`] whose spans are into
+    /// [`to_text`](Self::to_text).
+    ///
+    /// ```
+    /// use evalite::{Environment, Machine, Options, Structure};
+    ///
+    /// let env = Environment::with_builtins();
+    /// let structure = Structure::from_text("(1 + 2) * [3][4]")?;
+    /// let (program, debug) = structure.compile_debug(&env, &Options::new())?;
+    ///
+    /// let text = structure.to_text();
+    /// let error = Machine::default().load(&program)?.run().unwrap_err();
+    /// let span = error.labels(&program, Some(&debug)).next().and_then(|l| l.span());
+    /// assert_eq!(span.map(|s| &text[s.range()]), Some("[3][4]"));
+    ///
+    /// let hole = Structure::from_text("1 + _")?;
+    /// assert!(hole.compile_debug(&env, &Options::new()).is_err());
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The same as [`compile_with`](Self::compile_with).
+    pub fn compile_debug(
+        &self,
+        env: &Environment,
+        options: &Options,
+    ) -> Result<(Program, DebugInfo), StructureError> {
+        compile_node_debug(&self.nodes, self.root, env, options)
+    }
+
     /// Compile the expression at node `id` alone.
     pub(crate) fn compile_at(
         &self,
@@ -846,6 +879,16 @@ pub(crate) fn compile_node(
     env: &Environment,
     options: &Options,
 ) -> Result<Program, StructureError> {
+    Ok(compile_node_debug(nodes, root, env, options)?.0)
+}
+
+/// Compile the expression at `root`, with its debug information.
+fn compile_node_debug(
+    nodes: &[Node],
+    root: NodeId,
+    env: &Environment,
+    options: &Options,
+) -> Result<(Program, DebugInfo), StructureError> {
     for id in post_order(nodes, root) {
         let Some(node) = nodes.get(id.index()) else {
             continue;
@@ -886,7 +929,7 @@ pub(crate) fn compile_node(
     };
 
     let tree = parse_with(&text, options).map_err(error)?;
-    compile_tree(&text, &tree, env).map_err(error)
+    compile_tree_debug(&text, &tree, env).map_err(error)
 }
 
 /// Names that are written as other tokens, or as a hole.

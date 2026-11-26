@@ -132,11 +132,32 @@ fn fuel_limit() {
 }
 
 #[test]
-fn runtime_error_has_no_caret() {
-    let out = run(&["eval", "1 / 0"], "");
+fn runtime_error_shows_caret_and_context() {
+    let out = run(&["eval", "2 + 1 / 0"], "");
     assert!(!out.ok);
-    assert!(out.stderr.contains("divides by zero"), "{}", out.stderr);
-    assert!(!out.stderr.contains('^'));
+    assert_eq!(
+        out.stderr,
+        "error: `1 / 0` divides by zero\n  | 2 + 1 / 0\n  |     ^^^^^\n  = while running instruction 3\n  = while running the program\n"
+    );
+}
+
+#[test]
+fn overflow_and_load_errors_point_and_say_why() {
+    let out = run(&["eval", "x + 1", "--var", "x:Int=9223372036854775807"], "");
+    assert!(!out.ok);
+    assert!(
+        out.stderr.contains("  | x + 1\n  | ^^^^^\n"),
+        "{}",
+        out.stderr
+    );
+
+    let out = run(&["eval", "1", "--memory", "0"], "");
+    assert!(!out.ok);
+    assert!(
+        out.stderr.contains("  = while loading the program\n"),
+        "{}",
+        out.stderr
+    );
 }
 
 #[test]

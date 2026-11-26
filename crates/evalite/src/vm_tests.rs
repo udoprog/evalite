@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use std::mem::discriminant;
 
 use crate::check_tests::{env, generate};
+use crate::message::Message;
 use crate::program::{Instr, Memory, Stored};
 use crate::tests::Rng;
 use crate::types::{TypeId, TypeNode, Types};
@@ -156,12 +157,47 @@ fn eval(source: &str) -> Value {
         .value
 }
 
+/// Every label of `error`, with the names `program` gives, joined by
+/// `: `.
+pub(crate) fn chain(error: &RunError, program: &Program) -> String {
+    error
+        .labels(program, None)
+        .map(|l| l.message().to_string())
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
+/// The primary message of `error`, with the names `program` gives.
+pub(crate) fn primary(error: &RunError, program: &Program) -> String {
+    error
+        .labels(program, None)
+        .next()
+        .map(|l| l.message().to_string())
+        .unwrap_or_default()
+}
+
+/// The whole chain of how `source` fails.
+fn fails_chain(source: &str) -> String {
+    let program = compile_in(source, &[]);
+    let mut machine = Machine::new(Limits::new());
+    let mut run = machine.load(&program).unwrap();
+    bind_all(&mut run, &[]).unwrap();
+    chain(&run.run_with(&mut test_host).unwrap_err(), &program)
+}
+
 fn fails_in(source: &str, extra: &[(&str, Type, Value)]) -> String {
-    match eval_in(source, extra, Limits::new()) {
+    let program = compile_in(source, extra);
+    let mut machine = Machine::new(Limits::new());
+    let result = machine.load(&program).and_then(|mut run| {
+        bind_all(&mut run, extra)?;
+        run.run_with(&mut test_host)
+    });
+
+    match result {
         Ok(outcome) => panic!("{source:?} gave {}", outcome.value),
         Err(error) => {
-            assert!(!matches!(error, RunError::Fault(..)), "{source:?}: {error}");
-            error.to_string()
+            assert!(!error.is_fault(), "{source:?}: {error}");
+            primary(&error, &program)
         }
     }
 }
@@ -560,11 +596,17 @@ fn lookup_errors() {
 
 #[test]
 fn host_errors() {
-    assert_eq!(fails("fail()"), "`fail` failed: the track is gone");
-    assert_eq!(fails("wrong()"), "`wrong` must return Int, returned Bool");
     assert_eq!(
-        fails("nested()"),
-        "`nested` returned a value whose `[1].a` must be Int, found none"
+        fails_chain("fail()"),
+        "the function failed: while calling `fail`: while running instruction 0: while running the program"
+    );
+    assert_eq!(
+        fails_chain("wrong()"),
+        "expected Int, found Bool: while reading what `wrong` returned: while running instruction 0: while running the program"
+    );
+    assert_eq!(
+        fails_chain("nested()"),
+        "expected Int, found none: at `nested(..)[1].a`: while reading what `nested` returned: while running instruction 0: while running the program"
     );
 
     // Without a host, any call fails.
@@ -572,9 +614,11 @@ fn host_errors() {
     let mut machine = Machine::default();
     let mut run = machine.load(&program).unwrap();
     bind_all(&mut run, &[]).unwrap();
+    let error = run.run().unwrap_err();
+    assert_eq!(primary(&error, &program), "the function failed");
     assert_eq!(
-        run.run().unwrap_err().to_string(),
-        "`count` failed: no functions are provided"
+        std::error::Error::source(&error).unwrap().to_string(),
+        "no functions are provided"
     );
 }
 
@@ -593,8 +637,8 @@ fn host_result_memory() {
     assert_eq!(run(4).unwrap().value, int(3));
     assert_eq!(run(4).unwrap().memory, 4);
     assert_eq!(
-        run(3).unwrap_err().to_string(),
-        "the value `many` returned needs 3 words of memory, 2 are left"
+        chain(&run(3).unwrap_err(), &program),
+        "the value needs 3 words of memory, 2 are left: while reading what `many` returned: while running instruction 1: while running the program"
     );
 }
 
@@ -607,34 +651,50 @@ fn binding_errors() {
     let mut machine = Machine::default();
 
     let cases: &[(&str, Value, &str)] = &[
-        ("wits", Value::Bool(true), "`wits` must be Int, found Bool"),
+        (
+            "wits",
+            Value::Bool(true),
+            "expected Int, found Bool: while binding `wits`",
+        ),
         (
             "wits",
             Value::some(int(1)),
-            "`wits` must be Int, found some(..)",
+            "expected Int, found some(..): while binding `wits`",
         ),
-        ("wits", Value::None, "`wits` must be Int, found none"),
-        ("bonus", int(1), "`bonus` must be Option<Int>, found Int"),
+        (
+            "wits",
+            Value::None,
+            "expected Int, found none: while binding `wits`",
+        ),
+        (
+            "bonus",
+            int(1),
+            "expected Option<Int>, found Int: while binding `bonus`",
+        ),
         (
             "bonus",
             Value::some(Value::Bool(true)),
-            "`bonus` must be Option<Int>, found some(Bool)",
+            "expected Option<Int>, found some(Bool): while binding `bonus`",
         ),
         (
             "levels",
             Value::List(vec![int(1), Value::Bool(false)]),
-            "`levels[1]` must be Int, found Bool",
+            "expected Int, found Bool: at `levels[1]`: while binding `levels`",
         ),
-        ("levels", int(1), "`levels` must be List<Int>, found Int"),
+        (
+            "levels",
+            int(1),
+            "expected List<Int>, found Int: while binding `levels`",
+        ),
         (
             "grid",
             Value::List(vec![ints(&[1]), int(2)]),
-            "`grid[1]` must be List<Int>, found Int",
+            "expected List<Int>, found Int: at `grid[1]`: while binding `grid`",
         ),
         (
             "m",
             Value::record([("Brawl (bar)", int(1)), ("a b", track(1))]),
-            r#"`m` must be {"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}, found a record without `inner`"#,
+            r#"expected {"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}, found a record without `inner`: while binding `m`"#,
         ),
         (
             "m",
@@ -644,7 +704,7 @@ fn binding_errors() {
                 ("inner", Value::record([("deep", Value::Bool(true))])),
                 ("zzz", int(0)),
             ]),
-            r#"`m` must be {"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}, found a record with an extra field `zzz`"#,
+            r#"expected {"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}, found a record with an extra field: while binding `m`"#,
         ),
         (
             "m",
@@ -653,7 +713,7 @@ fn binding_errors() {
                 ("a b", track(1)),
                 ("inner", Value::record([("deep", Value::Bool(true))])),
             ]),
-            r#"`m["Brawl (bar)"]` must be Int, found Bool"#,
+            r#"expected Int, found Bool: at `m["Brawl (bar)"]`: while binding `m`"#,
         ),
         (
             "m",
@@ -662,46 +722,50 @@ fn binding_errors() {
                 ("a b", track(1)),
                 ("inner", Value::record([("deep", int(0))])),
             ]),
-            "`m.inner.deep` must be Bool, found Int",
+            "expected Bool, found Int: at `m.inner.deep`: while binding `m`",
         ),
         (
             "health",
             Value::record([("boxes", int(1))]),
-            "`health` must be {boxes: Int, count: List<Int>}, found a record without `count`",
+            "expected {boxes: Int, count: List<Int>}, found a record without `count`: while binding `health`",
         ),
         (
             "health",
             Value::record([("boxes", int(1)), ("count", Value::List(vec![Value::None]))]),
-            "`health.count[0]` must be Int, found none",
+            "expected Int, found none: at `health.count[0]`: while binding `health`",
         ),
         (
             "maybe_track",
             track(1),
-            "`maybe_track` must be Option<{boxes: Int, count: List<Int>}>, found a record",
+            "expected Option<{boxes: Int, count: List<Int>}>, found a record: while binding `maybe_track`",
         ),
-        ("strength", int(1), "the program reads no value `strength`"),
-        ("nothing", int(1), "the program reads no value `nothing`"),
+        (
+            "strength",
+            int(1),
+            "the program reads no value of that name",
+        ),
+        ("nothing", int(1), "the program reads no value of that name"),
     ];
 
     for (name, value, message) in cases {
         let mut run = machine.load(&program).unwrap();
         let error = run.bind(name, value.clone()).unwrap_err();
-        assert_eq!(error.to_string(), *message, "{name} = {value}");
+        assert_eq!(chain(&error, &program), *message, "{name} = {value}");
     }
 
     // Binding twice is an error, and so is not binding at all.
     let mut run = machine.load(&program).unwrap();
     run.bind("wits", int(1)).unwrap();
     assert_eq!(
-        run.bind("wits", int(1)).unwrap_err().to_string(),
-        "`wits` is already bound"
+        chain(&run.bind("wits", int(1)).unwrap_err(), &program),
+        "`wits` is already bound: while binding `wits`"
     );
 
     let mut run = machine.load(&program).unwrap();
     run.bind("wits", int(1)).unwrap();
     assert_eq!(
-        run.run_with(&mut test_host).unwrap_err().to_string(),
-        "`bonus` is not bound, bind a Option<Int> before running"
+        chain(&run.run_with(&mut test_host).unwrap_err(), &program),
+        "`bonus` is not bound, bind a Option<Int> before running: while running the program"
     );
 
     // A failed binding leaves the value unbound, and a good one binds.
@@ -762,8 +826,8 @@ fn memory_budget() {
     let source = format!("[{}]", vec!["i"; 600].join(", "));
     let program = compile_with(&source, &env, &Options::new()).unwrap();
     assert_eq!(
-        Machine::default().load(&program).unwrap_err(),
-        RunError::TooMuchMemory {
+        Machine::default().load(&program).unwrap_err().message(),
+        &Message::TooMuchMemory {
             needed: 1201,
             allowed: DEFAULT_MEMORY
         }
@@ -789,8 +853,8 @@ fn binding_memory() {
 
     let mut run = machine.load(&program).unwrap();
     assert_eq!(
-        run.bind("l", ints(&[1, 2, 3, 4])).unwrap_err().to_string(),
-        "binding `l` needs 4 words of memory, 3 are left"
+        chain(&run.bind("l", ints(&[1, 2, 3, 4])).unwrap_err(), &program),
+        "the value needs 4 words of memory, 3 are left: while binding `l`"
     );
 
     // A string takes a word per 8 bytes.
@@ -803,10 +867,11 @@ fn binding_memory() {
 
     let mut run = machine.load(&program).unwrap();
     assert_eq!(
-        run.bind("s", Value::from("0123456789abcdef!"))
-            .unwrap_err()
-            .to_string(),
-        "binding `s` needs 3 words of memory, 2 are left"
+        chain(
+            &run.bind("s", Value::from("0123456789abcdef!")).unwrap_err(),
+            &program
+        ),
+        "the value needs 3 words of memory, 2 are left: while binding `s`"
     );
 }
 
@@ -823,8 +888,10 @@ fn fuel() {
         "the expression took too long: it used all of its 2 steps"
     );
     assert_eq!(
-        eval_in("wits", &[], Limits::new().fuel(0)).unwrap_err(),
-        RunError::OutOfFuel { fuel: 0 }
+        eval_in("wits", &[], Limits::new().fuel(0))
+            .unwrap_err()
+            .message(),
+        &Message::OutOfFuel { fuel: 0 }
     );
 
     // A list of n entries, `min` and `max` of n take n more steps, and a
@@ -842,8 +909,10 @@ fn fuel() {
         assert_eq!(outcome.steps, steps, "{source:?}");
         assert!(eval_in(source, &[], Limits::new().fuel(steps)).is_ok());
         assert_eq!(
-            eval_in(source, &[], Limits::new().fuel(steps - 1)).unwrap_err(),
-            RunError::OutOfFuel { fuel: steps - 1 },
+            eval_in(source, &[], Limits::new().fuel(steps - 1))
+                .unwrap_err()
+                .message(),
+            &Message::OutOfFuel { fuel: steps - 1 },
             "{source:?}"
         );
     }
@@ -855,8 +924,8 @@ fn fuel() {
     let raised = Limits::new().fuel(1001);
     assert_eq!(eval_in(&source, &[], raised).unwrap().value, int(1002));
     assert_eq!(
-        eval_in(&source, &[], Limits::new()).unwrap_err(),
-        RunError::OutOfFuel { fuel: 1000 }
+        eval_in(&source, &[], Limits::new()).unwrap_err().message(),
+        &Message::OutOfFuel { fuel: 1000 }
     );
     let source = vec!["wits"; 500].join(" + ");
     assert_eq!(eval_in(&source, &[], Limits::new()).unwrap().steps, 999);
@@ -941,7 +1010,7 @@ fn faulty_programs() {
         let program = faulty(code.clone(), stack);
         let mut machine = Machine::default();
         let error = machine.load(&program).unwrap().run().unwrap_err();
-        assert!(matches!(error, RunError::Fault(..)), "{code:?}: {error}");
+        assert!(error.is_fault(), "{code:?}: {error}");
     }
 
     let wrong = [
@@ -1004,12 +1073,14 @@ fn random_programs() {
                     outcome.value
                 );
             }
-            Err(
-                RunError::Overflow { .. }
-                | RunError::DivideByZero { .. }
-                | RunError::IndexOutOfRange { .. }
-                | RunError::ClampBounds { .. },
-            ) => {}
+            Err(error)
+                if matches!(
+                    error.message(),
+                    Message::Overflow { .. }
+                        | Message::DivideByZero { .. }
+                        | Message::IndexOutOfRange { .. }
+                        | Message::ClampBounds { .. }
+                ) => {}
             Err(error) => panic!("{round}: {source:?}: {error}"),
         }
 
@@ -1023,8 +1094,10 @@ fn random_programs() {
         let mut run = machine.load(&program).unwrap();
         bind_all(&mut run, &[]).unwrap();
 
-        if let Err(RunError::Fault(error)) = run.run_with(&mut host) {
-            panic!("{round}: {source:?}: {error}");
+        if let Err(error) = run.run_with(&mut host)
+            && error.is_fault()
+        {
+            panic!("{round}: {source:?}: {error:#}");
         }
 
         // A word less is refused before it runs, or a binding is.
@@ -1335,9 +1408,9 @@ fn word_budget() {
         let mut machine = Machine::new(Limits::new().memory(words - 1));
         let mut run = machine.load(&program).unwrap();
         assert_eq!(
-            run.bind("l", list).unwrap_err().to_string(),
+            chain(&run.bind("l", list).unwrap_err(), &program),
             format!(
-                "binding `l` needs {} words of memory, {} are left",
+                "the value needs {} words of memory, {} are left: while binding `l`",
                 2 * k,
                 2 * k - 1
             )
@@ -1358,8 +1431,8 @@ fn word_budget() {
             let mut machine = Machine::new(Limits::new().memory(base + words - 1));
             let mut run = machine.load(&program).unwrap();
             assert!(matches!(
-                run.bind("s", Value::from(s)),
-                Err(RunError::BindingTooLarge { .. })
+                run.bind("s", Value::from(s)).unwrap_err().message(),
+                Message::TooLarge { .. }
             ));
         }
     }
@@ -1384,7 +1457,7 @@ fn word_budget() {
     assert_eq!(outcome.steps, 3 + 6);
     assert_eq!(
         run(6).unwrap_err().to_string(),
-        "the value `many` returned needs 6 words of memory, 5 are left"
+        "the value needs 6 words of memory, 5 are left"
     );
 }
 
@@ -1607,8 +1680,11 @@ fn tampered_programs_never_fault() {
                         outcome.value
                     );
                 }
-                Err(RunError::Fault(fault)) => {
-                    panic!("{round}: {source:?} tampered as {:?}: {fault}", stored.code)
+                Err(fault) if fault.is_fault() => {
+                    panic!(
+                        "{round}: {source:?} tampered as {:?}: {fault:#}",
+                        stored.code
+                    )
                 }
                 Err(_) => ran += 1,
             }
