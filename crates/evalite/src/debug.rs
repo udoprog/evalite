@@ -4,7 +4,7 @@
 use musli::{Decode, Encode};
 use syntree::Span;
 
-use crate::program::StoreError;
+use crate::message::{Invalid, Message, StoreError};
 
 /// Where in its source each instruction of a [`Program`](crate::Program)
 /// came from, for a [`RunError`](crate::RunError)'s labels to point at the
@@ -57,7 +57,11 @@ impl DebugInfo {
             spans: self.spans.iter().map(|s| (s.start, s.end)).collect(),
         };
 
-        musli::storage::to_vec(&stored).map_err(|e| StoreError::Encode(e.to_string()))
+        musli::storage::to_vec(&stored).map_err(|e| {
+            StoreError::new(Message::CannotEncode)
+                .with_source(e.to_string())
+                .context(Message::StoringDebugInfo)
+        })
     }
 
     /// Decode what [`to_bytes`](Self::to_bytes) gave.
@@ -67,17 +71,23 @@ impl DebugInfo {
     /// When `bytes` are not stored debug info, or a span ends before it
     /// starts.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, StoreError> {
-        let stored: StoredDebug =
-            musli::storage::from_slice(bytes).map_err(|e| StoreError::Decode(e.to_string()))?;
+        let stored: StoredDebug = musli::storage::from_slice(bytes).map_err(|e| {
+            StoreError::new(Message::NotDecoded)
+                .with_source(e.to_string())
+                .context(Message::DecodingDebugInfo)
+        })?;
 
         let spans = stored
             .spans
             .into_iter()
-            .map(|(start, end)| {
+            .enumerate()
+            .map(|(at, (start, end))| {
                 if start > end {
-                    return Err(StoreError::Invalid(format!(
-                        "a span from {start} ends at {end}"
-                    )));
+                    return Err(StoreError::from(Invalid::SpanBackwards)
+                        .context(Message::AtSpan {
+                            at: u32::try_from(at).unwrap_or(u32::MAX),
+                        })
+                        .context(Message::DecodingDebugInfo));
                 }
 
                 Ok(Span::new(start, end))

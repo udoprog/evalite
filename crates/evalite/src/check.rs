@@ -1029,7 +1029,7 @@ impl<'a> Compiler<'a> {
             self.code,
             value.ty,
         )
-        .map_err(|e| internal(format!("the compiled program is invalid: {e}")))?;
+        .map_err(|e| internal(format!("the compiled program is invalid: {e:#}")))?;
 
         Ok((program, DebugInfo::new(self.spans)))
     }

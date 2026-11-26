@@ -9,6 +9,7 @@
 use std::ops::Range;
 
 use crate::error::ErrorKind;
+use crate::message::Message;
 use crate::program::{Constant, FORMAT, Global, HostFunction, Instr, Scalar, Stored};
 use crate::tests::Rng;
 use crate::types::{FieldNode, TypeId, TypeNode};
@@ -1226,8 +1227,8 @@ fn load(stored: &Stored) -> Result<Program, StoreError> {
 fn invalid(stored: &Stored) -> String {
     match load(stored) {
         Ok(_) => panic!("a tampered program loaded"),
-        Err(StoreError::Invalid(reason)) => reason,
-        Err(error) => panic!("expected an invalid program, found {error}"),
+        Err(error) if matches!(error.message(), Message::Invalid(..)) => format!("{error:#}"),
+        Err(error) => panic!("expected an invalid program, found {error:#}"),
     }
 }
 
@@ -1244,47 +1245,47 @@ fn tampered_programs() {
         (
             source,
             Box::new(|s| s.memory.stack -= 1),
-            "it declares Memory { stack: 2, heap: 0, constants: 2, globals: 2 } of memory but uses Memory { stack: 3, heap: 0, constants: 2, globals: 2 }",
+            "it declares 6 words of memory but uses 7: while verifying the program",
         ),
         (
             source,
             Box::new(|s| s.memory.stack += 1),
-            "it declares Memory { stack: 4, heap: 0, constants: 2, globals: 2 } of memory but uses Memory { stack: 3, heap: 0, constants: 2, globals: 2 }",
+            "it declares 8 words of memory but uses 7: while verifying the program",
         ),
         (
             source,
             Box::new(|s| s.memory.constants = 0),
-            "it declares Memory { stack: 3, heap: 0, constants: 0, globals: 2 } of memory but uses Memory { stack: 3, heap: 0, constants: 2, globals: 2 }",
+            "it declares 5 words of memory but uses 7: while verifying the program",
         ),
         (
             "bonus",
             Box::new(|s| s.memory.globals = 1),
-            "it declares Memory { stack: 2, heap: 0, constants: 0, globals: 1 } of memory but uses Memory { stack: 2, heap: 0, constants: 0, globals: 2 }",
+            "it declares 3 words of memory but uses 4: while verifying the program",
         ),
         (
             "[wits]",
             Box::new(|s| s.memory.heap = 0),
-            "it declares Memory { stack: 1, heap: 0, constants: 0, globals: 1 } of memory but uses Memory { stack: 1, heap: 1, constants: 0, globals: 1 }",
+            "it declares 2 words of memory but uses 3: while verifying the program",
         ),
         (
             "1 + 2",
             Box::new(|s| s.code[2] = Instr::Lt),
-            "it ends with 1 values on the stack, not one of its result type",
+            "it ends with 1 values on the stack, not one of its result type: while verifying the program",
         ),
         (
             "1 + 2",
             Box::new(|s| s.code.pop().map(|_| ()).unwrap()),
-            "it ends with 2 values on the stack, not one of its result type",
+            "it ends with 2 values on the stack, not one of its result type: while verifying the program",
         ),
         (
             "1",
             Box::new(|s| s.code = vec![Instr::Add]),
-            "instruction 0 (Add) pops an empty stack",
+            "the instruction pops an empty stack: at instruction 0: while verifying the program",
         ),
         (
             "1",
             Box::new(|s| s.code = vec![]),
-            "it ends with 0 values on the stack, not one of its result type",
+            "it ends with 0 values on the stack, not one of its result type: while verifying the program",
         ),
         (
             "wits",
@@ -1294,7 +1295,7 @@ fn tampered_programs() {
                     ty: TypeId(0),
                 }
             }),
-            "instruction 0 (Global { at: 1, ty: TypeId(0) }) names a global there is not",
+            "the instruction names a value there is not: at instruction 0: while verifying the program",
         ),
         (
             "wits",
@@ -1304,32 +1305,32 @@ fn tampered_programs() {
                     ty: TypeId(1),
                 }
             }),
-            "instruction 0 (Global { at: 0, ty: TypeId(1) }) names a global there is not",
+            "the instruction names a value there is not: at instruction 0: while verifying the program",
         ),
         (
             "[1]",
             Box::new(|s| s.code[0] = Instr::Const(7)),
-            "instruction 0 (Const(7)) names a constant there is not",
+            "the instruction names a constant there is not: at instruction 0: while verifying the program",
         ),
         (
             "count(health)",
             Box::new(|s| s.code[1] = Instr::Call(1)),
-            "instruction 1 (Call(1)) calls a function there is not",
+            "the instruction calls a function there is not: at instruction 1: while verifying the program",
         ),
         (
             "flag && flag",
             Box::new(|s| s.code[1] = Instr::And(2)),
-            "instruction 1 (And(2)) jumps past the end",
+            "the instruction jumps past the end: at instruction 1: while verifying the program",
         ),
         (
             "flag && flag && flag",
             Box::new(|s| s.code[1] = Instr::And(0)),
-            "instruction 2 (Global { at: 0, ty: TypeId(1) }) is reached with two different stacks",
+            "the instruction is reached with two different stacks: at instruction 2: while verifying the program",
         ),
         (
             "1 + 2",
             Box::new(|s| s.code[2] = Instr::Min(0)),
-            "instruction 2 (Min(0)) takes no operands",
+            "the instruction takes no operands: at instruction 2: while verifying the program",
         ),
         (
             "[wits]",
@@ -1339,7 +1340,7 @@ fn tampered_programs() {
                     entry: TypeId(0),
                 }
             }),
-            "instruction 1 (List { len: 0, entry: TypeId(0) }) makes a list of no entries",
+            "the instruction makes a list of no entries: at instruction 1: while verifying the program",
         ),
         (
             "[wits]",
@@ -1349,7 +1350,7 @@ fn tampered_programs() {
                     entry: TypeId(0),
                 }
             }),
-            "instruction 1 (List { len: 2, entry: TypeId(0) }) makes a list of entries it does not find",
+            "the instruction makes a list of entries it does not find: at instruction 1: while verifying the program",
         ),
         (
             "[wits]",
@@ -1359,7 +1360,7 @@ fn tampered_programs() {
                     entry: TypeId(1),
                 }
             }),
-            "instruction 1 (List { len: 1, entry: TypeId(1) }) makes a list of entries it does not find",
+            "the instruction makes a list of entries it does not find: at instruction 1: while verifying the program",
         ),
         (
             "specialties.athletics",
@@ -1369,7 +1370,7 @@ fn tampered_programs() {
                     ty: TypeId(0),
                 }
             }),
-            "instruction 1 (Field { at: 9, ty: TypeId(0) }) reads a field the record does not have",
+            "the instruction reads a field the record does not have: at instruction 1: while verifying the program",
         ),
         (
             "wits.abs()",
@@ -1379,22 +1380,22 @@ fn tampered_programs() {
                     ty: TypeId(0),
                 }
             }),
-            "instruction 1 (Field { at: 0, ty: TypeId(0) }) reads a field of other than a record",
+            "the instruction reads a field of other than a record: at instruction 1: while verifying the program",
         ),
         (
             "1 + 2",
             Box::new(|s| s.code[0] = Instr::Bool(true)),
-            "instruction 2 (Add) finds an operand of the wrong type",
+            "the instruction finds an operand of the wrong type: at instruction 2: while verifying the program",
         ),
         (
             "bonus.unwrap_or(1)",
             Box::new(|s| s.code[1] = Instr::Bool(true)),
-            "instruction 2 (UnwrapOr(TypeId(2))) finds an operand of the wrong type",
+            "the instruction finds an operand of the wrong type: at instruction 2: while verifying the program",
         ),
         (
             "bonus.unwrap_or(1)",
             Box::new(|s| s.code[2] = Instr::UnwrapOr(TypeId(0))),
-            "instruction 2 (UnwrapOr(TypeId(0))) unwraps other than an option type",
+            "the instruction unwraps other than an option type: at instruction 2: while verifying the program",
         ),
         (
             "bonus.is_none()",
@@ -1402,17 +1403,17 @@ fn tampered_programs() {
                 s.types.push(TypeNode::Option(TypeId(1)));
                 s.code[1] = Instr::IsNone(TypeId(3));
             }),
-            "instruction 1 (IsNone(TypeId(3))) finds an operand of the wrong type",
+            "the instruction finds an operand of the wrong type: at instruction 1: while verifying the program",
         ),
         (
             "levels[0]",
             Box::new(|s| s.code[2] = Instr::Index(TypeId(1))),
-            "instruction 2 (Index(TypeId(1))) indexes other than a list of its entry type",
+            "the instruction indexes other than a list of its entry type: at instruction 2: while verifying the program",
         ),
         (
             "lookup(0, levels)",
             Box::new(|s| s.code[2] = Instr::Lookup(TypeId(1))),
-            "instruction 2 (Lookup(TypeId(1))) looks up in other than a list of its entry type",
+            "the instruction looks up in other than a list of its entry type: at instruction 2: while verifying the program",
         ),
         (
             "specialties.brawl",
@@ -1422,17 +1423,17 @@ fn tampered_programs() {
                     ty: TypeId(0),
                 }
             }),
-            "instruction 1 (Field { at: 1, ty: TypeId(0) }) reads a field the record does not have",
+            "the instruction reads a field the record does not have: at instruction 1: while verifying the program",
         ),
         (
             "levels.len()",
             Box::new(|s| s.code[1] = Instr::IsSome(TypeId(2))),
-            "instruction 1 (IsSome(TypeId(2))) tests other than an option type",
+            "the instruction tests other than an option type: at instruction 1: while verifying the program",
         ),
         (
             "1 == 1",
             Box::new(|s| s.code = vec![Instr::Const(0), Instr::Const(0), Instr::Eq]),
-            "instruction 0 (Const(0)) names a constant there is not",
+            "the instruction names a constant there is not: at instruction 0: while verifying the program",
         ),
         (
             "[1]",
@@ -1442,7 +1443,7 @@ fn tampered_programs() {
                     items: vec![Scalar::Bool(true)],
                 }
             }),
-            "constant 0 has an entry of another type",
+            "the constant has an entry of another type: at constant 0: while verifying the program",
         ),
         (
             "[1]",
@@ -1452,7 +1453,7 @@ fn tampered_programs() {
                     items: vec![],
                 }
             }),
-            "constant 0 is an empty list",
+            "the constant is an empty list: at constant 0: while verifying the program",
         ),
         (
             "[1]",
@@ -1462,22 +1463,22 @@ fn tampered_programs() {
                     items: vec![Scalar::Const(0)],
                 }
             }),
-            "constant 0 refers to a later constant",
+            "the constant refers to a later constant: at constant 0: while verifying the program",
         ),
         (
             "wits",
             Box::new(|s| s.globals[0].name = "Wits".into()),
-            "global \"Wits\" is invalid or repeated",
+            "the value's name is invalid or repeated: at value 0: while verifying the program",
         ),
         (
             "wits + dexterity",
             Box::new(|s| s.globals[1].name = "wits".into()),
-            "global \"wits\" is invalid or repeated",
+            "the value's name is invalid or repeated: at value 1: while verifying the program",
         ),
         (
             "count(health)",
             Box::new(|s| s.functions.push(s.functions[0].clone())),
-            "function \"count\" is invalid or repeated",
+            "the function's name is invalid or its signature repeated: at function 1: while verifying the program",
         ),
         (
             "count(health)",
@@ -1488,12 +1489,12 @@ fn tampered_programs() {
                     ret: TypeId(0),
                 }
             }),
-            "type 99 is not in its table",
+            "a type is not in the type table: at function 0: while verifying the program",
         ),
         (
             "wits",
             Box::new(|s| s.result = TypeId(1)),
-            "it ends with 1 values on the stack, not one of its result type",
+            "it ends with 1 values on the stack, not one of its result type: while verifying the program",
         ),
         (
             "wits",
@@ -1503,22 +1504,22 @@ fn tampered_programs() {
                     ty: TypeId(5),
                 }
             }),
-            "type 5 is not in its table",
+            "a type is not in the type table: at value 0: while verifying the program",
         ),
         (
             "levels",
             Box::new(|s| s.types[2] = TypeNode::List(TypeId(2))),
-            "type 2 refers to a later type 2",
+            "the type refers to a later type: at type 2: while verifying the program",
         ),
         (
             "levels",
             Box::new(|s| s.types.push(TypeNode::Int)),
-            "type 3 is a repeat of an earlier type",
+            "the type repeats an earlier type: at type 3: while verifying the program",
         ),
         (
             "bonus",
             Box::new(|s| s.types.push(TypeNode::Option(TypeId(2)))),
-            "type 3 is an option of an option",
+            "the type is an option of an option: at type 3: while verifying the program",
         ),
         (
             "specialties",
@@ -1527,7 +1528,7 @@ fn tampered_programs() {
                     fields.reverse();
                 }
             }),
-            "type 3 has fields that are not sorted and unique",
+            "the type has fields that are not sorted and unique: at type 3: while verifying the program",
         ),
         (
             "1",
@@ -1536,12 +1537,12 @@ fn tampered_programs() {
                     s.types.push(TypeNode::List(TypeId(n + 1)));
                 }
             }),
-            "type 65 nests too deeply",
+            "the type nests too deeply: at type 65: while verifying the program",
         ),
         (
             "1",
             Box::new(|s| s.types.clear()),
-            "type 0 is not in its table",
+            "a type is not in the type table: while verifying the program",
         ),
     ];
 
@@ -1558,7 +1559,7 @@ fn stored_bytes_errors() {
 
     for len in 0..bytes.len() {
         match Program::from_bytes(&bytes[..len]) {
-            Err(StoreError::Decode(_)) => {}
+            Err(error) if *error.message() == Message::NotDecoded => {}
             other => panic!("{len}: {other:?}"),
         }
     }
@@ -1567,22 +1568,44 @@ fn stored_bytes_errors() {
     stored.format = FORMAT + 1;
 
     assert_eq!(
-        load(&stored).unwrap_err().to_string(),
-        "the program was stored in format 3, this evalite reads format 2"
+        format!("{:#}", load(&stored).unwrap_err()),
+        "it was stored in format 3, this evalite reads format 2: while reading a stored program"
     );
 
-    assert!(
-        Program::from_bytes(&[])
-            .unwrap_err()
-            .to_string()
-            .starts_with("these bytes are not a stored program: ")
+    let error = Program::from_bytes(&[]).unwrap_err();
+    assert_eq!(
+        format!("{error:#}"),
+        "the bytes do not decode: while reading a stored program"
     );
+    assert!(std::error::Error::source(&error).is_some());
 
     stored.format = FORMAT;
     stored.memory.stack = 0;
+    let error = load(&stored).unwrap_err();
+    assert_eq!(
+        format!("{error:#}"),
+        "it declares 1 words of memory but uses 3: while verifying the program"
+    );
+
+    // The chain, frame by frame, as labels show it.
+    let labels: Vec<(String, bool)> = error
+        .labels()
+        .map(|l| (l.message().to_string(), l.is_primary()))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            ("it declares 1 words of memory but uses 3".to_owned(), true),
+            ("while verifying the program".to_owned(), false),
+        ]
+    );
+
+    // Equal totals spent otherwise read as such.
+    stored.memory.stack = 1;
+    stored.memory.globals = 2;
     assert_eq!(
         load(&stored).unwrap_err().to_string(),
-        "the stored program is not valid: it declares Memory { stack: 0, heap: 0, constants: 0, globals: 1 } of memory but uses Memory { stack: 2, heap: 0, constants: 0, globals: 1 }"
+        "it declares 3 words of memory, but uses them otherwise"
     );
 }
 

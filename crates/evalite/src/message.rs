@@ -71,6 +71,160 @@ pub(crate) enum Message {
     Running,
     /// Context: reading the program's value back.
     ReadingResult,
+    /// Something could not be encoded; the encoder's error is the source.
+    CannotEncode,
+    /// The bytes do not decode; the decoder's error is the source.
+    NotDecoded,
+    /// Stored in format `found`, where this evalite reads `reads`.
+    WrongFormat { found: u32, reads: u32 },
+    /// Stored bytes decode, but to something evalite would not make.
+    Invalid(Invalid),
+    /// Context: storing a program.
+    StoringProgram,
+    /// Context: reading a stored program.
+    DecodingProgram,
+    /// Context: checking a program is one evalite would compile.
+    VerifyingProgram,
+    /// Context: storing debug info.
+    StoringDebugInfo,
+    /// Context: reading stored debug info.
+    DecodingDebugInfo,
+    /// Context: storing a structure.
+    StoringStructure,
+    /// Context: reading a stored structure.
+    DecodingStructure,
+    /// Context: one entry of a stored type table.
+    AtType { at: u32 },
+    /// Context: one stored constant.
+    AtConstant { at: u32 },
+    /// Context: one value a stored program reads.
+    AtGlobal { at: u32 },
+    /// Context: one function of the caller's a stored program calls.
+    AtFunction { at: u32 },
+    /// Context: one instruction of stored code.
+    AtInstruction { pc: u32 },
+    /// Context: one node of a stored structure.
+    AtNode { node: u32 },
+    /// Context: one span of stored debug info.
+    AtSpan { at: u32 },
+}
+
+/// Why stored bytes are not something evalite would make, by what is
+/// wrong with them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Invalid {
+    TypeRefersLater,
+    OptionOfOption,
+    FieldsUnsorted,
+    TypeRepeated,
+    TypeTooDeep,
+    UnknownType,
+    MissingType,
+    EmptyConstantList,
+    ConstantRefersLater,
+    ConstantEntryMistyped,
+    BadGlobal,
+    BadFunction,
+    TooMuchToCount,
+    TwoStacks,
+    PopsEmpty,
+    WrongOperand,
+    NoSuchConstant,
+    NoSuchGlobal,
+    MixedCompare,
+    JumpPastEnd,
+    JumpsDisagree,
+    FieldOfNonRecord,
+    NoSuchField,
+    IndexNonList,
+    LookupNonList,
+    EmptyList,
+    ListEntriesMissing,
+    NoOperands,
+    UnwrapNonOption,
+    TestNonOption,
+    LenNonList,
+    NoSuchFunction,
+    EndStackDisagrees,
+    JumpIntoNothing,
+    NotOneResult { values: u64 },
+    MemoryMismatch { declared: u64, used: u64 },
+    TooManyNodes,
+    PartPastEnd,
+    PartTwice,
+    RootPastEnd,
+    UnusedNodes,
+    NotOneTree,
+    SpanBackwards,
+}
+
+impl fmt::Display for Invalid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let what = match self {
+            Self::TypeRefersLater => "the type refers to a later type",
+            Self::OptionOfOption => "the type is an option of an option",
+            Self::FieldsUnsorted => "the type has fields that are not sorted and unique",
+            Self::TypeRepeated => "the type repeats an earlier type",
+            Self::TypeTooDeep => "the type nests too deeply",
+            Self::UnknownType => "a type is not in the type table",
+            Self::MissingType => "a type it needs is not in the type table",
+            Self::EmptyConstantList => "the constant is an empty list",
+            Self::ConstantRefersLater => "the constant refers to a later constant",
+            Self::ConstantEntryMistyped => "the constant has an entry of another type",
+            Self::BadGlobal => "the value's name is invalid or repeated",
+            Self::BadFunction => "the function's name is invalid or its signature repeated",
+            Self::TooMuchToCount => "it uses too much memory to count",
+            Self::TwoStacks => "the instruction is reached with two different stacks",
+            Self::PopsEmpty => "the instruction pops an empty stack",
+            Self::WrongOperand => "the instruction finds an operand of the wrong type",
+            Self::NoSuchConstant => "the instruction names a constant there is not",
+            Self::NoSuchGlobal => "the instruction names a value there is not",
+            Self::MixedCompare => "the instruction compares other than two Ints or two Bools",
+            Self::JumpPastEnd => "the instruction jumps past the end",
+            Self::JumpsDisagree => {
+                "the instruction jumps where another jump lands with another stack"
+            }
+            Self::FieldOfNonRecord => "the instruction reads a field of other than a record",
+            Self::NoSuchField => "the instruction reads a field the record does not have",
+            Self::IndexNonList => "the instruction indexes other than a list of its entry type",
+            Self::LookupNonList => {
+                "the instruction looks up in other than a list of its entry type"
+            }
+            Self::EmptyList => "the instruction makes a list of no entries",
+            Self::ListEntriesMissing => "the instruction makes a list of entries it does not find",
+            Self::NoOperands => "the instruction takes no operands",
+            Self::UnwrapNonOption => "the instruction unwraps other than an option type",
+            Self::TestNonOption => "the instruction tests other than an option type",
+            Self::LenNonList => "the instruction takes the length of other than a list",
+            Self::NoSuchFunction => "the instruction calls a function there is not",
+            Self::EndStackDisagrees => "a jump lands at the end with another stack",
+            Self::JumpIntoNothing => "a jump lands inside nothing",
+            Self::NotOneResult { values } => {
+                return write!(
+                    f,
+                    "it ends with {values} values on the stack, not one of its result type"
+                );
+            }
+            Self::MemoryMismatch { declared, used } if declared == used => {
+                return write!(
+                    f,
+                    "it declares {declared} words of memory, but uses them otherwise"
+                );
+            }
+            Self::MemoryMismatch { declared, used } => {
+                return write!(f, "it declares {declared} words of memory but uses {used}");
+            }
+            Self::TooManyNodes => "there are too many nodes to number",
+            Self::PartPastEnd => "the node has a part past the end",
+            Self::PartTwice => "the node is a part twice",
+            Self::RootPastEnd => "the root is past the end",
+            Self::UnusedNodes => "some nodes are not part of the expression",
+            Self::NotOneTree => "the structure's nodes are not one tree",
+            Self::SpanBackwards => "the span ends before it starts",
+        };
+
+        f.write_str(what)
+    }
 }
 
 /// What a mistyped value was found to be.
@@ -368,6 +522,27 @@ impl fmt::Display for Shown<'_> {
             Message::Instruction { pc } => write!(f, "while running instruction {pc}"),
             Message::Running => f.write_str("while running the program"),
             Message::ReadingResult => f.write_str("while reading the program's value"),
+            Message::CannotEncode => f.write_str("it could not be encoded"),
+            Message::NotDecoded => f.write_str("the bytes do not decode"),
+            Message::WrongFormat { found, reads } => write!(
+                f,
+                "it was stored in format {found}, this evalite reads format {reads}"
+            ),
+            Message::Invalid(invalid) => invalid.fmt(f),
+            Message::StoringProgram => f.write_str("while storing the program"),
+            Message::DecodingProgram => f.write_str("while reading a stored program"),
+            Message::VerifyingProgram => f.write_str("while verifying the program"),
+            Message::StoringDebugInfo => f.write_str("while storing debug info"),
+            Message::DecodingDebugInfo => f.write_str("while reading stored debug info"),
+            Message::StoringStructure => f.write_str("while storing the structure"),
+            Message::DecodingStructure => f.write_str("while reading a stored structure"),
+            Message::AtType { at } => write!(f, "at type {at}"),
+            Message::AtConstant { at } => write!(f, "at constant {at}"),
+            Message::AtGlobal { at } => write!(f, "at value {at}"),
+            Message::AtFunction { at } => write!(f, "at function {at}"),
+            Message::AtInstruction { pc } => write!(f, "at instruction {pc}"),
+            Message::AtNode { node } => write!(f, "at node #{node}"),
+            Message::AtSpan { at } => write!(f, "at span {at}"),
         }
     }
 }
@@ -579,27 +754,34 @@ impl fmt::Debug for RunError {
 impl fmt::Display for RunError {
     /// The primary message; with `{:#}`, every frame, joined by `: `.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let frames = self.inner.frames.as_slice();
-        let shown = if f.alternate() {
-            frames
-        } else {
-            frames.get(..1).unwrap_or_default()
-        };
+        write_frames(&self.inner.frames, f)
+    }
+}
 
-        for (n, frame) in shown.iter().enumerate() {
-            if n > 0 {
-                f.write_str(": ")?;
-            }
+/// The primary message of `frames`; with `{:#}`, every frame, joined by
+/// `: `.
+fn write_frames(frames: &[Frame], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let shown = if f.alternate() {
+        frames
+    } else {
+        frames.get(..1).unwrap_or_default()
+    };
 
-            Shown {
-                message: &frame.message,
-                program: None,
-            }
-            .fmt(f)?;
+    for (n, frame) in shown.iter().enumerate() {
+        if n > 0 {
+            f.write_str(": ")?;
         }
 
-        Ok(())
+        fmt::Display::fmt(
+            &Shown {
+                message: &frame.message,
+                program: None,
+            },
+            f,
+        )?;
     }
+
+    Ok(())
 }
 
 impl std::error::Error for RunError {
@@ -623,6 +805,137 @@ impl From<Message> for RunError {
     #[inline(never)]
     fn from(message: Message) -> Self {
         Self::new(message)
+    }
+}
+
+/// Why a program, its [`DebugInfo`] or a [`Structure`](crate::Structure)
+/// could not be stored or read back.
+///
+/// It is opaque like [`RunError`]: [`Display`](fmt::Display) gives its
+/// message, `{:#}` the whole chain of what was being done, and
+/// [`labels`](Self::labels) each part. When the bytes do not decode, the
+/// decoder's own error is its [`source`](std::error::Error::source).
+///
+/// ```
+/// use evalite::Program;
+///
+/// let error = Program::from_bytes(b"not a program").unwrap_err();
+/// assert_eq!(error.to_string(), "the bytes do not decode");
+/// assert_eq!(format!("{error:#}"), "the bytes do not decode: while reading a stored program");
+/// assert!(std::error::Error::source(&error).is_some());
+/// ```
+pub struct StoreError {
+    inner: Box<Inner>,
+}
+
+impl StoreError {
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn new(message: Message) -> Self {
+        let mut frames = Vec::with_capacity(4);
+        frames.push(Frame {
+            message,
+            location: None,
+        });
+
+        Self {
+            inner: Box::new(Inner {
+                frames,
+                source: None,
+            }),
+        }
+    }
+
+    /// With `source` as the cause, the encoder's or decoder's own error.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn with_source(
+        mut self,
+        source: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
+        self.inner.source = Some(source.into());
+        self
+    }
+
+    /// With `message` as the next frame out.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn context(mut self, message: Message) -> Self {
+        self.inner.frames.push(Frame {
+            message,
+            location: None,
+        });
+        self
+    }
+
+    /// The primary message.
+    #[cfg(test)]
+    pub(crate) fn message(&self) -> &Message {
+        match self.inner.frames.first() {
+            Some(frame) => &frame.message,
+            None => &Message::NotDecoded,
+        }
+    }
+
+    /// The primary message, then each context outward, as [`Label`]s. They
+    /// are about bytes rather than source text, so none has a span.
+    ///
+    /// ```
+    /// use evalite::{Environment, Program};
+    ///
+    /// let program = evalite::compile("1 + 2", &Environment::new())?;
+    /// let bytes = program.to_bytes()?;
+    ///
+    /// // Cut short, the bytes no longer decode.
+    /// let error = Program::from_bytes(&bytes[..bytes.len() - 1]).unwrap_err();
+    /// let labels: Vec<String> = error.labels().map(|l| l.message().to_string()).collect();
+    /// assert_eq!(labels, ["the bytes do not decode", "while reading a stored program"]);
+    /// assert!(error.labels().all(|l| l.span().is_none()));
+    /// assert_eq!(error.labels().filter(|l| l.is_primary()).count(), 1);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn labels(&self) -> Labels<'_> {
+        Labels {
+            inner: LabelsInner::Run {
+                frames: self.inner.frames.iter(),
+                program: None,
+                debug: None,
+                innermost: None,
+                first: true,
+            },
+        }
+    }
+}
+
+impl fmt::Debug for StoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoreError")
+            .field("frames", &self.inner.frames)
+            .field("source", &self.inner.source)
+            .finish()
+    }
+}
+
+impl fmt::Display for StoreError {
+    /// The primary message; with `{:#}`, every frame, joined by `: `.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_frames(&self.inner.frames, f)
+    }
+}
+
+impl std::error::Error for StoreError {
+    /// The encoder's or decoder's own error, when it failed.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let source = self.inner.source.as_deref()?;
+        Some(source)
+    }
+}
+
+impl From<Invalid> for StoreError {
+    #[cold]
+    #[inline(never)]
+    fn from(invalid: Invalid) -> Self {
+        Self::new(Message::Invalid(invalid))
     }
 }
 

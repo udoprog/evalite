@@ -11,7 +11,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use evalite::{Environment, Program, StoreError, Type};
+use evalite::{Environment, Program, Type};
 
 struct Counting;
 
@@ -82,7 +82,8 @@ fn huge_length_prefix() {
             );
 
             if at == 4 {
-                assert!(matches!(result, Err(StoreError::Decode(..))), "{result:?}");
+                let error = result.expect_err("a huge length prefix decoded");
+                assert_eq!(error.to_string(), "the bytes do not decode", "{error:?}");
             }
         }
     }

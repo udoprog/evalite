@@ -276,14 +276,13 @@ pub use self::complete::{CompleteError, Completion, CompletionKind, Insert};
 pub use self::debug::DebugInfo;
 pub use self::env::{Builtin, DeclareError, Environment};
 pub use self::error::ParseError;
-pub use self::message::{Label, Labels, RunError};
+pub use self::message::{Label, Labels, RunError, StoreError};
 pub use self::parser::{DEFAULT_MAX_DEPTH, Options};
 #[cfg(test)]
 pub(crate) use self::parser::{Tree, parse, parse_with};
-pub use self::program::{Memory, Program, StoreError};
+pub use self::program::{Memory, Program};
 pub use self::structure::{
-    BinaryOp, EditError, HOLE, LoadError, Node, NodeId, Structure, StructureError,
-    StructureErrorKind, UnaryOp,
+    BinaryOp, EditError, HOLE, Node, NodeId, Structure, StructureError, StructureErrorKind, UnaryOp,
 };
 pub(crate) use self::syntax::Syntax;
 pub use self::types::{FieldTypes, MAX_TYPE_DEPTH, Type};

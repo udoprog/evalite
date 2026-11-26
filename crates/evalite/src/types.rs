@@ -1,3 +1,4 @@
+use crate::message::{Invalid, Message, StoreError};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
@@ -601,19 +602,25 @@ impl Types {
     /// Check a stored table: each part before what holds it, each node
     /// once, records sorted, no `Option<Option<T>>` and nothing nested
     /// past [`MAX_TYPE_DEPTH`].
-    pub(crate) fn from_stored(nodes: Vec<TypeNode>) -> Result<Self, String> {
+    pub(crate) fn from_stored(nodes: Vec<TypeNode>) -> Result<Self, StoreError> {
         let mut types = Self::new();
 
         for (at, node) in nodes.into_iter().enumerate() {
+            let fail = |invalid: Invalid| {
+                StoreError::from(invalid).context(Message::AtType {
+                    at: u32::try_from(at).unwrap_or(u32::MAX),
+                })
+            };
+
             for part in parts(&node) {
                 if part.index() >= at {
-                    return Err(format!("type {at} refers to a later type {}", part.0));
+                    return Err(fail(Invalid::TypeRefersLater));
                 }
             }
 
             match &node {
                 TypeNode::Option(t) if matches!(types.get(*t), Some(TypeNode::Option(..))) => {
-                    return Err(format!("type {at} is an option of an option"));
+                    return Err(fail(Invalid::OptionOfOption));
                 }
                 TypeNode::Record(fields)
                     if !fields.windows(2).all(|w| match w {
@@ -621,19 +628,17 @@ impl Types {
                         _ => true,
                     }) =>
                 {
-                    return Err(format!(
-                        "type {at} has fields that are not sorted and unique"
-                    ));
+                    return Err(fail(Invalid::FieldsUnsorted));
                 }
                 _ => {}
             }
 
             if types.find(&node).is_some() {
-                return Err(format!("type {at} is a repeat of an earlier type"));
+                return Err(fail(Invalid::TypeRepeated));
             }
 
             if types.add(node).is_none() {
-                return Err(format!("type {at} nests too deeply"));
+                return Err(fail(Invalid::TypeTooDeep));
             }
         }
 

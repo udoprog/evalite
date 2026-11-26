@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt;
 
 use musli::{Decode, Encode};
 
 use crate::Type;
+use crate::message::{Invalid, Message, StoreError};
 use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
@@ -238,36 +238,6 @@ pub struct Program {
     pub(crate) constant_at: Vec<(u32, u32)>,
 }
 
-/// Why a program could not be stored or loaded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum StoreError {
-    /// The program could not be encoded.
-    Encode(String),
-    /// The bytes are not a stored program.
-    Decode(String),
-    /// A stored program of another version of evalite.
-    Format(u32),
-    /// The bytes decode, but are not a program evalite would compile.
-    Invalid(String),
-}
-
-impl fmt::Display for StoreError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Encode(e) => write!(f, "the program could not be stored: {e}"),
-            Self::Decode(e) => write!(f, "these bytes are not a stored program: {e}"),
-            Self::Format(v) => write!(
-                f,
-                "the program was stored in format {v}, this evalite reads format {FORMAT}"
-            ),
-            Self::Invalid(e) => write!(f, "the stored program is not valid: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for StoreError {}
-
 impl Program {
     /// The type of the value it gives.
     pub fn result_type(&self) -> Type {
@@ -318,20 +288,32 @@ impl Program {
             memory: self.memory,
         };
 
-        musli::storage::to_vec(&stored).map_err(|e| StoreError::Encode(e.to_string()))
+        musli::storage::to_vec(&stored).map_err(|e| {
+            StoreError::new(Message::CannotEncode)
+                .with_source(e.to_string())
+                .context(Message::StoringProgram)
+        })
     }
 
     /// Read a stored program, checking that it is one evalite would compile:
     /// well formed, well typed, and using exactly the memory it declares.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, StoreError> {
-        let stored: Stored =
-            musli::storage::from_slice(bytes).map_err(|e| StoreError::Decode(e.to_string()))?;
+        let stored: Stored = musli::storage::from_slice(bytes).map_err(|e| {
+            StoreError::new(Message::NotDecoded)
+                .with_source(e.to_string())
+                .context(Message::DecodingProgram)
+        })?;
 
         if stored.format != FORMAT {
-            return Err(StoreError::Format(stored.format));
+            return Err(StoreError::new(Message::WrongFormat {
+                found: stored.format,
+                reads: FORMAT,
+            })
+            .context(Message::DecodingProgram));
         }
 
-        let types = Types::from_stored(stored.types).map_err(StoreError::Invalid)?;
+        let verifying = |e: StoreError| e.context(Message::VerifyingProgram);
+        let types = Types::from_stored(stored.types).map_err(verifying)?;
 
         let program = Self::verify(
             types,
@@ -341,13 +323,16 @@ impl Program {
             stored.code,
             stored.result,
         )
-        .map_err(StoreError::Invalid)?;
+        .map_err(verifying)?;
 
         if program.memory != stored.memory {
-            return Err(StoreError::Invalid(format!(
-                "it declares {:?} of memory but uses {:?}",
-                stored.memory, program.memory
-            )));
+            return Err(verifying(
+                Invalid::MemoryMismatch {
+                    declared: stored.memory.total(),
+                    used: program.memory.total(),
+                }
+                .into(),
+            ));
         }
 
         Ok(program)
@@ -362,7 +347,7 @@ impl Program {
         functions: Vec<HostFunction>,
         code: Vec<Instr>,
         result: TypeId,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, StoreError> {
         let mut verifier = Verifier {
             types: &types,
             constant_types: Vec::new(),
@@ -372,7 +357,9 @@ impl Program {
         let mut constant_words = 0usize;
 
         for (at, constant) in constants.iter().enumerate() {
-            let ty = verifier.constant(at, constant)?;
+            let ty = verifier
+                .constant(constant)
+                .map_err(|e| e.context(Message::AtConstant { at: count(at) }))?;
             verifier.constant_types.push(ty);
             constant_at.push((words(constant_words)?, words(constant.len())?));
             constant_words = constant_words.saturating_add(constant.words());
@@ -382,30 +369,31 @@ impl Program {
         let mut global_at = Vec::with_capacity(globals.len());
         let mut global_words = 0usize;
 
-        for global in &globals {
+        for (at, global) in globals.iter().enumerate() {
+            let at_global = |e: StoreError| e.context(Message::AtGlobal { at: count(at) });
+
             if !is_value_name(&global.name) || !names.insert(global.name.as_str()) {
-                return Err(format!("global {:?} is invalid or repeated", global.name));
+                return Err(at_global(Invalid::BadGlobal.into()));
             }
 
-            verifier.known(global.ty)?;
+            verifier.known(global.ty).map_err(at_global)?;
             global_at.push(words(global_words)?);
             global_words = global_words.saturating_add(types.width(global.ty));
         }
 
         let mut signatures = HashSet::new();
 
-        for function in &functions {
+        for (at, function) in functions.iter().enumerate() {
+            let at_function = |e: StoreError| e.context(Message::AtFunction { at: count(at) });
+
             if !is_value_name(&function.name)
                 || !signatures.insert((function.name.as_str(), function.params.as_slice()))
             {
-                return Err(format!(
-                    "function {:?} is invalid or repeated",
-                    function.name
-                ));
+                return Err(at_function(Invalid::BadFunction.into()));
             }
 
             for ty in function.params.iter().chain([&function.ret]) {
-                verifier.known(*ty)?;
+                verifier.known(*ty).map_err(at_function)?;
             }
         }
 
@@ -437,8 +425,14 @@ impl Program {
     }
 }
 
-fn words(n: usize) -> Result<u32, String> {
-    u32::try_from(n).map_err(|_| "it uses too much memory to count".to_owned())
+fn words(n: usize) -> Result<u32, StoreError> {
+    u32::try_from(n).map_err(|_| Invalid::TooMuchToCount.into())
+}
+
+/// An index into stored parts, which have fewer than `u32::MAX` once they
+/// decode, as a message holds it.
+fn count(at: usize) -> u32 {
+    u32::try_from(at).unwrap_or(u32::MAX)
 }
 
 struct Verifier<'a> {
@@ -447,24 +441,24 @@ struct Verifier<'a> {
 }
 
 impl Verifier<'_> {
-    fn known(&self, ty: TypeId) -> Result<&TypeNode, String> {
+    fn known(&self, ty: TypeId) -> Result<&TypeNode, StoreError> {
         self.types
             .get(ty)
-            .ok_or_else(|| format!("type {} is not in its table", ty.0))
+            .ok_or_else(|| Invalid::UnknownType.into())
     }
 
-    fn find(&self, node: TypeNode) -> Result<TypeId, String> {
+    fn find(&self, node: TypeNode) -> Result<TypeId, StoreError> {
         self.types
             .find(&node)
-            .ok_or_else(|| format!("{node:?} is not in its type table"))
+            .ok_or_else(|| Invalid::MissingType.into())
     }
 
-    fn constant(&self, at: usize, constant: &Constant) -> Result<TypeId, String> {
+    fn constant(&self, constant: &Constant) -> Result<TypeId, StoreError> {
         match constant {
             Constant::String(_) => self.find(TypeNode::String),
             Constant::List { entry, items } => {
                 if items.is_empty() {
-                    return Err(format!("constant {at} is an empty list"));
+                    return Err(Invalid::EmptyConstantList.into());
                 }
 
                 self.known(*entry)?;
@@ -476,11 +470,11 @@ impl Verifier<'_> {
                         Scalar::Const(c) => *usize::try_from(*c)
                             .ok()
                             .and_then(|c| self.constant_types.get(c))
-                            .ok_or_else(|| format!("constant {at} refers to a later constant"))?,
+                            .ok_or(Invalid::ConstantRefersLater)?,
                     };
 
                     if ty != *entry {
-                        return Err(format!("constant {at} has an entry of another type"));
+                        return Err(Invalid::ConstantEntryMistyped.into());
                     }
                 }
 
@@ -495,7 +489,7 @@ impl Verifier<'_> {
         globals: &HashMap<u32, TypeId>,
         functions: &[HostFunction],
         result: TypeId,
-    ) -> Result<Memory, String> {
+    ) -> Result<Memory, StoreError> {
         let int = self.find(TypeNode::Int).ok();
         let bool = self.find(TypeNode::Bool).ok();
 
@@ -510,28 +504,31 @@ impl Verifier<'_> {
         let mut targets = BTreeMap::<usize, Vec<TypeId>>::new();
 
         for (at, instr) in code.iter().enumerate() {
-            let fail = |what: &str| format!("instruction {at} ({instr:?}) {what}");
+            let fail = |invalid: Invalid| {
+                StoreError::from(invalid).context(Message::AtInstruction { pc: count(at) })
+            };
 
             if let Some(expected) = targets.remove(&at)
                 && expected != stack.stack
             {
-                return Err(fail("is reached with two different stacks"));
+                return Err(fail(Invalid::TwoStacks));
             }
 
             let need = |ty: Option<TypeId>, want: Option<TypeId>| match ty {
-                None => Err(fail("pops an empty stack")),
+                None => Err(fail(Invalid::PopsEmpty)),
                 Some(ty) if Some(ty) == want => Ok(()),
-                Some(_) => Err(fail("finds an operand of the wrong type")),
+                Some(_) => Err(fail(Invalid::WrongOperand)),
             };
 
             let push = match *instr {
                 Instr::Int(_) => self.find(TypeNode::Int)?,
                 Instr::Bool(_) => self.find(TypeNode::Bool)?,
-                Instr::Const(c) => *index(&self.constant_types, c)
-                    .ok_or_else(|| fail("names a constant there is not"))?,
+                Instr::Const(c) => {
+                    *index(&self.constant_types, c).ok_or_else(|| fail(Invalid::NoSuchConstant))?
+                }
                 Instr::Global { at, ty } => {
                     if globals.get(&at) != Some(&ty) {
-                        return Err(fail("names a global there is not"));
+                        return Err(fail(Invalid::NoSuchGlobal));
                     }
 
                     ty
@@ -559,7 +556,7 @@ impl Verifier<'_> {
                     let left = stack.pop();
 
                     if left.is_none() || left != right || (left != int && left != bool) {
-                        return Err(fail("compares other than two Ints or two Bools"));
+                        return Err(fail(Invalid::MixedCompare));
                     }
 
                     self.find(TypeNode::Bool)?
@@ -572,23 +569,23 @@ impl Verifier<'_> {
                         .ok()
                         .and_then(|skip| at.checked_add(skip)?.checked_add(1))
                         .filter(|target| *target <= code.len())
-                        .ok_or_else(|| fail("jumps past the end"))?;
+                        .ok_or_else(|| fail(Invalid::JumpPastEnd))?;
 
                     let mut landing = stack.stack.clone();
                     landing.extend(top);
 
                     if targets.get(&target).is_some_and(|other| *other != landing) {
-                        return Err(fail("jumps where another jump lands with another stack"));
+                        return Err(fail(Invalid::JumpsDisagree));
                     }
 
                     targets.insert(target, landing);
                     continue;
                 }
                 Instr::Field { at, ty } => {
-                    let record = stack.pop().ok_or_else(|| fail("pops an empty stack"))?;
+                    let record = stack.pop().ok_or_else(|| fail(Invalid::PopsEmpty))?;
 
                     let Some(TypeNode::Record(fields)) = self.types.get(record) else {
-                        return Err(fail("reads a field of other than a record"));
+                        return Err(fail(Invalid::FieldOfNonRecord));
                     };
 
                     let at = usize::try_from(at).unwrap_or(usize::MAX);
@@ -598,7 +595,7 @@ impl Verifier<'_> {
                         .field_offsets(fields)
                         .any(|(offset, field)| offset == at && field.ty == ty)
                     {
-                        return Err(fail("reads a field the record does not have"));
+                        return Err(fail(Invalid::NoSuchField));
                     }
 
                     ty
@@ -606,12 +603,12 @@ impl Verifier<'_> {
                 Instr::Index(entry) => {
                     need(stack.pop(), int)?;
                     need(stack.pop().and_then(|l| self.entry(l)), Some(entry))
-                        .map_err(|_| fail("indexes other than a list of its entry type"))?;
+                        .map_err(|_| fail(Invalid::IndexNonList))?;
                     entry
                 }
                 Instr::Lookup(entry) => {
                     need(stack.pop().and_then(|l| self.entry(l)), Some(entry))
-                        .map_err(|_| fail("looks up in other than a list of its entry type"))?;
+                        .map_err(|_| fail(Invalid::LookupNonList))?;
                     need(stack.pop(), int)?;
                     entry
                 }
@@ -619,12 +616,12 @@ impl Verifier<'_> {
                     self.known(entry)?;
 
                     if len == 0 {
-                        return Err(fail("makes a list of no entries"));
+                        return Err(fail(Invalid::EmptyList));
                     }
 
                     for _ in 0..len {
                         need(stack.pop(), Some(entry))
-                            .map_err(|_| fail("makes a list of entries it does not find"))?;
+                            .map_err(|_| fail(Invalid::ListEntriesMissing))?;
                     }
 
                     let n = usize::try_from(len).unwrap_or(usize::MAX);
@@ -633,7 +630,7 @@ impl Verifier<'_> {
                 }
                 Instr::Min(n) | Instr::Max(n) => {
                     if n == 0 {
-                        return Err(fail("takes no operands"));
+                        return Err(fail(Invalid::NoOperands));
                     }
 
                     for _ in 0..n {
@@ -651,7 +648,7 @@ impl Verifier<'_> {
                 }
                 Instr::UnwrapOr(option) => {
                     let Some(TypeNode::Option(value)) = self.types.get(option) else {
-                        return Err(fail("unwraps other than an option type"));
+                        return Err(fail(Invalid::UnwrapNonOption));
                     };
 
                     need(stack.pop(), Some(*value))?;
@@ -660,7 +657,7 @@ impl Verifier<'_> {
                 }
                 Instr::IsSome(option) | Instr::IsNone(option) => {
                     if !matches!(self.types.get(option), Some(TypeNode::Option(..))) {
-                        return Err(fail("tests other than an option type"));
+                        return Err(fail(Invalid::TestNonOption));
                     }
 
                     need(stack.pop(), Some(option))?;
@@ -670,12 +667,12 @@ impl Verifier<'_> {
                     stack
                         .pop()
                         .and_then(|l| self.entry(l))
-                        .ok_or_else(|| fail("takes the length of other than a list"))?;
+                        .ok_or_else(|| fail(Invalid::LenNonList))?;
                     self.find(TypeNode::Int)?
                 }
                 Instr::Call(f) => {
                     let function =
-                        index(functions, f).ok_or_else(|| fail("calls a function there is not"))?;
+                        index(functions, f).ok_or_else(|| fail(Invalid::NoSuchFunction))?;
 
                     for param in function.params.iter().rev() {
                         need(stack.pop(), Some(*param))?;
@@ -691,18 +688,18 @@ impl Verifier<'_> {
         if let Some(expected) = targets.remove(&code.len())
             && expected != stack.stack
         {
-            return Err("a jump lands at the end with another stack".to_owned());
+            return Err(Invalid::EndStackDisagrees.into());
         }
 
         if !targets.is_empty() {
-            return Err("a jump lands inside nothing".to_owned());
+            return Err(Invalid::JumpIntoNothing.into());
         }
 
         if stack.stack != [result] {
-            return Err(format!(
-                "it ends with {} values on the stack, not one of its result type",
-                stack.stack.len()
-            ));
+            return Err(Invalid::NotOneResult {
+                values: u64::try_from(stack.stack.len()).unwrap_or(u64::MAX),
+            }
+            .into());
         }
 
         Ok(Memory {

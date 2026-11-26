@@ -1,6 +1,7 @@
 #![allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
 use crate::error::ErrorKind;
+use crate::message::Message;
 use crate::*;
 
 fn env() -> Environment {
@@ -453,7 +454,7 @@ fn id(n: u32) -> NodeId {
 #[test]
 fn tampered_structures_are_refused() {
     let invalid = |bytes: Vec<u8>| match Structure::from_bytes(&bytes) {
-        Err(LoadError::Invalid(e)) => e,
+        Err(e) if matches!(e.message(), Message::Invalid(..)) => format!("{e:#}"),
         other => panic!("{other:?}"),
     };
 
@@ -469,7 +470,10 @@ fn tampered_structures_are_refused() {
 
     // A part past the end.
     let e = invalid(stored_with(vec![neg(5)], 0));
-    assert_eq!(e, "node #0 has a part #5 past the end");
+    assert_eq!(
+        e,
+        "the node has a part past the end: at node #0: while reading a stored structure"
+    );
 
     // A part used twice.
     let both = Node::Binary {
@@ -479,47 +483,53 @@ fn tampered_structures_are_refused() {
     };
     assert_eq!(
         invalid(stored_with(vec![leaf.clone(), both], 1)),
-        "node #0 is a part twice"
+        "the node is a part twice: at node #0: while reading a stored structure"
     );
 
     // A cycle away from the root, which is then unreachable.
     assert_eq!(
         invalid(stored_with(vec![leaf.clone(), neg(2), neg(1)], 0)),
-        "some nodes are not part of the expression"
+        "some nodes are not part of the expression: while reading a stored structure"
     );
 
     // The root as a part of itself.
     assert_eq!(
         invalid(stored_with(vec![neg(0)], 0)),
-        "node #0 is a part twice"
+        "the node is a part twice: at node #0: while reading a stored structure"
     );
 
     // An unused node.
     assert_eq!(
         invalid(stored_with(vec![leaf.clone(), leaf.clone()], 0)),
-        "some nodes are not part of the expression"
+        "some nodes are not part of the expression: while reading a stored structure"
     );
 
     // A root past the end.
     assert_eq!(
         invalid(stored_with(vec![leaf.clone()], 3)),
-        "the root is past the end"
+        "the root is past the end: while reading a stored structure"
     );
 
     // No nodes at all.
-    assert_eq!(invalid(stored_with(vec![], 0)), "the root is past the end");
+    assert_eq!(
+        invalid(stored_with(vec![], 0)),
+        "the root is past the end: while reading a stored structure"
+    );
 
     // Another format, and bytes that are not a structure.
     let mut bytes = stored_with(vec![leaf], 0);
     bytes[0] = 7;
     assert!(matches!(
-        Structure::from_bytes(&bytes),
-        Err(LoadError::Format(_) | LoadError::Decode(_))
+        Structure::from_bytes(&bytes).map_err(|e| e.message().clone()),
+        Err(Message::WrongFormat { .. } | Message::NotDecoded)
     ));
-    assert!(matches!(
-        Structure::from_bytes(&[1, 2, 3]),
-        Err(LoadError::Decode(_))
-    ));
+    let error = Structure::from_bytes(&[1, 2, 3]).unwrap_err();
+    assert_eq!(*error.message(), Message::NotDecoded);
+    assert_eq!(
+        format!("{error:#}"),
+        "the bytes do not decode: while reading a stored structure"
+    );
+    assert!(std::error::Error::source(&error).is_some());
 }
 
 fn stored_with(nodes: Vec<Node>, root: u32) -> Vec<u8> {

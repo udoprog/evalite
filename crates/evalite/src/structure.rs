@@ -11,6 +11,7 @@ use crate::check::compile_tree_debug;
 use crate::debug::DebugInfo;
 use crate::env::Environment;
 use crate::error::{ErrorKind, ParseError};
+use crate::message::{Invalid, Message, StoreError};
 use crate::parser::{Options, Tree, parse_with};
 use crate::program::Program;
 use crate::syntax::{Syntax, unescape};
@@ -268,34 +269,6 @@ impl fmt::Display for EditError {
 }
 
 impl std::error::Error for EditError {}
-
-/// Why stored bytes are not a structure.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum LoadError {
-    Encode(String),
-    Decode(String),
-    /// A structure stored by another version of evalite.
-    Format(u32),
-    /// The bytes decode, but their nodes are not one tree.
-    Invalid(String),
-}
-
-impl fmt::Display for LoadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Encode(e) => write!(f, "the structure could not be stored: {e}"),
-            Self::Decode(e) => write!(f, "these bytes are not a stored structure: {e}"),
-            Self::Format(v) => write!(
-                f,
-                "the structure was stored in format {v}, this evalite reads format {FORMAT}"
-            ),
-            Self::Invalid(e) => write!(f, "the stored structure is not valid: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for LoadError {}
 
 /// Why a structure does not compile, and at which node.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -654,9 +627,9 @@ impl Structure {
 
     /// The stored form, which [`Structure::from_bytes`] reads. Unused
     /// nodes are left out.
-    pub fn to_bytes(&self) -> Result<Vec<u8>, LoadError> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, StoreError> {
         let (nodes, root) = self.compact().ok_or_else(|| {
-            LoadError::Encode("the structure's nodes are not one tree".to_owned())
+            StoreError::from(Invalid::NotOneTree).context(Message::StoringStructure)
         })?;
 
         let stored = Stored {
@@ -665,30 +638,41 @@ impl Structure {
             root,
         };
 
-        musli::storage::to_vec(&stored).map_err(|e| LoadError::Encode(e.to_string()))
+        musli::storage::to_vec(&stored).map_err(|e| {
+            StoreError::new(Message::CannotEncode)
+                .with_source(e.to_string())
+                .context(Message::StoringStructure)
+        })
     }
 
     /// Read a stored structure, checking that its nodes are one tree.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
-        let stored: Stored =
-            musli::storage::from_slice(bytes).map_err(|e| LoadError::Decode(e.to_string()))?;
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, StoreError> {
+        let stored: Stored = musli::storage::from_slice(bytes).map_err(|e| {
+            StoreError::new(Message::NotDecoded)
+                .with_source(e.to_string())
+                .context(Message::DecodingStructure)
+        })?;
 
         if stored.format != FORMAT {
-            return Err(LoadError::Format(stored.format));
+            return Err(StoreError::new(Message::WrongFormat {
+                found: stored.format,
+                reads: FORMAT,
+            })
+            .context(Message::DecodingStructure));
         }
 
         let mut parents = vec![None; stored.nodes.len()];
 
         for (at, node) in stored.nodes.iter().enumerate() {
-            let at = NodeId(u32::try_from(at).map_err(|_| invalid("too many nodes"))?);
+            let at = NodeId(u32::try_from(at).map_err(|_| invalid(Invalid::TooManyNodes, None))?);
 
             for child in node.children() {
                 let slot = parents
                     .get_mut(child.index())
-                    .ok_or_else(|| invalid(format!("node {at} has a part {child} past the end")))?;
+                    .ok_or_else(|| invalid(Invalid::PartPastEnd, Some(at)))?;
 
                 if slot.is_some() || child == stored.root {
-                    return Err(invalid(format!("node {child} is a part twice")));
+                    return Err(invalid(Invalid::PartTwice, Some(child)));
                 }
 
                 *slot = Some(at);
@@ -696,13 +680,13 @@ impl Structure {
         }
 
         if stored.nodes.get(stored.root.index()).is_none() {
-            return Err(invalid("the root is past the end"));
+            return Err(invalid(Invalid::RootPastEnd, None));
         }
 
         // Each node but the root has one parent, so reaching every node
         // from the root means there is no cycle.
         if post_order(&stored.nodes, stored.root).len() != stored.nodes.len() {
-            return Err(invalid("some nodes are not part of the expression"));
+            return Err(invalid(Invalid::UnusedNodes, None));
         }
 
         Ok(Self {
@@ -836,8 +820,16 @@ impl fmt::Display for Structure {
     }
 }
 
-fn invalid(message: impl Into<String>) -> LoadError {
-    LoadError::Invalid(message.into())
+/// A stored structure that is not one tree, at `node` when about one.
+#[cold]
+fn invalid(invalid: Invalid, node: Option<NodeId>) -> StoreError {
+    let mut error = StoreError::from(invalid);
+
+    if let Some(node) = node {
+        error = error.context(Message::AtNode { node: node.0 });
+    }
+
+    error.context(Message::DecodingStructure)
 }
 
 /// The nodes of the expression at `root`, parts before what holds them.
