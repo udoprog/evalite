@@ -128,7 +128,9 @@ impl Diagnostic {
                     open, close_span, ..
                 },
             ) => Some((ParseText::Expected(*open), *close_span)),
-            (1, ErrorKind::RepeatedKey { first, .. }) => Some((ParseText::FirstKey, *first)),
+            (1, ErrorKind::RepeatedKey { first, .. } | ErrorKind::RepeatedField { first, .. }) => {
+                Some((ParseText::FirstKey, *first))
+            }
             _ => None,
         }
     }
@@ -142,7 +144,9 @@ impl Diagnostic {
     /// How many labels it has.
     pub(crate) fn label_count(&self) -> usize {
         match &*self.kind {
-            ErrorKind::Unclosed { .. } | ErrorKind::RepeatedKey { .. } => 2,
+            ErrorKind::Unclosed { .. }
+            | ErrorKind::RepeatedKey { .. }
+            | ErrorKind::RepeatedField { .. } => 2,
             _ => 1,
         }
     }
@@ -519,6 +523,20 @@ pub(crate) enum ErrorKind {
     /// `{}` where no map type is expected, or where the type given is
     /// expected, which is not a map.
     EmptyMap(Option<Type>),
+    /// A key of a `{...}` that is a name where the first is a literal, or
+    /// the other way around: names make a record, literals a map.
+    RecordKeyMixed {
+        /// Whether the first key is a name, so it is a record.
+        record: bool,
+    },
+    /// A record literal's field given twice; `first` is where it is first
+    /// given.
+    RepeatedField { field: String, first: Span<u32> },
+    /// A record literal's field that the record type expected of it lacks.
+    ExtraField { field: String, expected: Type },
+    /// The fields of the record type expected of a record literal that it
+    /// does not give, in name order.
+    MissingFields { fields: Vec<String>, expected: Type },
     /// `None` where no option type is expected, or where the type given
     /// is expected, which is not an option.
     NoneType(Option<Type>),
@@ -946,6 +964,30 @@ impl fmt::Display for Diagnostic {
                 f,
                 "the value of entry {index} of this map is {found}, but the first is {expected}, a map's values have one type"
             ),
+            ErrorKind::RecordKeyMixed { record: true } => f.write_str(
+                "this key is no name, but the first is, which makes this a record, whose fields are all names, such as `{a: 1, b: 2}`",
+            ),
+            ErrorKind::RecordKeyMixed { record: false } => f.write_str(
+                "this key is a name, but the first is a literal, which makes this a map, whose keys are all integer or string literals, such as `{\"a\": 1}`",
+            ),
+            ErrorKind::RepeatedField { field, .. } => {
+                write!(f, "the field `{field}` is given twice in this record")
+            }
+            ErrorKind::ExtraField { field, expected } => {
+                write!(f, "a {expected} is expected here, which has no field `{field}`")
+            }
+            ErrorKind::MissingFields { fields, expected } => {
+                let names = fields
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let noun = if fields.len() == 1 { "field" } else { "fields" };
+                write!(
+                    f,
+                    "a {expected} is expected here, but this record lacks its {noun} {names}"
+                )
+            }
             ErrorKind::EmptyMap(None) => f.write_str(
                 "an empty map `{}` needs a type from where it is used, such as beside a typed entry in a list or as an argument that takes a map, or give it at least one entry",
             ),

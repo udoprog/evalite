@@ -70,7 +70,8 @@ fn path() {
         ]
     );
 
-    assert_eq!(texts("Int:")[0], (Ident, "Int"));
+    // Before one `:` it is a record literal's field.
+    assert_eq!(texts("Int:")[0], (Member, "Int"));
 }
 
 #[test]
@@ -219,4 +220,24 @@ fn maps() {
     );
     covers("{1: {2: a}}[1][2]");
     covers("{: } :: : {");
+}
+
+#[test]
+fn records() {
+    use Class::*;
+
+    // A record literal's field is a member, its value a name.
+    assert_eq!(
+        texts("{boxes : a}"),
+        [
+            (Punctuation, "{"),
+            (Member, "boxes"),
+            (Whitespace, " "),
+            (Punctuation, ":"),
+            (Whitespace, " "),
+            (Ident, "a"),
+            (Punctuation, "}"),
+        ]
+    );
+    covers("{a: {b: c}}.a.b");
 }

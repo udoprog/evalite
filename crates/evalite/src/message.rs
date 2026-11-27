@@ -243,6 +243,9 @@ pub(crate) enum Invalid {
     MapKeysMistyped,
     MapKeysUnsorted,
     MapEntriesMissing,
+    MakeNonRecord,
+    EmptyRecord,
+    RecordFieldsMissing,
     NoSuchFunction,
     EndStackDisagrees,
     JumpIntoNothing,
@@ -316,6 +319,11 @@ impl fmt::Display for Invalid {
                 "the instruction makes a map of keys that are not sorted and unique"
             }
             Self::MapEntriesMissing => "the instruction makes a map of entries it does not find",
+            Self::MakeNonRecord => "the instruction makes a record of other than a record type",
+            Self::EmptyRecord => "the instruction makes a record of no fields",
+            Self::RecordFieldsMissing => {
+                "the instruction makes a record of fields it does not find"
+            }
             Self::NoSuchFunction => "the instruction calls a function there is not",
             Self::EndStackDisagrees => "a jump lands at the end with another stack",
             Self::JumpIntoNothing => "a jump lands inside nothing",

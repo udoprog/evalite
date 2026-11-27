@@ -34,7 +34,8 @@ pub enum Class {
     Ident,
     /// A type's name before `::`, such as `Int` in `Int::min`.
     Type,
-    /// A name after a `.`: a method or a field.
+    /// A name after a `.`, a method or a field, or before a `:`, a
+    /// record literal's field.
     Member,
     /// An integer literal.
     Number,
@@ -94,7 +95,8 @@ pub fn highlight(source: &str) -> impl Iterator<Item = Token> + '_ {
                     Syntax::StringToken => Class::String,
                     Syntax::True | Syntax::False => Class::Keyword,
                     Syntax::NameToken if after_dot => Class::Member,
-                    Syntax::NameToken if before_path(&lexer) => Class::Type,
+                    Syntax::NameToken if before(&lexer, Syntax::Colon) => Class::Member,
+                    Syntax::NameToken if before(&lexer, Syntax::ColonColon) => Class::Type,
                     Syntax::NameToken => Class::Ident,
                     Syntax::OpenParen
                     | Syntax::CloseParen
@@ -129,14 +131,14 @@ pub fn highlight(source: &str) -> impl Iterator<Item = Token> + '_ {
     })
 }
 
-/// Whether `::` is the next token past whitespace.
-fn before_path(lexer: &Lexer<'_>) -> bool {
+/// Whether `kind` is the next token past whitespace.
+fn before(lexer: &Lexer<'_>, kind: Syntax) -> bool {
     let mut lexer = lexer.clone();
 
     loop {
         match lexer.next() {
             Ok(Some(token)) if token.kind == Syntax::Whitespace => {}
-            Ok(Some(token)) => return token.kind == Syntax::ColonColon,
+            Ok(Some(token)) => return token.kind == kind,
             _ => return false,
         }
     }

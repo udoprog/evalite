@@ -337,6 +337,17 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             Some(Type::map(Type::int(), Type::bool())),
             vec!["{_: _}", "_!"],
         ),
+        // A record literal's values, by its field of the record its place
+        // takes, not by a sibling; its keys are names, not literals.
+        ("{a: 1, b: _}", 0, None, ANY.to_vec()),
+        (
+            "{b: 1, a: _}",
+            0,
+            Some(Type::record([("a", Type::bool()), ("b", Type::int())])),
+            BOOL.to_vec(),
+        ),
+        ("count({boxes: _, count: [1]})", 0, None, INT.to_vec()),
+        ("{a: 1, b: _}", 0, Some(Type::int()), vec![]),
         // Member holes, by the receiver's type and what the place takes.
         (
             "bonus._",

@@ -97,7 +97,7 @@ Comparisons do not chain: `a < b < c` is an error.
 | `String` | Literals with only `\"` and `\\` escapes. No string operators. Strings are used as arguments, map keys and record indexes. |
 | `List<T>` | `[a, b]`: entries of one type. `[]` takes its type from context, like `None` (empty literals, below). |
 | `Option<T>` | Comes from declared names and functions, `list.get(i)` and `map.get(k)`. It nests: `Option<Option<Int>>` is `None`, `Some(None)` or `Some(Some(1))`. |
-| records | `{boxes: Int, "Brawl (bar)": Int}`, with fields sorted by name. Read with `.boxes`, or `["Brawl (bar)"]` for a field that isn't a valid name. Expressions have no record literals. |
+| records | `{boxes: Int, "Brawl (bar)": Int}`, with fields sorted by name. Read with `.boxes`, or `["Brawl (bar)"]` for a field that isn't a valid name. Written in expressions as `{boxes: 7}`, below. |
 | `Map<K, V>` | `K` is `Int` or `String`, which is checked at declaration (`DeclareError`) and in stored tables. Read with `m[k]` (a run error when missing) or `m.get(k)`. |
 
 **Option literals:** `Some(e)` is an `Option<T>` of `e`'s `T`. `None` takes
@@ -227,6 +227,44 @@ written once as `sig::Shape` with one type variable `T`:
 - Structures get a map node (with a structure `FORMAT` bump), and completion
   offers `{_: _}`.
 
+**Record literals** (be43c072; the user answered that bare-name keys make a
+record):
+
+- `{boxes: 7, count: [1]}`, whose keys are names, is a record
+  `{boxes: Int, count: List<Int>}`, fields sorted by name. Integer or string
+  keys (`{"a": 1}`, `{1: x}`) still make a map. The first key decides: a
+  name makes a record, anything else a map, and a key of the other kind is
+  an error (`RecordKeyMixed`). So `{"a": 1}` is a map, never a record, and a
+  field that isn't a name cannot be written (an accepted gap: such a record
+  comes only from the environment). A key is a name only as written: the
+  key `wits` is the field `wits`, not the value of the global `wits`, which
+  no map key could be either (keys are literals).
+- A field given twice is an error pointing at both (`RepeatedField`).
+- With an expected record type (3.3), each field's value expects that
+  record's field of its name, so `{a: None}` types where a record is
+  expected (`[specialties, {brawl: None, athletics: 1}]`). The literal's
+  field names are then checked against it: each extra field is reported at
+  its key (`ExtraField`), the missing ones once at the literal
+  (`MissingFields`), and the literal gets the error type, so the context does
+  not report it again. A field's value of the wrong type is still reported by
+  the context (as an argument, list entry, ...), as before.
+- The checker sorts the fields once (O(n log n), a stable sort that finds
+  repeats in one pass), enters the values in name order and emits
+  `Instr::Record(ty)`, which pops them, the first deepest, into a new heap
+  block. **Values are evaluated in name order**, as a map's are in key order.
+  The verifier checks the type is a record of at least one field and pops one
+  value of each field's type. Record literals took the stored program
+  `FORMAT` to 11.
+- Structures need no new node: a record literal is a map node whose keys are
+  `Name` nodes, and its text compiles as above. A structure's hole `_` in a
+  key's place is a hole there, while in text `{_: 1}` is a record of the
+  field `_`.
+- Completion: a record literal's value hole wants the field of the record its
+  place takes (`Up::RecordField`), not a sibling's type; a key hole in it is
+  offered no map key literals. Field names are not yet offered at a key hole
+  (a follow-up).
+- Highlighting: a name before a single `:` is a `Member`, as a field.
+
 ## 3. Pipeline
 
 ```text
@@ -329,6 +367,8 @@ two have one checker and identical errors (section 9).
     or a *sibling slot*. Only `None`, `[]` and `{}` need it; every other expression is
     still checked against its context where the context takes it, so a
     mismatch reads as before;
+  - a record literal's field values expect the expected record's field of
+    their name, found by binary search in the interned record;
   - a sibling slot (`Compiler::siblings`) is one group: a list's entries, a
     map's values (in key order, as they are compiled), the operands of `==`.
     `Work::Settle` after each sibling gives the slot the first non-error
@@ -636,6 +676,7 @@ The `Instr` enum in `program.rs`:
 | `Field { at, ty }` | pop a record reference, push its field at offset `at` |
 | `Index(entry)`, `Get(entry)` | list indexing: an error, or an option, when out of range |
 | `List { len, entry }` | move the top `len` entries from the stack into a new heap block |
+| `Record(ty)` | move the top `record_words` words, its fields in name order, into a new heap block, and push its reference |
 | `Min(n)`, `Max(n)`, `Clamp` | `Int` folds. `Clamp` errors when low > high |
 | `UnwrapOr(opt)`, `Unwrap(opt)`, `IsSome(opt)`, `IsNone(opt)` | options, tagged or niche, decided by `opt`'s type |
 | `Some(opt)`, `None(opt)` | make an option of type `opt`: `Some` puts a present tag below its value when `opt` is tagged and is a no-op in a niche; `None` pushes an absent tag and zeros, or `Word::NONE` |
@@ -1011,11 +1052,11 @@ the number alone and checks it before it decodes the body, so bytes of a
 later format whose body changed layout are refused as `WrongFormat`, not
 `NotDecoded`.
 
-**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 10 (4 added `Map`,
+**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 11 (4 added `Map`,
 5 map literals, 6 each global's slot and the layout fingerprint, 7 dropped
 `Memory::globals`, as a program's values are in the store, not the
 machine, 8 moved the number ahead of the body, 9 added `Some` and `None`, 10 added
-`Empty`). The body is
+`Empty`, 11 added `Record`). The body is
 `Stored { types, constants, globals, functions, code, result, memory, layout }`,
 where each global is (name, type, slot). `layout` is last, so a length
 prefix's offset doesn't depend on its varint width.
@@ -1174,7 +1215,9 @@ stored form's, so variants keep their order.
      still fit;
    - a field or method name of the receiver;
    - an index (Int for lists, the key type for maps, String for records);
-   - a list entry, from a sibling's type.
+   - a list entry, from a sibling's type;
+   - a record literal's value, from the field of its name of the record the
+     literal's place takes.
 
    Passing through lists without a typed sibling, `[_]` receivers and `!`
    records `Up` steps (`Entry`, `ListOf`, `OptionOf`), which are applied back
@@ -1214,7 +1257,8 @@ only for the completion applied. A field that isn't a valid name becomes
 **Highlighting** (`highlight.rs`, public module): the lexer's tokens are
 classified (keyword, ident, type, member, number, string, operator,
 punctuation, whitespace, error) over the whole source, with rejected text as
-`Error`. It is linear.
+`Error`. A name is a member after `.` or before a single `:` (a record
+literal's field), a type before `::`. It is linear.
 
 ### 9.3 References (`references.rs`, landed in 5554ba4, b128c319)
 

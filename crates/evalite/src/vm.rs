@@ -715,6 +715,33 @@ impl<'a> Run<'a> {
                 self.sp = top;
                 Word::reference(at, n)?
             }
+            Instr::Record(record) => {
+                let Some(TypeNode::Record(fields)) = types.get(record) else {
+                    return Err(fault(Fault::NoSuchType));
+                };
+
+                // Its fields are above each other on the stack in name
+                // order, as they lie in the record.
+                self.spend(fields.len())?;
+                let words = types.record_words(fields);
+                let top = self
+                    .sp
+                    .checked_sub(words)
+                    .ok_or_else(|| fault(Fault::ListPastStack))?;
+                let from = self
+                    .stack_base
+                    .checked_add(top)
+                    .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
+                self.heap = self
+                    .heap
+                    .checked_sub(words)
+                    .ok_or_else(|| fault(Fault::UndeclaredHeap))?;
+                let at = self.alloc(words)?;
+
+                self.copy(from, words, at)?;
+                self.sp = top;
+                Word::reference(at, words)?
+            }
             Instr::Min(n) | Instr::Max(n) => {
                 self.spend(size(n)?)?;
                 let mut best = self.pop_int()?;

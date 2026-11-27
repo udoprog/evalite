@@ -7,7 +7,7 @@ use crate::message::{Invalid, Message, StoreError};
 use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 10;
+pub(crate) const FORMAT: u32 = 11;
 
 /// How many nodes the globals' and host functions' types may have
 /// together, each written out in full, as [`Program::globals`] and
@@ -117,6 +117,9 @@ pub(crate) enum Instr {
     None(TypeId),
     /// An empty list or map of this type, `[]` or `{}`.
     Empty(TypeId),
+    /// Make a record of this record type, of at least one field, on the
+    /// heap: its fields' values, popped in name order, the first deepest.
+    Record(TypeId),
 }
 
 /// A value in a constant list.
@@ -760,6 +763,23 @@ impl Verifier<'_> {
                     let stride = self.types.width(*value).saturating_add(1);
                     heap = heap.saturating_add(n.saturating_mul(stride));
                     map
+                }
+                Instr::Record(record) => {
+                    let Some(TypeNode::Record(fields)) = self.types.get(record) else {
+                        return Err(fail(Invalid::MakeNonRecord));
+                    };
+
+                    if fields.is_empty() {
+                        return Err(fail(Invalid::EmptyRecord));
+                    }
+
+                    for field in fields.iter().rev() {
+                        need(stack.pop(), Some(field.ty))
+                            .map_err(|_| fail(Invalid::RecordFieldsMissing))?;
+                    }
+
+                    heap = heap.saturating_add(self.types.record_words(fields));
+                    record
                 }
                 Instr::Min(n) | Instr::Max(n) => {
                     if n == 0 {

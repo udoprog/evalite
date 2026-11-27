@@ -316,6 +316,8 @@ enum Up {
     MapValue,
     /// A key of a map.
     MapKey,
+    /// The value of a record literal's field of this name.
+    RecordField(String),
     /// A list or map indexed by a key of this type, when it is known.
     Indexed(Option<Type>),
     /// An option unwrapped with `!`.
@@ -463,6 +465,27 @@ impl Want {
                     .into_iter()
                     .filter_map(|p| match p {
                         Pattern::Type(Type(Kind::Map(_, v))) => Some(Pattern::Type(*v)),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The field `name` of the records this takes.
+    fn record_field(self, name: &str) -> Self {
+        match self {
+            Self::Any => Self::Any,
+            Self::OneOf(patterns) if patterns.iter().any(|p| matches!(p, Pattern::Record)) => {
+                Self::Any
+            }
+            Self::OneOf(patterns) => Self::OneOf(
+                patterns
+                    .into_iter()
+                    .filter_map(|p| match p {
+                        Pattern::Type(Type(Kind::Record(mut fields))) => {
+                            fields.remove(name).map(Pattern::Type)
+                        }
                         _ => None,
                     })
                     .collect(),
@@ -859,6 +882,26 @@ impl Structure {
                         }
                     }
                 }
+                Node(Repr::Map { entries }) if self.is_record(entries) => {
+                    // A record's value is its field of the record its
+                    // place takes; its key a name of no type.
+                    let field =
+                        entries.iter().find(|(_, v)| *v == at).and_then(|(k, _)| {
+                            match self.get(*k) {
+                                Some(Node(Repr::Name(name))) => Some(name.clone()),
+                                _ => None,
+                            }
+                        });
+
+                    match field {
+                        Some(field) => {
+                            steps_up.push(Up::RecordField(field));
+                            at = parent;
+                            continue;
+                        }
+                        None => Want::Any,
+                    }
+                }
                 Node(Repr::Map { entries }) => {
                     let key = entries.iter().any(|(k, _)| *k == at);
                     let sibling = self.sibling_type(
@@ -886,6 +929,7 @@ impl Structure {
             Up::Entry => want.entry(),
             Up::MapValue => want.map_value(),
             Up::MapKey => want.map_key(),
+            Up::RecordField(field) => want.record_field(&field),
             Up::Indexed(key) => want.indexed(key.as_ref()),
             Up::OptionOf => want.option_of(),
         })
@@ -960,6 +1004,14 @@ impl Structure {
         want
     }
 
+    /// Whether a `{...}` of `entries` is a record literal: its first key
+    /// is a name.
+    fn is_record(&self, entries: &[(NodeId, NodeId)]) -> bool {
+        entries
+            .first()
+            .is_some_and(|(k, _)| matches!(self.get(*k), Some(Node(Repr::Name(_)))))
+    }
+
     /// When node `at` is a map's key, or only under `-`s of one, how many
     /// `-`s it is under.
     fn key_negations(&self, at: NodeId) -> Option<usize> {
@@ -971,7 +1023,8 @@ impl Structure {
 
             match self.get(parent)? {
                 Node(Repr::Map { entries }) => {
-                    return entries.iter().any(|(k, _)| *k == node).then_some(negations);
+                    let key = entries.iter().any(|(k, _)| *k == node);
+                    return (key && !self.is_record(entries)).then_some(negations);
                 }
                 Node(Repr::Unary {
                     op: UnaryOp::Neg, ..

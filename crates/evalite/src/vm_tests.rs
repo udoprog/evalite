@@ -469,6 +469,28 @@ const CASES: &[(&str, &str)] = &[
     ("{1: {}, 2: {3: 4}}[1].len()", "0"),
     ("Some([1]).unwrap_or([])", "[1]"),
     ("[{}, ids][0].len()", "0"),
+    // Record
+    ("{boxes: 2, count: [1, 2]}", "{boxes: 2, count: [1, 2]}"),
+    ("{count: [3], boxes: wits}.boxes", "2"),
+    ("{b: Some(1), a: true}", "{a: true, b: Some(1)}"),
+    ("{a: Some(1), b: 3}.b", "3"),
+    ("{a: Some(1), b: 3}.a", "Some(1)"),
+    ("count({count: [1], boxes: 7})", "7"),
+    (
+        "[specialties, {brawl: None, athletics: 1}][1]",
+        "{athletics: 1, brawl: None}",
+    ),
+    ("[{a: 1}, {a: wits}][1].a", "2"),
+    ("{x: {y: [1]}}.x.y[0]", "1"),
+    ("Some({a: 1})", "Some({a: 1})"),
+    ("{1: {a: 1}, 2: {a: 2}}[2].a", "2"),
+    ("{name: name}.name", "\"Essence\""),
+    ("{track: health}.track.boxes", "1"),
+    ("count({boxes: 3, count: []})", "3"),
+    (
+        "[health, {count: [], boxes: 4}][1]",
+        "{boxes: 4, count: []}",
+    ),
     // Len
     ("levels.len()", "3"),
     ("[1].len()", "1"),
@@ -583,6 +605,7 @@ fn every_instruction_is_covered() {
         Instr::Some(TypeId(0)),
         Instr::None(TypeId(0)),
         Instr::Empty(TypeId(0)),
+        Instr::Record(TypeId(0)),
     ];
 
     let mut seen = HashSet::new();
@@ -2112,7 +2135,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
     let n = |rng: &mut Rng| rng.below(5) as u32;
     let ty = |rng: &mut Rng| TypeId(rng.below(types as usize + 2) as u32);
 
-    match rng.below(39) {
+    match rng.below(40) {
         0 => Instr::Int([0, 1, -1, i64::MIN, i64::MAX][rng.below(5)]),
         1 => Instr::Bool(rng.below(2) == 0),
         2 => Instr::Const(n(rng)),
@@ -2163,6 +2186,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
         35 => Instr::Some(ty(rng)),
         36 => Instr::None(ty(rng)),
         37 => Instr::Empty(ty(rng)),
+        38 => Instr::Record(ty(rng)),
         _ => Instr::Call(n(rng)),
     }
 }
@@ -2203,6 +2227,7 @@ fn nudge(rng: &mut Rng, instr: Instr) -> Instr {
         Instr::Some(ty) => Instr::None(TypeId(d(ty.0))),
         Instr::None(ty) => Instr::Some(TypeId(d(ty.0))),
         Instr::Empty(ty) => Instr::Empty(TypeId(d(ty.0))),
+        Instr::Record(ty) => Instr::Record(TypeId(d(ty.0))),
         Instr::Map { keys, map } if keys % 2 == 0 => Instr::Map { keys: d(keys), map },
         Instr::Map { keys, map } => Instr::Map {
             keys,

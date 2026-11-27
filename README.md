@@ -107,6 +107,11 @@ compiled, and nothing converts implicitly:
   an error.
 - Records, such as `{boxes: Int, count: List<Int>}`: a field is read with
   `.boxes`, or with `["Brawl (bar)"]` when its name is not a plain name.
+  An expression writes one with names as its keys, `{boxes: 7, count: [1]}`,
+  each field once; its values are evaluated in name order. Where a record
+  type is expected, such as an argument, its fields' values are expected
+  to be that record's fields (`{brawl: None, athletics: 1}`), and a field
+  it lacks or has besides is an error.
 - `Map<K, V>`: values by key, the key an `Int` or a `String`, which come
   from a name or a function declared with one, or from a literal such as
   `{1: "a", 0x2A: "b"}` or `{"x": wits}`. `m[k]` is the value of key `k`,

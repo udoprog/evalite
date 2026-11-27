@@ -17,7 +17,7 @@ use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
 use crate::references::{Literal, Recorder, Reference, ReferenceKind};
 use crate::sig::{Mismatch, Shape};
 use crate::syntax::{Syntax, callee, unescape};
-use crate::types::{Held, TypeFault, TypeId, TypeNode, Types, check_type};
+use crate::types::{FieldNode, Held, TypeFault, TypeId, TypeNode, Types, check_type};
 
 type N<'a> = Node<'a, Syntax, crate::parser::Flavor>;
 
@@ -221,6 +221,14 @@ enum Work<'a> {
         keys: u32,
         key: TypeId,
     },
+    /// After a record's values, in name order: `names` are its fields,
+    /// sorted, and where each is named. `want` is the record type expected
+    /// of it, which its fields are checked against.
+    Record {
+        node: N<'a>,
+        names: Vec<(String, Span<u32>)>,
+        want: Option<TypeId>,
+    },
     /// After the parts of an expression already found to be in error: drop
     /// the `usize` values they left and give the expression the error
     /// type.
@@ -250,6 +258,7 @@ impl<'a> Work<'a> {
             | Work::Unwrap(node)
             | Work::List { node, .. }
             | Work::Map { node, .. }
+            | Work::Record { node, .. }
             | Work::Discard(node, _) => *node,
         }
     }
@@ -580,6 +589,7 @@ impl<'a> Compiler<'a> {
                     keys,
                     key,
                 } => self.map_exit(node, &order, keys, key)?,
+                Work::Record { node, names, want } => self.record_exit(node, names, want)?,
                 Work::Discard(node, n) => {
                     self.pop_n(n)?;
                     self.push(self.error, *node.span());
@@ -1798,6 +1808,19 @@ impl<'a> Compiler<'a> {
             return self.contextual(Blank::Map, want, expect, *node.span());
         }
 
+        // Names as keys make a record, literals a map, as the first key
+        // says.
+        let first = parts
+            .iter()
+            .find(|n| n.value() == Syntax::Entry)
+            .and_then(|n| exprs(*n).next());
+
+        if first.is_some_and(|key| key.value() == Syntax::Name) {
+            return self.record(node, &parts, want, work);
+        }
+
+        let literal_first = first.is_some_and(|key| matches!(self.key(key), MapKey::Literal(_)));
+
         let mut entries = Vec::with_capacity(parts.len());
         let mut keys = Vec::with_capacity(parts.len());
         let mut fits = true;
@@ -1818,7 +1841,13 @@ impl<'a> Compiler<'a> {
                 MapKey::Literal(literal) => keys.push((literal, *key.span())),
                 MapKey::Broken => fits = false,
                 MapKey::Other => {
-                    self.report(Diagnostic::new(*key.span(), ErrorKind::MapKeyLiteral));
+                    let kind = if literal_first && key.value() == Syntax::Name {
+                        ErrorKind::RecordKeyMixed { record: false }
+                    } else {
+                        ErrorKind::MapKeyLiteral
+                    };
+
+                    self.report(Diagnostic::new(*key.span(), kind));
                     fits = false;
                 }
             }
@@ -1887,6 +1916,191 @@ impl<'a> Compiler<'a> {
 
         self.push_siblings(work, values, value);
         Ok(())
+    }
+
+    /// A record literal, `{name: value, ...}`: its fields are checked
+    /// here, as names given once each, then its values are compiled in
+    /// name order, each expected to be the field of the record `want`
+    /// expects, if it has it.
+    fn record(
+        &mut self,
+        node: N<'a>,
+        parts: &[N<'a>],
+        want: Option<TypeId>,
+        work: &mut Vec<Work<'a>>,
+    ) -> Result<(), Diagnostic> {
+        let mut fields = Vec::with_capacity(parts.len());
+        let mut values = Vec::with_capacity(parts.len());
+        let mut fits = true;
+
+        for part in parts {
+            if part.value() != Syntax::Entry {
+                fits = false;
+                values.push(*part);
+                continue;
+            }
+
+            let mut exprs = exprs(*part);
+
+            let (Some(key), Some(value)) = (exprs.next(), exprs.next()) else {
+                return Err(internal("a record entry without a key and a value"));
+            };
+
+            values.push(value);
+
+            if key.value() == Syntax::Name {
+                fields.push((self.text(key), *key.span(), value));
+                continue;
+            }
+
+            fits = false;
+
+            // A key with a syntax error inside is reported already.
+            if !matches!(self.key(key), MapKey::Broken) {
+                self.report(Diagnostic::new(
+                    *key.span(),
+                    ErrorKind::RecordKeyMixed { record: true },
+                ));
+            }
+        }
+
+        // The sort is stable, so a field given again follows where it is
+        // first given.
+        fields.sort_by(|a, b| a.0.cmp(b.0));
+
+        for pair in fields.windows(2) {
+            if let [(name, first, _), (again, at, _)] = pair
+                && name == again
+            {
+                fits = false;
+                self.report(Diagnostic::new(
+                    *at,
+                    ErrorKind::RepeatedField {
+                        field: (*name).to_owned(),
+                        first: *first,
+                    },
+                ));
+            }
+        }
+
+        if !fits {
+            // Its values are still checked, then dropped.
+            work.push(Work::Discard(node, values.len()));
+            work.extend(
+                values
+                    .into_iter()
+                    .rev()
+                    .map(|n| Work::Enter(n, Expect::Nothing)),
+            );
+            return Ok(());
+        }
+
+        let want = want.filter(|want| matches!(self.types.get(*want), Some(TypeNode::Record(_))));
+        let mut names = Vec::with_capacity(fields.len());
+        let mut entered = Vec::with_capacity(fields.len());
+
+        for (name, span, value) in fields {
+            let expect = want
+                .and_then(|want| self.types.field_named(want, name))
+                .map_or(Expect::Nothing, |(_, field)| Expect::Type(field.ty));
+            names.push((name.to_owned(), span));
+            entered.push((value, expect));
+        }
+
+        work.push(Work::Record { node, names, want });
+
+        for (value, expect) in entered.into_iter().rev() {
+            work.push(Work::Enter(value, expect));
+        }
+
+        Ok(())
+    }
+
+    /// After a record's values, in name order.
+    fn record_exit(
+        &mut self,
+        node: N<'a>,
+        names: Vec<(String, Span<u32>)>,
+        want: Option<TypeId>,
+    ) -> Result<(), Diagnostic> {
+        let values = self.pop_n(names.len())?;
+        let span = *node.span();
+
+        if self.any_error(&values) {
+            self.push(self.error, span);
+            return Ok(());
+        }
+
+        if let Some(want) = want
+            && !self.fields_fit(want, &names)
+        {
+            self.push(self.error, span);
+            return Ok(());
+        }
+
+        let fields = names
+            .into_iter()
+            .zip(&values)
+            .map(|((name, _), value)| FieldNode { name, ty: value.ty })
+            .collect();
+
+        let ty = self.node(TypeNode::Record(fields), span)?;
+        self.emit(Instr::Record(ty));
+        self.push(ty, span);
+        Ok(())
+    }
+
+    /// Whether `names`, sorted, are the fields of the record type `want`,
+    /// reporting each it lacks and each missing.
+    fn fields_fit(&mut self, want: TypeId, names: &[(String, Span<u32>)]) -> bool {
+        let Some(TypeNode::Record(expected)) = self.types.get(want) else {
+            return true;
+        };
+
+        // Both are sorted by name, so one walk finds what differs.
+        let mut extra = Vec::new();
+        let mut missing = Vec::new();
+        let mut want_fields = expected.iter().peekable();
+
+        for (name, at) in names {
+            while let Some(field) = want_fields.next_if(|f| f.name.as_str() < name.as_str()) {
+                missing.push(field.name.clone());
+            }
+
+            if want_fields.next_if(|f| f.name == *name).is_none() {
+                extra.push((name.clone(), *at));
+            }
+        }
+
+        missing.extend(want_fields.map(|f| f.name.clone()));
+
+        if extra.is_empty() && missing.is_empty() {
+            return true;
+        }
+
+        let expected = self.ty(want);
+
+        for (field, at) in extra {
+            self.report(Diagnostic::new(
+                at,
+                ErrorKind::ExtraField {
+                    field,
+                    expected: expected.clone(),
+                },
+            ));
+        }
+
+        if !missing.is_empty() {
+            self.report(Diagnostic::new(
+                self.span,
+                ErrorKind::MissingFields {
+                    fields: missing,
+                    expected,
+                },
+            ));
+        }
+
+        false
     }
 
     /// Where each of `keys`, in the order they are written, goes in key

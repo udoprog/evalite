@@ -257,6 +257,9 @@ fn same_as_text(structure: &Structure, env: &Environment) {
             // Checked before the text is.
             StructureKind::Hole | StructureKind::InvalidName(_) => {}
         },
+        // A structure's hole is written `_`, which as a record literal's
+        // field is a name in text.
+        (Ok(_), Err(b)) if matches!(b.first().unwrap().kind(), StructureKind::Hole) => {}
         (a, b) => panic!("{text}: text gives {a:?}, structure {b:?}"),
     }
 }
@@ -1202,8 +1205,11 @@ fn maps_compile() {
         Err(message) if message == format!("node {key} is already part of another node")
     ));
 
+    // Names as keys make a record.
+    same_as_text(&s("{wits: 1}"), &env);
+    assert!(s("{wits: 1}").compile(&env).is_ok());
+
     for text in [
-        "{wits: 1}",
         "{1: 1, 0x1: 2}",
         r#"{1: 1, "a": 2}"#,
         "{1: true, 2: 3}",

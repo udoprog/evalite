@@ -2568,7 +2568,7 @@ fn several_errors_in_order() {
 fn map_errors_before_a_syntax_error() {
     let env = env();
 
-    let found = diagnostics_in("[{1: true, 2: 3}, {wits: 1}, (]", &env);
+    let found = diagnostics_in("[{1: true, 2: 3}, {1 + wits: 1}, (]", &env);
     let found = found
         .iter()
         .map(|(m, at)| (m.as_str(), at.as_str()))
@@ -2583,7 +2583,7 @@ fn map_errors_before_a_syntax_error() {
             ),
             (
                 "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
-                "wits",
+                "1 + wits",
             ),
             ("expected an expression, found `]`", "]"),
         ]
@@ -2879,11 +2879,6 @@ fn map_literals() {
         ("{}", EMPTY_MAP, "{}"),
         ("{1: {}}", EMPTY_MAP, "{}"),
         (
-            "{wits: 1}",
-            "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
-            "wits",
-        ),
-        (
             "{1 + 2: 1}",
             "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
             "1 + 2",
@@ -2966,13 +2961,8 @@ fn map_literals() {
         ),
         // Values are checked when keys are wrong, keys only when literal.
         (
-            "{wits: nope, 1: 2}",
-            "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`\nunknown name `nope`",
-            "wits",
-        ),
-        (
-            "{nope: 1}",
-            "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
+            "{1: nope, wits + 1: 2}",
+            "unknown name `nope`\na map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
             "nope",
         ),
         (
@@ -2997,6 +2987,148 @@ fn map_literals() {
             "9223372036854775808",
         ),
     ]);
+}
+
+#[test]
+fn record_literal_types() {
+    types(&[
+        ("{b: 1, a: true}", "{a: Bool, b: Int}"),
+        (
+            "{boxes: wits, count: levels}",
+            "{boxes: Int, count: List<Int>}",
+        ),
+        ("{x: {y: [1]}}", "{x: {y: List<Int>}}"),
+        ("{x: {y: [1]}}.x.y", "List<Int>"),
+        ("{name: name}", "{name: String}"),
+        // Each field is expected to be the field of the record expected.
+        (
+            "[specialties, {brawl: None, athletics: 1}]",
+            "List<{athletics: Int, brawl: Option<Int>}>",
+        ),
+        ("[{a: Some(1)}, {a: None}]", "List<{a: Option<Int>}>"),
+        ("count({count: [1], boxes: 2})", "Int"),
+        (
+            "Some({a: Some(true), b: 2}).unwrap_or({b: 1, a: None})",
+            "{a: Option<Bool>, b: Int}",
+        ),
+        // String keys still make a map.
+        ("{\"a\": 1}", "Map<String, Int>"),
+    ]);
+}
+
+#[test]
+fn record_literal_errors() {
+    errors(&[
+        (
+            "{a: 1, 2: nope}",
+            "this key is no name, but the first is, which makes this a record, whose fields are all names, such as `{a: 1, b: 2}`\nunknown name `nope`",
+            "2",
+        ),
+        (
+            "{a: 1, \"b\": 2}",
+            "this key is no name, but the first is, which makes this a record, whose fields are all names, such as `{a: 1, b: 2}`",
+            "\"b\"",
+        ),
+        (
+            "{1: 1, a: 2}",
+            "this key is a name, but the first is a literal, which makes this a map, whose keys are all integer or string literals, such as `{\"a\": 1}`",
+            "a",
+        ),
+        (
+            "{a: 1, b: 2, a: 3}",
+            "the field `a` is given twice in this record",
+            "a",
+        ),
+        (
+            "{a: None}",
+            "`None` needs a type from where it is used, such as beside `Some(...)` in a list or as an argument of an option",
+            "None",
+        ),
+        (
+            "count({boxes: 1})",
+            "a {boxes: Int, count: List<Int>} is expected here, but this record lacks its field `count`",
+            "{boxes: 1}",
+        ),
+        (
+            "count({boxes: 1, count: [1], dots: 2, extra: 3})",
+            "a {boxes: Int, count: List<Int>} is expected here, which has no field `dots`\na {boxes: Int, count: List<Int>} is expected here, which has no field `extra`",
+            "dots",
+        ),
+        (
+            "[specialties, {other: 1}]",
+            "a {athletics: Int, brawl: Option<Int>} is expected here, but this record lacks its fields `athletics`, `brawl`\na {athletics: Int, brawl: Option<Int>} is expected here, which has no field `other`",
+            "{other: 1}",
+        ),
+        (
+            "count({boxes: true, count: [1]})",
+            "no `count` takes ({boxes: Bool, count: List<Int>}), it takes ({boxes: Int, count: List<Int>}) or ({boxes: Int, count: List<Int>}, Int)",
+            "count({boxes: true, count: [1]})",
+        ),
+        (
+            "{a: 1}.b",
+            "this record has no field \"b\", its fields are \"a\"",
+            "b",
+        ),
+        (
+            "{a: 1} == {a: 1}",
+            "`==` takes two Ints or two Bools, found {a: Int} and {a: Int}",
+            "{a: 1} == {a: 1}",
+        ),
+        ("{a: nope, b: 1}.b", "unknown name `nope`", "nope"),
+    ]);
+}
+
+/// A repeated field points at itself and at where it is first given.
+#[test]
+fn record_literal_repeated_field_labels() {
+    let source = "{b: 1, a: 2, b: 3}";
+    let errors = compile(source, &env()).unwrap_err();
+    let error = errors.iter().next().unwrap();
+    let labels = error
+        .labels()
+        .map(|l| {
+            let at = l.span().map(|s| &source[s.range()]);
+            (l.message().to_string(), at, l.is_primary())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labels,
+        [
+            (
+                "the field `b` is given twice in this record".to_owned(),
+                Some("b"),
+                true
+            ),
+            ("given first here".to_owned(), Some("b"), false),
+        ]
+    );
+    let spans = error
+        .labels()
+        .filter_map(|l| l.span())
+        .map(|s| s.range().start)
+        .collect::<Vec<_>>();
+    assert_eq!(spans, [13, 1]);
+}
+
+/// A record literal's values are compiled in name order, then made into
+/// the record.
+#[test]
+fn record_literal_code() {
+    use Instr::{Global, Int, Record};
+
+    let program = compile("{b: wits, a: 1}", &env()).unwrap();
+    let record = program.result;
+    assert_eq!(
+        program.code,
+        [
+            Int(1),
+            Global {
+                at: 0,
+                ty: TypeId(0)
+            },
+            Record(record),
+        ]
+    );
 }
 
 /// A repeated key points at itself and at where it is first given.
@@ -3704,6 +3836,44 @@ fn option_literals_are_linear() {
         |n| format!("{}None{}", "[Some(1), Some(".repeat(n), ")]".repeat(n)),
         |n| format!("[{}[1]]", "[], ".repeat(n)),
         |n| format!("[{}{{1: 2}}]", "{}, ".repeat(n)),
+    ];
+
+    for shape in shapes {
+        let mut times = Vec::new();
+
+        for n in [5_000usize, 20_000] {
+            let source = shape(n);
+            let start = Instant::now();
+            let _ = compile_with(&source, &env(), &options);
+            times.push(start.elapsed().as_secs_f64());
+        }
+
+        // Four times the input takes four times as long, not sixteen.
+        assert!(times[1] < times[0] * 10.0 + 0.05, "{times:?}");
+    }
+}
+
+/// Record literals check in about linear time: many fields, repeated
+/// fields, fields checked against an expected record, and nesting.
+#[test]
+fn record_literals_are_linear() {
+    let options = Options::new().max_len(usize::MAX).max_depth(usize::MAX);
+
+    let shapes: [fn(usize) -> String; 4] = [
+        |n| {
+            format!(
+                "{{{}}}",
+                (0..n).map(|k| format!("f{k}: None, ")).collect::<String>()
+            )
+        },
+        |n| format!("{{{}}}", "a: 1, ".repeat(n)),
+        |n| {
+            format!(
+                "[specialties, {{{}}}]",
+                (0..n).map(|k| format!("f{k}: 1, ")).collect::<String>()
+            )
+        },
+        |n| format!("{}1{}", "{a: ".repeat(n), "}".repeat(n)),
     ];
 
     for shape in shapes {
