@@ -3,7 +3,7 @@
 //! what fits that hole is offered, filtered by what was typed of it.
 
 use evalite::highlight::{Class, highlight};
-use evalite::{CompletionKind, Environment, Structure};
+use evalite::{CompletionKind, Environment, Structure, Type};
 
 /// The most offers the popup lists.
 const MAX_OFFERS: usize = 40;
@@ -35,10 +35,16 @@ fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// What fits at character `cursor` of `source`, with `env` declared. `None`
+/// What fits at character `cursor` of `source`, with `env` declared and
+/// `root` the type the whole expression must have, if any. `None`
 /// when the text around the cursor does not parse with a hole there, or
 /// nothing fits.
-pub(crate) fn offers(source: &str, cursor: usize, env: &Environment) -> Option<Offers> {
+pub(crate) fn offers(
+    source: &str,
+    cursor: usize,
+    env: &Environment,
+    root: Option<&Type>,
+) -> Option<Offers> {
     let chars = source.chars().collect::<Vec<_>>();
     let cursor = cursor.min(chars.len());
 
@@ -86,7 +92,7 @@ pub(crate) fn offers(source: &str, cursor: usize, env: &Environment) -> Option<O
 
     let structure = holed(&before, &after)?;
     let hole = *structure.holes().get(index)?;
-    let completions = structure.complete(env, hole, None).ok()?;
+    let completions = structure.complete(env, hole, root).ok()?;
 
     let offers = completions
         .iter()
@@ -314,7 +320,7 @@ mod tests {
     }
 
     fn labels(source: &str, cursor: usize) -> Vec<String> {
-        offers(source, cursor, &env())
+        offers(source, cursor, &env(), None)
             .map(|o| o.offers.into_iter().map(|o| o.label).collect())
             .unwrap_or_default()
     }
@@ -349,6 +355,26 @@ mod tests {
         assert!(members.iter().any(|l| l == "unwrap_or(_)"), "{members:?}");
     }
 
+    fn rooted(source: &str, cursor: usize, root: &Type) -> Vec<String> {
+        offers(source, cursor, &Environment::new(), Some(root))
+            .map(|o| o.offers.into_iter().map(|o| o.label).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_root_type_is_offered() {
+        let option = Type::option(Type::int());
+        let names = rooted("", 0, &option);
+        assert!(names.iter().any(|l| l == "None"), "{names:?}");
+        assert!(names.iter().any(|l| l == "Some(_)"), "{names:?}");
+        assert_eq!(rooted("N", 1, &option), ["None"]);
+
+        let record = Type::record([("boxes", option.clone()), ("count", Type::int())]);
+        assert_eq!(rooted("{", 1, &record), ["boxes", "count"]);
+        assert_eq!(rooted("{boxes: None, ", 14, &record), ["count"]);
+        assert_eq!(rooted("{boxes: N", 9, &record), ["None"]);
+    }
+
     #[test]
     fn members_after_a_dot() {
         let labels = labels("bonus.", 6);
@@ -364,7 +390,7 @@ mod tests {
 
     #[test]
     fn calls_carry_their_signature() {
-        let at = offers("bonus.un", 8, &env()).unwrap();
+        let at = offers("bonus.un", 8, &env(), None).unwrap();
         let unwrap_or = at
             .offers
             .iter()
@@ -383,7 +409,7 @@ mod tests {
 
     #[test]
     fn accept_selects_the_first_hole() {
-        let at = offers("1 + bo", 6, &env()).unwrap();
+        let at = offers("1 + bo", 6, &env(), None).unwrap();
         let offer = at
             .offers
             .iter()
@@ -396,7 +422,7 @@ mod tests {
 
     #[test]
     fn accept_an_index_field_drops_the_dot() {
-        let at = offers("m.", 2, &env()).unwrap();
+        let at = offers("m.", 2, &env(), None).unwrap();
         let offer = at.offers.iter().find(|o| o.label.starts_with('[')).unwrap();
         let (text, from, to) = accept("m.", &at, offer);
         assert_eq!(text, r#"m["Brawl (bar)"]"#);

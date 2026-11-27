@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use evalite::highlight::highlight;
-use evalite::{CompletionKind, Diagnostics, Environment, Options, Program};
+use evalite::{CompletionKind, Diagnostics, Environment, Options, Program, Type};
 use gloo_timers::callback::Timeout;
 use phrasebook::Phrases;
 use phrasebook::yew023::use_phrases_with;
@@ -55,6 +55,17 @@ pub struct ExpressionEditorProps {
     pub environment: Rc<Environment>,
     #[prop_or_default]
     pub options: Options,
+    /// The type the expression must have, such as a setting's declared
+    /// type. With it the source is compiled with
+    /// [`evalite::compile_as`], so `None`, `[]` and record literals take
+    /// their types from it, and completions offer what fits it.
+    #[prop_or_default]
+    pub expected: Option<Type>,
+    /// Whether the source is compiled. Without it nothing is underlined and
+    /// `on_compile` is not called, such as while the type it is compiled
+    /// against does not parse.
+    #[prop_or(true)]
+    pub check: bool,
     /// Called with each compile's result, once the source is still for
     /// `debounce_ms`.
     #[prop_or_default]
@@ -88,6 +99,8 @@ impl PartialEq for ExpressionEditorProps {
             && self.on_input == other.on_input
             && Rc::ptr_eq(&self.environment, &other.environment)
             && self.options == other.options
+            && self.expected == other.expected
+            && self.check == other.check
             && self.on_compile == other.on_compile
             && self.debounce_ms == other.debounce_ms
             && self.label == other.label
@@ -106,6 +119,8 @@ struct Input {
     source: AttrValue,
     environment: Rc<Environment>,
     options: Options,
+    expected: Option<Type>,
+    check: bool,
 }
 
 impl PartialEq for Input {
@@ -113,6 +128,8 @@ impl PartialEq for Input {
         self.source == other.source
             && Rc::ptr_eq(&self.environment, &other.environment)
             && self.options == other.options
+            && self.expected == other.expected
+            && self.check == other.check
     }
 }
 
@@ -139,14 +156,19 @@ pub fn ExpressionEditor(props: &ExpressionEditorProps) -> Html {
             source: props.source.clone(),
             environment: props.environment.clone(),
             options: props.options,
+            expected: props.expected.clone(),
+            check: props.check,
         };
         let debounce_ms = props.debounce_ms;
 
         use_effect_with(input, move |input| {
             let input = input.clone();
+            let check = input.check;
             let run = move || compile(&input, &diagnostics, &on_compile);
 
-            let timeout = if debounce_ms == 0 {
+            let timeout = if !check {
+                None
+            } else if debounce_ms == 0 {
                 run();
                 None
             } else {
@@ -158,17 +180,18 @@ pub fn ExpressionEditor(props: &ExpressionEditorProps) -> Html {
     }
 
     let mut found: Vec<Diagnostic> = match &*diagnostics {
-        Some(diagnostics) => marks_of(&props.source, diagnostics).to_vec(),
-        None => Vec::new(),
+        Some(diagnostics) if props.check => marks_of(&props.source, diagnostics).to_vec(),
+        _ => Vec::new(),
     };
     found.extend(props.marks.iter().map(|mark| extra_of(&props.source, mark)));
     let marks: Rc<[Diagnostic]> = found.into();
 
     let complete = {
         let environment = props.environment.clone();
+        let expected = props.expected.clone();
         let phrases = phrases.clone();
         Callback::from(move |ask: CompletionQuery| {
-            completions(&ask, &environment, &phrases).map(Rc::new)
+            completions(&ask, &environment, expected.as_ref(), &phrases).map(Rc::new)
         })
     };
 
@@ -190,9 +213,12 @@ fn compile(
     diagnostics: &UseStateHandle<Option<Rc<Diagnostics>>>,
     on_compile: &Rc<RefCell<Callback<Compiled>>>,
 ) {
-    let compiled = evalite::compile_with(&input.source, &input.environment, &input.options)
-        .map(Rc::new)
-        .map_err(Rc::new);
+    let compiled = match &input.expected {
+        Some(ty) => evalite::compile_as(&input.source, &input.environment, &input.options, ty),
+        None => evalite::compile_with(&input.source, &input.environment, &input.options),
+    }
+    .map(Rc::new)
+    .map_err(Rc::new);
 
     diagnostics.set(compiled.as_ref().err().cloned());
     let on_compile = on_compile.borrow().clone();
@@ -252,13 +278,18 @@ fn wants_offers(text: &str, cursor: usize) -> bool {
         .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '.')
 }
 
-fn completions(ask: &CompletionQuery, env: &Environment, phrases: &Phrases) -> Option<Completions> {
+fn completions(
+    ask: &CompletionQuery,
+    env: &Environment,
+    expected: Option<&Type>,
+    phrases: &Phrases,
+) -> Option<Completions> {
     if !ask.forced && !wants_offers(&ask.text, ask.cursor) {
         return None;
     }
 
     let cursor = ask.text.get(..ask.cursor)?.chars().count();
-    let at = complete::offers(&ask.text, cursor, env)?;
+    let at = complete::offers(&ask.text, cursor, env, expected)?;
 
     let items = at
         .offers

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use evalite::{Program, Type, Value};
+use evalite::{Environment, Globals, Machine, Options, Program, Type, Value};
 use phrasebook::yew023::use_phrases_with;
 use sockel::{
     Badge, Button, ButtonSize, ButtonVariant, Cluster, Disclosure, Gap, InputSize, Stack,
@@ -10,6 +10,7 @@ use sockel::{
 use yew::prelude::*;
 
 use crate::L10N;
+use crate::editor::ExpressionEditor;
 
 /// The column of a [`Variable`] that is wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,7 +19,8 @@ pub enum Column {
     Name,
     /// The type does not parse.
     Type,
-    /// The value does not parse as the type.
+    /// The value does not compile as a constant expression of the type, or
+    /// running it fails.
     Value,
 }
 
@@ -55,8 +57,9 @@ pub struct Binding {
 }
 
 /// One row of the [`VariablesEditor`], as typed: the type in the syntax
-/// evalite prints (`Int`, `Option<Int>`, `{boxes: Int}`) and the value in its
-/// literal syntax (`3`, `Some(2)`, `{boxes: 7}`).
+/// evalite prints (`Int`, `Option<Int>`, `{boxes: Int}`) and the value as an
+/// expression of that type with no names in scope (`3`, `Some(2)`,
+/// `{boxes: None}`, `[1, 2 * 3]`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Variable {
     /// Tells the row apart from the others while the list changes; keep it
@@ -83,6 +86,11 @@ impl Variable {
 
     /// The binding the row stands for, or what is wrong with it.
     ///
+    /// The value is compiled with [`evalite::compile_as`] against an empty
+    /// environment, with the declared type as the type it must have, and run
+    /// once. So `None` and `[]` take their types from the declared type, and
+    /// no row reads another.
+    ///
     /// # Examples
     ///
     /// ```
@@ -90,6 +98,9 @@ impl Variable {
     ///
     /// let ok = Variable::new(0, "wits", "Int", "3").binding()?;
     /// assert_eq!(ok.name, "wits");
+    ///
+    /// let ok = Variable::new(0, "pool", "{boxes: Option<Int>}", "{boxes: None}").binding()?;
+    /// assert_eq!(ok.value.to_string(), "{boxes: None}");
     ///
     /// let bad = Variable::new(0, "wits", "Int", "true").binding();
     /// assert_eq!(bad.map_err(|e| e.column()), Err(Column::Value));
@@ -110,9 +121,9 @@ impl Variable {
             message: Some(e.to_string()),
         })?;
 
-        let value = Value::parse(&self.value, &ty).map_err(|e| VariableError {
+        let value = constant(&self.value, &ty).map_err(|message| VariableError {
             column: Column::Value,
-            message: Some(e.to_string()),
+            message: Some(message),
         })?;
 
         Ok(Binding {
@@ -121,6 +132,28 @@ impl Variable {
             value,
         })
     }
+}
+
+/// `source` compiled as a constant of type `ty` and run once, or the first
+/// error's message.
+fn constant(source: &str, ty: &Type) -> Result<Value, String> {
+    let env = Environment::new();
+
+    let program = evalite::compile_as(source, &env, &Options::new(), ty).map_err(|errors| {
+        errors
+            .iter()
+            .next()
+            .map_or_else(|| errors.to_string(), ToString::to_string)
+    })?;
+
+    let globals = Globals::new(&env);
+    let mut machine = Machine::default();
+    let outcome = machine
+        .load(&program, &globals)
+        .and_then(|run| run.run())
+        .map_err(|error| error.to_string())?;
+
+    Ok(outcome.value().clone())
 }
 
 /// The bindings of every row that has one, in order; the rows with an error
@@ -172,14 +205,19 @@ impl PartialEq for VariablesEditorProps {
 
 /// Rows of name, type and value for trying an expression against sample
 /// inputs, in a section that opens and shuts. Each row says whether the
-/// expression reads it, and has its error under it when the type or the value
-/// does not parse.
+/// expression reads it, and has its error under it when the type does not
+/// parse or the value is not a constant of that type. The value is an
+/// [`ExpressionEditor`] of one line, compiled against the declared type, so
+/// it is highlighted, its errors are underlined where they are, and it
+/// completes `Some(_)`, `None` and record field names.
 ///
 /// It is controlled: it shows `variables` and reports every change through
 /// `on_change`. Take the bindings of the rows with [`bindings`].
 #[function_component]
 pub fn VariablesEditor(props: &VariablesEditorProps) -> Html {
     let phrases = use_phrases_with(&L10N);
+    // Values are constants: no names are in scope.
+    let empty = use_memo((), |_| Environment::new());
 
     let used: Option<BTreeSet<String>> = props
         .program
@@ -255,6 +293,7 @@ pub fn VariablesEditor(props: &VariablesEditorProps) -> Html {
             })
         };
 
+        let declared = Type::parse(&variable.ty).ok();
         let error = variable.binding().err();
         let bad = |column| error.as_ref().is_some_and(|e| e.column() == column);
         let message = error
@@ -280,6 +319,13 @@ pub fn VariablesEditor(props: &VariablesEditorProps) -> Html {
             sockel::class::GROW,
             sockel::class::BASIS_SM
         );
+        // The value is the longest of the three, so it starts wider.
+        let value_class = classes!(
+            props.input_class.clone(),
+            sockel::class::GROW,
+            sockel::class::BASIS_LG
+        );
+        let value_label = AttrValue::from(phrases.text("evalite-variables-value").to_string());
 
         html! {
             <li key={id}>
@@ -289,14 +335,14 @@ pub fn VariablesEditor(props: &VariablesEditorProps) -> Html {
                             label={phrases.text("evalite-variables-name").to_string()}
                             value={variable.name.clone()} invalid={bad(Column::Name)}
                             on_input={edit(|v, t| v.name = t)} />
-                        <TextInput class={input_class.clone()} size={InputSize::Small}
+                        <TextInput class={input_class} size={InputSize::Small}
                             label={phrases.text("evalite-variables-type").to_string()}
                             placeholder="Int" value={variable.ty.clone()} invalid={bad(Column::Type)}
                             on_input={edit(|v, t| v.ty = t)} />
-                        <TextInput class={input_class} size={InputSize::Small}
-                            label={phrases.text("evalite-variables-value").to_string()}
-                            value={variable.value.clone()} invalid={bad(Column::Value)}
-                            on_input={edit(|v, t| v.value = t)} />
+                        <ExpressionEditor class={value_class} label={Some(value_label)}
+                            source={AttrValue::from(variable.value.clone())}
+                            on_input={edit(|v, t| v.value = t)} environment={empty.clone()}
+                            check={declared.is_some()} expected={declared} rows={1} />
                         { mark }
                         <Button variant={ButtonVariant::Quiet} size={ButtonSize::Small} onclick={on_remove}>
                             { phrases.text("evalite-variables-remove").to_string() }

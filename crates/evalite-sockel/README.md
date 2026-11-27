@@ -30,8 +30,12 @@ which is built with it.
   for a formula in an ordinary form.
 - **Results that stay put.** [`ResultView`] shows a run's value read by its
   type, or its error, in room that does not change with the value.
-- **Sample inputs.** [`VariablesEditor`] is rows of name, type and value,
-  parsed by evalite, that say which variables the expression reads.
+- **Sample inputs.** [`VariablesEditor`] is rows of name, type and value
+  that say which variables the expression reads. Each value is a
+  one-line [`ExpressionEditor`] compiled against the declared type, so
+  `None`, `[]` and record literals take their types from it and it
+  completes `Some(_)`, `None` and field names. [`ExpressionEditor`] takes
+  such a type, `expected`, for any value of a known type.
 - **Styled by sockel.** Nothing to style: the components use sockel's
   components and tokens, so they look like the rest of a sockel app.
 - **Translated.** Every word comes from a catalog, [`L10N`].

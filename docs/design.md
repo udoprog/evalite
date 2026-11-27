@@ -284,6 +284,16 @@ written once as `sig::Shape` with one type variable `T`:
   expression syntax; lowercase `none` / `some(..)` is refused (a breaking
   change in 0.3). Alternatives rejected: keep lowercase (two spellings for one
   value), accept both (two texts for one value).
+- evalite-sockel's `VariablesEditor` (and so the playground) does not use
+  `Value::parse`: a variable's value is an expression, compiled with
+  `compile_as` against an empty environment and the declared type, then run
+  once (7e8fbd2e, user's choice). So it is highlighted, its errors are
+  underlined in place, it completes `Some(_)`, `None` and record fields from
+  the declared type, and it may compute (`[1, 2 * 3]`). No row reads another,
+  so rows have no order and no cycles. `ExpressionEditor` takes the type as
+  its `expected` prop, and `check: false` while the type does not parse, so
+  only the type's error shows. Alternative kept for hosts: `Value::parse`,
+  which reads the same literal text without a compiler.
 
 **Map literals** (f3b53baf, landed; decided by the user):
 
