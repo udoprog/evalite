@@ -328,7 +328,23 @@ impl Globals {
             self.heap.free.entry(words).or_default().push(start);
         }
 
-        memory::write(&mut self.heap, types, value, id, at)
+        // Measured, so it is a fault for the write to fail. The old parts
+        // are freed by then, so the value is left unset rather than
+        // pointing at them, never to be freed twice.
+        let written = memory::write(&mut self.heap, types, value, id, at);
+
+        if written.is_err() {
+            let slot = usize::try_from(global)
+                .ok()
+                .and_then(|n| self.layout.slots.get(n))
+                .and_then(|held| usize::try_from(held.at).ok());
+
+            if let Some(set) = slot.and_then(|at| self.set.get_mut(at)) {
+                *set = false;
+            }
+        }
+
+        written
     }
 
     /// The words that blocks of `sizes` take past the parts, once the free

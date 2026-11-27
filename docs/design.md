@@ -367,7 +367,7 @@ Section 6.
 | `MAX_STEPS` | 4096 | completions | type walks per value when searching paths |
 | `MAX_KEY_SHOWN` | 64 chars | messages | a string key quoted in an error |
 | `MAX_QUOTED` | 32 chars | literals | input quoted in an error |
-| `Word::reference` | 32 + 32 bits | machine | addresses and lengths fit `u32` |
+| `Word::reference` | 32 + 32 bits | machine | addresses and lengths fit `u32`; `measure` refuses a set or returned string, list or map longer than `u32::MAX` (`TooLong`) before anything is written or freed |
 
 ## 4. The type table
 

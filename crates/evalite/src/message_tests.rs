@@ -250,6 +250,11 @@ fn every_message_with_and_without_a_program() {
             "the value needs 4 words of memory, 1 are left",
         ),
         (
+            Message::TooLong { len: 5, max: 4 },
+            "the value holds a string, list or map 5 long, longer than the 4 a value may hold",
+            "the value holds a string, list or map 5 long, longer than the 4 a value may hold",
+        ),
+        (
             Message::Unset { global: strength },
             "`strength` is not set, set it to an Int before running",
             "a value the program reads is not set",

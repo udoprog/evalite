@@ -51,6 +51,9 @@ pub(crate) enum Message {
     },
     /// A set or returned value does not fit in the memory left.
     TooLarge { needed: u64, left: u64 },
+    /// A set or returned value holds a string of `len` bytes, or a list or
+    /// map of `len` entries, past the `max` a reference word can say.
+    TooLong { len: u64, max: u64 },
     /// A value the program reads is not set in the store it runs with.
     Unset { global: u32 },
     /// The run took every step it was allowed.
@@ -613,6 +616,10 @@ impl fmt::Display for Shown<'_> {
                 f,
                 "the value needs {} of memory, {left} are left",
                 plural(*needed, "word", "words")
+            ),
+            Message::TooLong { len, max } => write!(
+                f,
+                "the value holds a string, list or map {len} long, longer than the {max} a value may hold"
             ),
             Message::Unset { global } => match (global_name(p, *global), global_type(p, *global)) {
                 (Some(name), Some(ty)) => {

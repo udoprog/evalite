@@ -1152,6 +1152,78 @@ fn replacing_frees() {
     assert_eq!(globals.get("b"), Some(Value::from("")));
 }
 
+/// A string, list or map too long for a reference is refused before a set
+/// changes anything: the old value's blocks stay its own, the free lists
+/// and heap as they were, so no block is freed twice. The longest is
+/// lowered for the test, as reaching 2^32 would take gigabytes.
+#[test]
+fn too_long_sets_leave_the_store_untouched() {
+    let mut env = Environment::new();
+    env.value("a", Type::list(Type::string())).unwrap();
+    env.value("m", Type::map(Type::int(), Type::int())).unwrap();
+    env.value("s", Type::string()).unwrap();
+    let word = || Value::from("1234");
+
+    let mut globals = Globals::new(&env);
+    globals.set("a", &Value::list([word(), word()])).unwrap();
+    globals.set("m", &Value::map([(int(1), int(2))])).unwrap();
+    // Free blocks of a word and of two, which a set would take.
+    globals.set("s", &Value::from("123456789")).unwrap();
+    globals.set("s", &word()).unwrap();
+    globals.set("s", &Value::from("")).unwrap();
+
+    crate::memory::MAX_LEN.with(|max| max.set(4));
+    let before = format!("{globals:?}");
+
+    let entries = |n: i64| Value::map((0..n).map(|k| (int(k), int(k))));
+    let refused = [
+        ("a", Value::list([word(), word(), word(), word(), word()])),
+        ("a", Value::list([word(), Value::from("12345")])),
+        ("m", entries(5)),
+        ("s", Value::from("12345")),
+    ];
+
+    for (name, value) in &refused {
+        let error = globals.set(name, value).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the value holds a string, list or map 5 long, longer than the 4 a value may hold",
+            "{name} = {value}"
+        );
+        assert_eq!(format!("{globals:?}"), before, "{name} = {value}");
+    }
+
+    assert_eq!(globals.get("a"), Some(Value::list([word(), word()])));
+    assert_eq!(globals.get("m"), Some(Value::map([(int(1), int(2))])));
+
+    // Values at the longest still set, and replace themselves in place.
+    let three = Value::list([word(), word(), word(), Value::from("123")]);
+    globals.set("a", &three).unwrap();
+    globals.set("m", &entries(4)).unwrap();
+    let words = globals.heap_words();
+
+    for _ in 0..3 {
+        globals.set("a", &three).unwrap();
+        globals.set("m", &entries(4)).unwrap();
+        assert_eq!(globals.heap_words(), words);
+    }
+
+    assert_eq!(globals.get("a"), Some(three));
+    assert_eq!(globals.get("m"), Some(entries(4)));
+
+    // A function's value too long is refused before it is written.
+    let mut env = Environment::new();
+    env.function("f", [], Type::string()).unwrap();
+    let program = compile("f()", &env).unwrap();
+    let globals = Globals::new(&env);
+    let error = Machine::default()
+        .load(&program, &globals)
+        .unwrap()
+        .run_with(&mut |_: &str, _: Vec<Value>| Ok(Value::from("12345")))
+        .unwrap_err();
+    assert_eq!(error.message(), &Message::TooLong { len: 5, max: 4 });
+}
+
 /// A store refuses programs that read its values elsewhere or as other
 /// types, and takes ones compiled before values were added.
 #[test]

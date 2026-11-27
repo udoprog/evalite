@@ -690,6 +690,69 @@ fn the_limit_is_kept() {
     );
 }
 
+/// A part too long for a reference is refused before `set_at` frees what
+/// it replaces: the store's every word, free list and flag are as they
+/// were. The longest is lowered for the test, as 2^32 would take
+/// gigabytes.
+#[test]
+fn too_long_parts_leave_the_store_untouched() {
+    let mut globals = store();
+    // Some free blocks, which a set would take.
+    globals
+        .set_at(&sheet_path().field("name"), &s("Ada Lovelace"))
+        .unwrap();
+    globals
+        .set_at(&sheet_path().field("name"), &s("Ada"))
+        .unwrap();
+
+    let sheet = globals.get("sheet");
+    crate::memory::MAX_LEN.with(|max| max.set(4));
+    let before = format!("{globals:?}");
+    let bools = |n: usize| Value::list(vec![Value::bool(true); n]);
+    let occult = sheet_path().field("skills").string_key("occult");
+
+    let refused = [
+        (sheet_path().field("name"), s("12345")),
+        (
+            sheet_path().field("tracks").index(0).field("marks"),
+            bools(5),
+        ),
+        (sheet_path().field("tracks").index(1), track(1, &[true; 5])),
+        (
+            occult.clone().field("specialties"),
+            Value::list([s("a"), s("b"), s("c"), s("d"), s("e")]),
+        ),
+        (occult.clone(), skill(1, &["12345"])),
+        (
+            sheet_path().field("tracks"),
+            Value::list(vec![track(1, &[]); 5]),
+        ),
+    ];
+
+    for (path, value) in &refused {
+        let error = error_of(&mut globals, path, value);
+        assert_eq!(
+            error.first().map(String::as_str),
+            Some(
+                "the value holds a string, list or map 5 long, longer than the 4 a value may hold"
+            ),
+            "{path} = {value}"
+        );
+        assert_eq!(format!("{globals:?}"), before, "{path} = {value}");
+    }
+
+    assert_eq!(globals.get("sheet"), sheet);
+
+    // At the longest, a part still sets.
+    globals
+        .set_at(
+            &sheet_path().field("tracks").index(0).field("marks"),
+            &bools(4),
+        )
+        .unwrap();
+    assert_eq!(run(&globals, "sheet.tracks[0].marks.len()"), int(4));
+}
+
 fn error_of(globals: &mut Globals, path: &Path, value: &Value) -> Vec<String> {
     let error = globals.set_at(path, value).unwrap_err();
     error.labels().map(|l| l.message().to_string()).collect()

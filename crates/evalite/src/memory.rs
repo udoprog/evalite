@@ -105,8 +105,9 @@ pub(crate) fn string(
     String::from_utf8(bytes).map_err(|_| fault(Fault::NotUtf8))
 }
 
-/// Check `value` is of type `ty`, giving the words its parts take; a
-/// mismatch names its path from `root`.
+/// Check `value` is of type `ty`, and that no string, list or map in it is
+/// too long for a reference, giving the words its parts take; a mismatch
+/// names its path from `root`.
 ///
 /// The walk keeps no path, as most values are of their type; a mismatch is
 /// found again with one, to name where it is.
@@ -157,6 +158,42 @@ pub(crate) fn parts(types: &Types, value: &Value, ty: TypeId) -> Result<Vec<usiz
     }
 }
 
+/// The longest string, in bytes, or list or map, in entries, a value may
+/// hold: a reference word keeps its length in 32 bits. A walk refuses a
+/// longer one, so a set fails before it changes the store, not when
+/// [`write`] makes the reference.
+#[cfg(not(test))]
+fn max_len() -> usize {
+    usize::try_from(u32::MAX).unwrap_or(usize::MAX)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// [`max_len`], which a test lowers to reach it without gigabytes.
+    pub(crate) static MAX_LEN: std::cell::Cell<usize> =
+        std::cell::Cell::new(usize::try_from(u32::MAX).unwrap_or(usize::MAX));
+}
+
+#[cfg(test)]
+fn max_len() -> usize {
+    MAX_LEN.with(std::cell::Cell::get)
+}
+
+/// Refuse a part `len` long, past [`max_len`].
+#[inline]
+fn check_len(len: usize) -> Result<(), RunError> {
+    let max = max_len();
+
+    if len > max {
+        return Err(RunError::new(Message::TooLong {
+            len: count(len),
+            max: count(max),
+        }));
+    }
+
+    Ok(())
+}
+
 /// What a walk does with the size of each block of parts it finds.
 trait Blocks {
     fn block(&mut self, words: usize);
@@ -200,12 +237,14 @@ fn walk<T: Trail>(
                 continue;
             }
             (TypeNode::String, Repr::String(s)) => {
+                check_len(s.len())?;
                 let words = s.len().div_ceil(8);
                 blocks.block(words);
                 total = total.saturating_add(words);
                 continue;
             }
             (TypeNode::List(entry), Repr::List(items)) => {
+                check_len(items.len())?;
                 let words = items.len().saturating_mul(types.width(*entry));
                 blocks.block(words);
                 total = total.saturating_add(words);
@@ -220,6 +259,7 @@ fn walk<T: Trail>(
                 continue;
             }
             (TypeNode::Map { key, value }, Repr::Map(entries)) => {
+                check_len(entries.len())?;
                 let width = types.width(*value).saturating_add(1);
                 let words = entries.len().saturating_mul(width);
                 blocks.block(words);
