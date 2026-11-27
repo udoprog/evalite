@@ -58,7 +58,12 @@ impl MethodSig {
         }
 
         let Some(t) = self.bind(receiver) else {
-            return Err(Mismatch::Argument(0, self.receiver.to_string()));
+            // A map's methods exist once per key type, so any key type will do.
+            let expected = match self.receiver {
+                Shape::Map(..) => String::from("Map<K, V>"),
+                receiver => receiver.to_string(),
+            };
+            return Err(Mismatch::Argument(0, expected));
         };
 
         self.sig.call(rest, t).map_err(|mismatch| match mismatch {

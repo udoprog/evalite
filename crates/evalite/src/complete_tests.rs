@@ -269,14 +269,19 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
                 r#""flags""#,
             ],
         ),
-        ("_[1]", 0, None, vec!["dots", "health.count", "[_]", "_!"]),
+        (
+            "_[1]",
+            0,
+            None,
+            vec!["dots", "health.count", "[_]", "{_: _}", "_!"],
+        ),
         (
             "_[_]",
             0,
             None,
             vec!["dots", "health", "m", "broken(_)", "[_]", "{_: _}", "_!"],
         ),
-        (r#"_["Brawl (bar)"]"#, 0, None, vec!["m", "_!"]),
+        (r#"_["Brawl (bar)"]"#, 0, None, vec!["m", "{_: _}", "_!"]),
         // List entries, by a sibling or the list's own type.
         ("[1, _]", 0, None, INT.to_vec()),
         ("[_, dead]", 0, None, BOOL.to_vec()),
@@ -295,9 +300,9 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             "_[0]",
             0,
             Some(Type::int()),
-            vec!["dots", "health.count", "[_]", "_!"],
+            vec!["dots", "health.count", "[_]", "{_: _}", "_!"],
         ),
-        ("_[0]", 0, Some(Type::bool()), vec!["[_]", "_!"]),
+        ("_[0]", 0, Some(Type::bool()), vec!["[_]", "{_: _}", "_!"]),
         ("[_][0]", 0, Some(Type::bool()), BOOL.to_vec()),
         // Map values, by a sibling or the map's own type; keys are literals
         // of a sibling key's type.
@@ -960,6 +965,21 @@ fn map_completions() {
 
     let option = labels("_", Some(&Type::option(dice.clone())));
     assert!(option.contains(&"ids.get(_)".to_owned()), "{option:?}");
+
+    // A map is offered as the receiver of an index already written, by
+    // the key's type: an `Int` takes lists and `Int` maps, a `String` only
+    // `String` maps (and records with the field).
+    let receivers = labels("_[1]", None);
+    assert!(receivers.contains(&"ids".to_owned()), "{receivers:?}");
+    assert!(!receivers.contains(&"tags".to_owned()), "{receivers:?}");
+    let receivers = labels(r#"_["x"]"#, None);
+    assert!(receivers.contains(&"tags".to_owned()), "{receivers:?}");
+    assert!(!receivers.contains(&"ids".to_owned()), "{receivers:?}");
+    let receivers = labels("_[wits]", None);
+    assert!(receivers.contains(&"ids".to_owned()), "{receivers:?}");
+    let receivers = labels("_[name]", None);
+    assert!(receivers.contains(&"tags".to_owned()), "{receivers:?}");
+    assert!(!receivers.contains(&"ids".to_owned()), "{receivers:?}");
 
     // The index of a map takes its key type.
     let key = labels("ids[_]", None);

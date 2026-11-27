@@ -271,6 +271,8 @@ enum Pattern {
     Record,
     /// Any `Map<K, V>`.
     Map,
+    /// Any `Map<K, V>` keyed by this type.
+    Keyed(Type),
     /// A type with this method.
     Method(String),
     /// A record with this field.
@@ -309,8 +311,8 @@ enum Up {
     MapValue,
     /// A key of a map.
     MapKey,
-    /// A list indexed by an `Int`.
-    ListOf,
+    /// A list or map indexed by a key of this type, when it is known.
+    Indexed(Option<Type>),
     /// An option unwrapped with `!`.
     OptionOf,
 }
@@ -336,6 +338,7 @@ impl Want {
                 Pattern::Option => matches!(ty, Type(Kind::Option(_))),
                 Pattern::Record => matches!(ty, Type(Kind::Record(_))),
                 Pattern::Map => matches!(ty, Type(Kind::Map(..))),
+                Pattern::Keyed(key) => matches!(ty, Type(Kind::Map(k, _)) if **k == *key),
                 Pattern::Method(name) => receiver_methods(ty).any(|m| m.name == name),
                 Pattern::Field(name) => {
                     matches!(ty, Type(Kind::Record(fields)) if fields.contains_key(name))
@@ -359,7 +362,7 @@ impl Want {
             Pattern::Type(ty) => shape.bind(ty, &mut None),
             Pattern::List => matches!(shape, Shape::List(_) | Shape::Var),
             Pattern::Option => matches!(shape, Shape::Option(_) | Shape::Var),
-            Pattern::Map => matches!(shape, Shape::Map(..) | Shape::Var),
+            Pattern::Map | Pattern::Keyed(_) => matches!(shape, Shape::Map(..) | Shape::Var),
             Pattern::Record | Pattern::Field(_) => shape == Shape::Var,
             Pattern::Method(name) => {
                 shape == Shape::Var
@@ -486,23 +489,53 @@ impl Want {
         }
     }
 
-    /// Lists of what this takes.
-    fn list_of(self) -> Self {
-        match self {
-            Self::Any => Self::OneOf(vec![Pattern::List]),
-            Self::OneOf(patterns) => {
-                let mut out = Self::OneOf(Vec::new());
+    /// Lists and maps of what this takes, indexed by a key of type `key`
+    /// when it is known: a list takes an `Int`.
+    fn indexed(self, key: Option<&Type>) -> Self {
+        let list = key.is_none_or(|k| *k == Type::int());
+        let keys = match key {
+            Some(key) => vec![key.clone()],
+            None => vec![Type::int(), Type::string()],
+        };
 
-                for p in patterns {
-                    out.push(match p {
-                        Pattern::Type(t) => Pattern::Type(Type::list(t)),
-                        _ => Pattern::List,
-                    });
+        let mut out = Self::OneOf(Vec::new());
+
+        match self {
+            Self::Any => {
+                if list {
+                    out.push(Pattern::List);
                 }
 
-                out
+                match key {
+                    Some(key) => out.push(Pattern::Keyed(key.clone())),
+                    None => out.push(Pattern::Map),
+                }
+            }
+            Self::OneOf(patterns) => {
+                for p in patterns {
+                    match p {
+                        Pattern::Type(t) => {
+                            if list {
+                                out.push(Pattern::Type(Type::list(t.clone())));
+                            }
+
+                            for k in &keys {
+                                out.push(Pattern::Type(Type::map(k.clone(), t.clone())));
+                            }
+                        }
+                        _ => {
+                            if list {
+                                out.push(Pattern::List);
+                            }
+
+                            out.push(Pattern::Map);
+                        }
+                    }
+                }
             }
         }
+
+        out
     }
 
     /// Options of what this takes, which `!` unwraps to it.
@@ -764,10 +797,12 @@ impl Structure {
                 Node(Repr::Index { receiver, index }) if *receiver == at => Want::OneOf(match self
                     .get(*index)
                 {
-                    Some(Node(Repr::String(name))) => vec![Pattern::Field(name.clone())],
+                    Some(Node(Repr::String(name))) => {
+                        vec![Pattern::Field(name.clone()), Pattern::Keyed(Type::string())]
+                    }
                     Some(Node(Repr::Hole)) => vec![Pattern::List, Pattern::Map, Pattern::Record],
                     _ => {
-                        steps_up.push(Up::ListOf);
+                        steps_up.push(Up::Indexed(self.type_of(env, *index)));
                         at = parent;
                         continue;
                     }
@@ -825,7 +860,7 @@ impl Structure {
             Up::Entry => want.entry(),
             Up::MapValue => want.map_value(),
             Up::MapKey => want.map_key(),
-            Up::ListOf => want.list_of(),
+            Up::Indexed(key) => want.indexed(key.as_ref()),
             Up::OptionOf => want.option_of(),
         })
     }
@@ -1049,7 +1084,7 @@ impl Structure {
             Want::Any => Some(None),
             Want::OneOf(patterns) => patterns.iter().find_map(|p| match p {
                 Pattern::Type(ty @ Type(Kind::Map(..))) => Some(Some(ty.clone())),
-                Pattern::Map => Some(None),
+                Pattern::Map | Pattern::Keyed(_) => Some(None),
                 _ => None,
             }),
         };

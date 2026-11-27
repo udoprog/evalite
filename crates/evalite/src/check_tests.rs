@@ -2369,6 +2369,11 @@ fn maps() {
             "1",
         ),
         (
+            "Map::len(5)",
+            "argument 1 of `Map::len` must be Map<K, V>, found Int",
+            "5",
+        ),
+        (
             "ids.dice",
             "Map<Int, {dice: Int}> has no fields, so no `.dice`",
             "dice",
