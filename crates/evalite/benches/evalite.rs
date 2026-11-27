@@ -14,7 +14,7 @@ use std::fmt::Write;
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use evalite::{DEFAULT_FUEL, Environment, Limits, Machine, Program, Type, Value};
+use evalite::{DEFAULT_FUEL, Environment, Limits, Machine, Program, Structure, Type, Value};
 
 const ATTRIBUTES: [&str; 9] = [
     "intelligence",
@@ -499,5 +499,45 @@ fn whole_sheet(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, stages, read, whole_sheet);
+/// What an editor does with a sheet: highlight its sources, parse them
+/// into structures, and complete a hole.
+fn editing(c: &mut Criterion) {
+    let env = env();
+    let sources = sheet();
+    let mut group = c.benchmark_group("edit");
+
+    group.bench_function("highlight", |b| {
+        b.iter(|| {
+            for source in &sources {
+                black_box(evalite::highlight::highlight(black_box(source)).count());
+            }
+        })
+    });
+
+    group.bench_function("from_text", |b| {
+        b.iter(|| {
+            for source in &sources {
+                black_box(Structure::from_text(black_box(source)).unwrap());
+            }
+        })
+    });
+
+    for (name, text) in [
+        ("value", "strength + _"),
+        ("member", "specialties._"),
+        ("method", "bonus_1._"),
+    ] {
+        let s = Structure::from_text(text).unwrap();
+        let hole = s.holes()[0];
+        let int = Type::int();
+
+        group.bench_function(BenchmarkId::new("complete", name), |b| {
+            b.iter(|| black_box(s.complete(&env, hole, Some(&int)).unwrap()))
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, stages, read, whole_sheet, editing);
 criterion_main!(benches);
