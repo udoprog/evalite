@@ -9,8 +9,9 @@ use crate::types::{TypeId, TypeNode, Types, is_value_name};
 /// The version of the stored form [`Program::to_bytes`] writes.
 pub(crate) const FORMAT: u32 = 5;
 
-/// How many nodes the globals' types may have together, each written out
-/// in full.
+/// How many nodes the globals' and host functions' types may have
+/// together, each written out in full, as [`Program::globals`] and
+/// [`Program::functions`] hand them out.
 const MAX_GLOBAL_TYPE_NODES: usize = 1 << 21;
 
 /// One instruction of a stack machine over words of memory. A value takes
@@ -303,11 +304,16 @@ impl Program {
     /// The caller's functions it calls: each name, parameter types and
     /// return type.
     pub fn functions(&self) -> Vec<(&str, Vec<Type>, Type)> {
+        // Built together, so the table is walked once, not once a type.
+        let ids: Vec<TypeId> = function_types(&self.functions).collect();
+        let mut built = self.types.to_types(&ids).unwrap_or_default().into_iter();
+        let mut next = || built.next().unwrap_or(Type::int());
+
         self.functions
             .iter()
             .map(|f| {
-                let params = f.params.iter().map(|t| self.type_of(*t)).collect();
-                (f.name.as_str(), params, self.type_of(f.ret))
+                let params = f.params.iter().map(|_| next()).collect();
+                (f.name.as_str(), params, next())
             })
             .collect()
     }
@@ -464,15 +470,20 @@ impl Program {
         let memory = verifier.code(&code, &global_ids, &functions, result)?;
 
         let ids: Vec<TypeId> = globals.iter().map(|g| g.ty).collect();
+        let held: Vec<TypeId> = ids
+            .iter()
+            .copied()
+            .chain(function_types(&functions))
+            .collect();
 
-        // The globals' types are held written out, and building them holds
-        // every type they reach too, so both are bounded together, not only
-        // one by one.
-        let nodes = ids
+        // The globals' and functions' types are handed out written out, and
+        // building them holds every type they reach too, so both are
+        // bounded together, not only one by one.
+        let nodes = held
             .iter()
             .fold(0usize, |n, id| n.saturating_add(types.size(*id)));
         let reached = types
-            .reached_size(&ids)
+            .reached_size(&held)
             .ok_or_else(|| StoreError::from(Invalid::BadGlobal))?;
 
         if nodes > MAX_GLOBAL_TYPE_NODES || reached > MAX_GLOBAL_TYPE_NODES {
@@ -500,6 +511,13 @@ impl Program {
             constant_at,
         })
     }
+}
+
+/// Each function's parameter types, then its return type, in order.
+fn function_types(functions: &[HostFunction]) -> impl Iterator<Item = TypeId> + '_ {
+    functions
+        .iter()
+        .flat_map(|f| f.params.iter().copied().chain([f.ret]))
 }
 
 fn words(n: usize) -> Result<u32, StoreError> {

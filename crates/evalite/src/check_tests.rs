@@ -1784,6 +1784,100 @@ fn many_reads_of_a_wide_record_compile_and_verify_quickly() {
     load_quickly(&musli::storage::from_slice(&bytes).unwrap()).unwrap();
 }
 
+/// The id of the next type pushed onto a stored table.
+fn next_type(stored: &Stored) -> TypeId {
+    TypeId(u32::try_from(stored.types.len()).unwrap())
+}
+
+/// The id of `node` in a stored table.
+fn stored_type(stored: &Stored, node: &TypeNode) -> TypeId {
+    let at = stored.types.iter().position(|n| n == node).unwrap();
+    TypeId(u32::try_from(at).unwrap())
+}
+
+#[test]
+fn functions_types_are_bounded_together() {
+    // Each record holds the one before twice, over an `Int`, so the last
+    // of 15 is 65 535 nodes written out, which one type may be. Unused
+    // functions, unique by name, returning it are as many such types to
+    // hand out from `Program::functions`.
+    let declaring = |functions: usize| {
+        let mut stored = stored("1");
+        let mut part = stored_type(&stored, &TypeNode::Int);
+
+        for _ in 0..15 {
+            let record = next_type(&stored);
+            stored.types.push(TypeNode::Record(vec![
+                FieldNode {
+                    name: "a".into(),
+                    ty: part,
+                },
+                FieldNode {
+                    name: "b".into(),
+                    ty: part,
+                },
+            ]));
+            part = record;
+        }
+
+        for n in 0..functions {
+            stored.functions.push(HostFunction {
+                name: format!("f{n}"),
+                params: Vec::new(),
+                ret: part,
+            });
+        }
+
+        stored
+    };
+
+    let loaded = load_quickly(&declaring(2)).unwrap();
+    assert_eq!(loaded.functions().len(), 2);
+
+    let many = declaring(100_000);
+    assert_eq!(
+        format!("{:#}", load_quickly(&many).unwrap_err()),
+        "the type is too large: while verifying the program"
+    );
+
+    // Many small types in a large table are fine, and listing them walks
+    // the table once, not once a function.
+    const TYPES: usize = 100_000;
+    let mut small = stored("1");
+    let int = stored_type(&small, &TypeNode::Int);
+    let first = next_type(&small);
+
+    for n in 0..TYPES {
+        small.types.push(TypeNode::Record(vec![FieldNode {
+            name: format!("f{n}"),
+            ty: int,
+        }]));
+    }
+
+    for n in 0..TYPES {
+        small.functions.push(HostFunction {
+            name: format!("f{n}"),
+            params: vec![int],
+            ret: TypeId(first.0 + u32::try_from(n).unwrap()),
+        });
+    }
+
+    let loaded = load_quickly(&small).unwrap();
+    let start = Instant::now();
+    let functions = loaded.functions();
+    let took = start.elapsed();
+    assert!(took < Duration::from_secs(5), "listing took {took:?}");
+    assert_eq!(functions.len(), TYPES);
+    assert_eq!(
+        functions[TYPES - 1],
+        (
+            "f99999",
+            vec![Type::int()],
+            Type::record([("f99999", Type::int())])
+        )
+    );
+}
+
 #[test]
 fn stored_bytes_errors() {
     let bytes = compile("wits + 1", &env()).unwrap().to_bytes().unwrap();

@@ -322,9 +322,11 @@ It computes the stack's peak in words, and heap as the sum of the words of
 lists built. Because every word's kind is proven here, the machine never
 inspects what a word is.
 
-It also bounds the globals' types written out: the sum per global, and
-everything they reach, are each at most `MAX_GLOBAL_TYPE_NODES` (2^21), since
-`Program::globals()` hands out built `Type`s.
+It also bounds the globals' and host functions' types written out: the sum
+over every global, parameter and return type, and everything they reach,
+are each at most `MAX_GLOBAL_TYPE_NODES` (2^21), since `Program::globals()`
+and `Program::functions()` hand out built `Type`s. `functions()` builds
+them in one `to_types` pass, so it walks the table once, not once per type.
 
 ### 3.6 Machine (`vm.rs`)
 
@@ -340,7 +342,7 @@ Section 6.
 | `MAX_DIAGNOSTICS` | 100 | `Reporter` | diagnostics kept |
 | `MAX_TYPE_DEPTH` | 64 | `Environment`, `Types`, literals, stored tables | type nesting |
 | `MAX_TYPE_NODES` | 65 536 | `Types::add`, stored tables | one type's nodes with shared parts written out |
-| `MAX_GLOBAL_TYPE_NODES` | 2^21 | verifier | a program's globals' types written out, together |
+| `MAX_GLOBAL_TYPE_NODES` | 2^21 | verifier | a program's globals' and host functions' types written out, together |
 | `Limits::memory` | 1024 words default | `Machine` | stack + heap + constants + globals + bound/returned parts |
 | `Limits::fuel` | 1000 default | `Run` | steps per run |
 | `MAX_STEPS` | 4096 | completions | type walks per value when searching paths |
