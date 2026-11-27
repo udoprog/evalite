@@ -9,7 +9,7 @@ use syntree::{Node as TreeNode, Span};
 
 use crate::parser::Flavor;
 
-use crate::check::compile_parsed;
+use crate::check::{compile_parsed, references_parsed};
 use crate::debug::DebugInfo;
 use crate::env::Environment;
 use crate::error::{Diagnostic, Diagnostics, ErrorKind};
@@ -17,6 +17,7 @@ use crate::lexer::parse_int;
 use crate::message::{Invalid, Labels, Message, StoreError};
 use crate::parser::{Options, Tree, parse_with};
 use crate::program::Program;
+use crate::references::{Reference, locate_nodes};
 use crate::syntax::{Syntax, unescape};
 use crate::types::{is_field_name, is_value_name};
 
@@ -1401,6 +1402,46 @@ impl Structure {
         compile_node_debug(&self.nodes, self.root, env, options)
     }
 
+    /// Every name the structure uses, as [`evalite::references`] reports
+    /// it for its [`to_text`](Self::to_text): each [`Reference`] and
+    /// [`Step`](crate::Step) with its span into that text and the
+    /// [`NodeId`] it is part of, so a reference can be followed back to
+    /// the node to edit.
+    ///
+    /// [`evalite::references`]: crate::references()
+    ///
+    /// ```
+    /// use evalite::{Environment, Node, Options, Structure, Type};
+    ///
+    /// let mut env = Environment::new();
+    /// env.value("dice", Type::list(Type::int()))?;
+    ///
+    /// let s = Structure::from_text("dice[0] + dice.len()")?;
+    /// let refs = s.references(&env, &Options::new())?;
+    /// assert_eq!(refs.len(), 2);
+    ///
+    /// let zero = refs[0].steps()[0].node().unwrap();
+    /// assert_eq!(s.get(zero), Some(&Node::int(0)));
+    /// assert_eq!(refs[1].node().and_then(|n| s.get(n)), Some(&Node::name("dice")));
+    ///
+    /// let hole = Structure::from_text("dice[_]")?;
+    /// assert!(hole.references(&env, &Options::new()).is_err());
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`compile_with`](Self::compile_with): a [`StructureErrors`] when
+    /// the structure has a hole, a name that cannot be written, or does not
+    /// compile against `env` with `options`.
+    pub fn references(
+        &self,
+        env: &Environment,
+        options: &Options,
+    ) -> Result<Vec<Reference>, StructureErrors> {
+        node_references(&self.nodes, self.root, env, options)
+    }
+
     /// Compile the expression at node `id` alone.
     pub(crate) fn compile_at(
         &self,
@@ -1682,6 +1723,53 @@ fn compile_node_debug(
     options: &Options,
 ) -> Result<(Program, DebugInfo), StructureErrors> {
     let (text, spans) = render(nodes, root);
+    check_nodes(nodes, root, &spans)?;
+    let error = located(&spans, root);
+    let parsed = parse_with(&text, options).map_err(error)?;
+    compile_parsed(&text, parsed, env).map_err(error)
+}
+
+/// The references of the expression at `root`, with spans into its text
+/// and the nodes they are part of.
+fn node_references(
+    nodes: &[Node],
+    root: NodeId,
+    env: &Environment,
+    options: &Options,
+) -> Result<Vec<Reference>, StructureErrors> {
+    let (text, spans) = render(nodes, root);
+    check_nodes(nodes, root, &spans)?;
+    let error = located(&spans, root);
+    let parsed = parse_with(&text, options).map_err(error)?;
+    let mut references = references_parsed(&text, parsed, env).map_err(error)?;
+    locate_nodes(&mut references, &spans, &text);
+    Ok(references)
+}
+
+/// Turn the diagnostics of a structure's text into errors naming the node
+/// each is about.
+fn located(
+    spans: &[(NodeId, Span<u32>)],
+    root: NodeId,
+) -> impl Fn(Diagnostics) -> StructureErrors + Copy + '_ {
+    move |errors: Diagnostics| StructureErrors {
+        list: errors
+            .into_iter()
+            .map(|diagnostic| StructureError {
+                node: locate(spans, diagnostic.span()).unwrap_or(root),
+                kind: StructureKind::Compile(Diagnostics::one(diagnostic)),
+            })
+            .collect(),
+    }
+}
+
+/// Every hole, and every name that cannot be written, of the expression at
+/// `root`, whose nodes' spans are `spans`.
+fn check_nodes(
+    nodes: &[Node],
+    root: NodeId,
+    spans: &[(NodeId, Span<u32>)],
+) -> Result<(), StructureErrors> {
     let mut list = Vec::new();
 
     for id in post_order(nodes, root) {
@@ -1727,18 +1815,7 @@ fn compile_node_debug(
         return Err(StructureErrors { list });
     }
 
-    let error = |errors: Diagnostics| StructureErrors {
-        list: errors
-            .into_iter()
-            .map(|diagnostic| StructureError {
-                node: locate(&spans, diagnostic.span()).unwrap_or(root),
-                kind: StructureKind::Compile(Diagnostics::one(diagnostic)),
-            })
-            .collect(),
-    };
-
-    let parsed = parse_with(&text, options).map_err(error)?;
-    compile_parsed(&text, parsed, env).map_err(error)
+    Ok(())
 }
 
 /// Names that are written as other tokens, or as a hole.

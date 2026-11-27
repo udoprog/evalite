@@ -13,7 +13,8 @@ use crate::lexer::parse_int;
 use crate::methods::{self, Associated, MethodSig, PathError};
 use crate::parser::{Options, Parsed, parse_with};
 use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
-use crate::sig::Mismatch;
+use crate::references::{Literal, Recorder, Reference, ReferenceKind};
+use crate::sig::{Mismatch, Shape};
 use crate::syntax::{Syntax, callee, unescape};
 use crate::types::{TypeId, TypeNode, Types};
 
@@ -133,6 +134,31 @@ pub(crate) fn compile_parsed(
     compiler.finish()
 }
 
+/// The references of what [`parse_with`] made of `source`, recorded as it
+/// compiles, once it compiles.
+pub(crate) fn references_parsed(
+    source: &str,
+    parsed: Parsed,
+    env: &Environment,
+) -> Result<Vec<Reference>, Diagnostics> {
+    let Parsed { tree, reporter } = parsed;
+    let mut compiler = Compiler::new(source, env, reporter).map_err(Diagnostics::one)?;
+    compiler.recorder = Some(Recorder::default());
+
+    let root = tree
+        .first()
+        .and_then(|root| exprs(root).next())
+        .ok_or_else(|| Diagnostics::one(internal("a tree without an expression")))?;
+
+    if let Err(fatal) = compiler.run(root) {
+        compiler.reporter.report(fatal);
+    }
+
+    let recorder = compiler.recorder.take();
+    compiler.finish()?;
+    Ok(recorder.map(Recorder::finish).unwrap_or_default())
+}
+
 enum Work<'a> {
     Enter(N<'a>),
     /// After a unary operator's operand, whose code starts at `usize`.
@@ -143,8 +169,9 @@ enum Work<'a> {
     /// After `&&` or `||`'s right operand.
     LogicExit(N<'a>),
     Paren(N<'a>),
-    /// After a call's arguments.
-    Call(N<'a>, &'a [Overload], String),
+    /// After a call's arguments, with the reference it starts, if
+    /// references are recorded.
+    Call(N<'a>, &'a [Overload], String, Option<u32>),
     /// After the arguments of a call of a path, such as `Int::min(...)`.
     Path(N<'a>, Associated, String),
     /// After a method's receiver.
@@ -198,6 +225,9 @@ impl<'a> Work<'a> {
 struct Value {
     ty: TypeId,
     span: Span<u32>,
+    /// The reference of the [`Recorder`] it is a part of, which what
+    /// reads it extends.
+    path: Option<u32>,
 }
 
 struct Compiler<'a> {
@@ -228,6 +258,8 @@ struct Compiler<'a> {
     /// a program.
     error: TypeId,
     reporter: Reporter,
+    /// The references so far, when they are asked for.
+    recorder: Option<Recorder>,
 }
 
 impl<'a> Compiler<'a> {
@@ -258,6 +290,7 @@ impl<'a> Compiler<'a> {
             jumps: Vec::new(),
             error: TypeId(u32::MAX),
             reporter,
+            recorder: None,
         })
     }
 
@@ -295,7 +328,34 @@ impl<'a> Compiler<'a> {
     }
 
     fn push(&mut self, ty: TypeId, span: Span<u32>) {
-        self.values.push(Value { ty, span });
+        self.push_path(ty, span, None);
+    }
+
+    /// Push a value that is part of the reference `path`.
+    fn push_path(&mut self, ty: TypeId, span: Span<u32>, path: Option<u32>) {
+        self.values.push(Value { ty, span, path });
+    }
+
+    /// Start a reference at `name`, when references are recorded.
+    fn root(
+        &mut self,
+        kind: ReferenceKind,
+        name: &str,
+        span: Span<u32>,
+        at: Span<u32>,
+    ) -> Option<u32> {
+        self.recorder.as_mut()?.root(kind, name, span, at)
+    }
+
+    /// Extend the reference `path` of a receiver by indexing it with the
+    /// expression `index`, a map's key when `map`.
+    fn record_index(&mut self, path: Option<u32>, map: bool, index: N<'_>) {
+        let (Some(path), Some(recorder)) = (path, self.recorder.as_mut()) else {
+            return;
+        };
+
+        let (literal, span) = literal(index, self.source);
+        recorder.index(path, map, literal, span);
     }
 
     fn pop(&mut self) -> Result<Value, Diagnostic> {
@@ -372,7 +432,9 @@ impl<'a> Compiler<'a> {
                         .ok_or_else(|| internal("an empty parenthesis"))?;
                     value.span = *node.span();
                 }
-                Work::Call(node, overloads, name) => self.call(node, overloads, name)?,
+                Work::Call(node, overloads, name, path) => {
+                    self.call(node, overloads, name, path)?;
+                }
                 Work::Path(node, associated, path) => self.path(node, associated, path)?,
                 Work::Method(node) => self.method(node, work)?,
                 Work::MethodExit(node, method, callee) => self.method_exit(node, method, callee)?,
@@ -419,7 +481,8 @@ impl<'a> Compiler<'a> {
                 let name = self.text(node);
                 let (at, ty) = self.global(name, span)?;
                 self.emit(Instr::Global { at, ty });
-                self.push(ty, span);
+                let path = self.root(ReferenceKind::Value, name, span, span);
+                self.push_path(ty, span, path);
             }
             Syntax::Paren => {
                 let inner = parts.next().ok_or_else(|| internal("an empty `(`"))?;
@@ -455,8 +518,14 @@ impl<'a> Compiler<'a> {
                     self.find_path(name)
                         .map(|associated| Work::Path(node, associated, text))
                 } else {
-                    self.function(&text, *name.span())
-                        .map(|overloads| Work::Call(node, overloads, text))
+                    match self.function(&text, *name.span()) {
+                        Ok(overloads) => {
+                            let path =
+                                self.root(ReferenceKind::Function, &text, *name.span(), span);
+                            Ok(Work::Call(node, overloads, text, path))
+                        }
+                        Err(error) => Err(error),
+                    }
                 };
 
                 match found {
@@ -729,6 +798,7 @@ impl<'a> Compiler<'a> {
         node: N<'a>,
         overloads: &'a [Overload],
         name: String,
+        path: Option<u32>,
     ) -> Result<(), Diagnostic> {
         let args = args_of(node);
         let values = self.pop_n(args.len())?;
@@ -744,7 +814,15 @@ impl<'a> Compiler<'a> {
 
         for overload in overloads {
             match self.overload(overload, &found, span)? {
-                Ok(resolved) => return self.emit_call(&name, resolved, &found, span),
+                Ok(resolved) => {
+                    self.emit_call(&name, resolved, &found, span)?;
+
+                    if let Some(value) = self.values.last_mut() {
+                        value.path = path;
+                    }
+
+                    return Ok(());
+                }
                 Err(mismatch) => {
                     first.get_or_insert(mismatch);
                 }
@@ -842,12 +920,15 @@ impl<'a> Compiler<'a> {
             }
         };
 
+        let mut reference = None;
+
         let instr = match associated {
             Associated::Function(function) => Some((function.instr)(count(values.len())?)),
             Associated::Method(method) => {
                 let receiver = values
                     .first()
                     .ok_or_else(|| internal("a method's path without a receiver"))?;
+                reference = self.continue_path(method, receiver.path, args.get(1).copied());
                 let held = match self.types.get(receiver.ty) {
                     Some(TypeNode::List(held) | TypeNode::Option(held)) => Some(*held),
                     _ => None,
@@ -859,8 +940,31 @@ impl<'a> Compiler<'a> {
         let instr =
             instr.ok_or_else(|| internal(format_args!("`{path}` without an instruction")))?;
         self.emit(instr);
-        self.push(ret, span);
+        self.push_path(ret, span, reference);
         Ok(())
+    }
+
+    /// The reference that calling `method` on a receiver that is part of
+    /// `path` is still part of, with `arg` its first argument: through
+    /// `unwrap_or`, and a list's or map's `get`, which is a step.
+    fn continue_path(
+        &mut self,
+        method: &MethodSig,
+        path: Option<u32>,
+        arg: Option<N<'_>>,
+    ) -> Option<u32> {
+        match (method.receiver, method.name, arg) {
+            (Shape::Option(_), "unwrap_or", _) => path,
+            (Shape::List(_), "get", Some(arg)) => {
+                self.record_index(path, false, arg);
+                path
+            }
+            (Shape::Map(..), "get", Some(arg)) => {
+                self.record_index(path, true, arg);
+                path
+            }
+            _ => None,
+        }
     }
 
     fn mismatch(
@@ -977,7 +1081,8 @@ impl<'a> Compiler<'a> {
             ))
         })?;
         self.emit(instr);
-        self.push(ret, span);
+        let path = self.continue_path(method, receiver.path, args.first().copied());
+        self.push_path(ret, span, path);
         Ok(())
     }
 
@@ -1036,7 +1141,14 @@ impl<'a> Compiler<'a> {
             at: count(at_word)?,
             ty,
         });
-        self.push(ty, span);
+
+        if let (Some(path), Some(recorder)) = (receiver.path, self.recorder.as_mut()) {
+            // A dotted field is part of its node; a quoted one is its
+            // string.
+            recorder.field(path, name, at, if dotted { span } else { at });
+        }
+
+        self.push_path(ty, span, receiver.path);
         Ok(())
     }
 
@@ -1058,7 +1170,7 @@ impl<'a> Compiler<'a> {
 
         let value = *value;
         self.emit(Instr::Unwrap(operand.ty));
-        self.push(value, *node.span());
+        self.push_path(value, *node.span(), operand.path);
         Ok(())
     }
 
@@ -1117,6 +1229,9 @@ impl<'a> Compiler<'a> {
     fn index_exit(&mut self, node: N<'a>) -> Result<(), Diagnostic> {
         let index = self.pop()?;
         let list = self.pop()?;
+        let index_node = exprs(node)
+            .nth(1)
+            .ok_or_else(|| internal("an index without an index"))?;
 
         if self.any_error(&[index, list]) {
             self.push(self.error, *node.span());
@@ -1140,7 +1255,8 @@ impl<'a> Compiler<'a> {
                 }
 
                 self.emit(Instr::MapIndex(list.ty));
-                self.push(value, *node.span());
+                self.record_index(list.path, true, index_node);
+                self.push_path(value, *node.span(), list.path);
                 return Ok(());
             }
             _ => return Err(internal("indexing other than a list or a map")),
@@ -1157,7 +1273,8 @@ impl<'a> Compiler<'a> {
         }
 
         self.emit(Instr::Index(entry));
-        self.push(entry, *node.span());
+        self.record_index(list.path, false, index_node);
+        self.push_path(entry, *node.span(), list.path);
         Ok(())
     }
 
@@ -1255,6 +1372,36 @@ impl<'a> Compiler<'a> {
 
         Ok((program, DebugInfo::new(self.spans)))
     }
+}
+
+/// The literal an index or a key is written as, with its span inside any
+/// parentheses, or `None` and the span of the expression that computes it.
+fn literal(node: N<'_>, source: &str) -> (Option<Literal>, Span<u32>) {
+    let mut node = node;
+
+    // Each parenthesis is looked into once, so this is bounded by the
+    // expression.
+    while node.value() == Syntax::Paren {
+        match exprs(node).next() {
+            Some(inner) => node = inner,
+            None => break,
+        }
+    }
+
+    let text = |n: N<'_>| source.get(n.range()).unwrap_or_default();
+
+    let literal = match node.value() {
+        Syntax::Integer => parse_int(text(node), false).map(|(n, _)| Literal::Int(n)),
+        Syntax::String => unescape(text(node)).map(Literal::String),
+        Syntax::Unary if operator(node) == Some(Syntax::Minus) => exprs(node)
+            .next()
+            .filter(|n| n.value() == Syntax::Integer)
+            .and_then(|n| parse_int(text(n), true))
+            .map(|(n, _)| Literal::Int(n)),
+        _ => None,
+    };
+
+    (literal, *node.span())
 }
 
 fn is_expr(kind: Syntax) -> bool {

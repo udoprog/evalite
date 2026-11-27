@@ -437,6 +437,41 @@
 //!
 //! <br>
 //!
+//! ## References
+//!
+//! To see what changing a declared name would affect, such as renaming a
+//! field or re-keying an item, [`references`] lists every name an
+//! expression uses, each as a [`Reference`]: the value or function it
+//! starts at, then the [`Step`]s of the path it reads, a field, a map's key
+//! or a list's index. A key or an index that is computed, as in `list[n]`,
+//! is a dynamic step, since the path past it is only partly known. The
+//! expression must compile, since only its types tell a map's key from a
+//! list's index. Each part has the span it is written at, and for a
+//! [`Structure`], from [`Structure::references`], the [`NodeId`] it is part
+//! of too.
+//!
+//! ```
+//! use evalite::{Environment, Options, StepKind, Type, Value};
+//!
+//! let mut env = Environment::new();
+//! let specialty = Type::record([("dice", Type::int())]);
+//! env.value("specialties", Type::map(Type::int(), specialty))?;
+//! env.value("rank", Type::int())?;
+//!
+//! let source = "specialties[0x1A2B].dice + specialties[rank].dice";
+//! let refs = evalite::references(source, &env, &Options::new())?;
+//! assert_eq!(refs.iter().map(|r| r.name()).collect::<Vec<_>>(), ["specialties", "specialties", "rank"]);
+//!
+//! let [key, dice] = refs[0].steps() else { unreachable!() };
+//! assert_eq!(key.key(), Some(&Value::int(0x1A2B)));
+//! assert_eq!(&source[key.span().range()], "0x1A2B");
+//! assert_eq!(dice.name(), Some("dice"));
+//! assert_eq!(refs[1].steps()[0].kind(), StepKind::Dynamic);
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! <br>
+//!
 //! ## The command line
 //!
 //! The `evalite` command runs expressions from the terminal, which is a quick
@@ -506,9 +541,13 @@
 //! [`Program::from_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Program.html#method.from_bytes
 //! [`Program::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Program.html#method.to_bytes
 //! [`Program`]: https://docs.rs/evalite/latest/evalite/struct.Program.html
+//! [`Reference`]: https://docs.rs/evalite/latest/evalite/struct.Reference.html
+//! [`references`]: https://docs.rs/evalite/latest/evalite/fn.references.html
 //! [`RunError`]: https://docs.rs/evalite/latest/evalite/struct.RunError.html
+//! [`Step`]: https://docs.rs/evalite/latest/evalite/struct.Step.html
 //! [`Structure::apply`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.apply
 //! [`Structure::complete`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.complete
+//! [`Structure::references`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.references
 //! [`Structure::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.to_bytes
 //! [`Structure`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html
 //! [`StructureError`]: https://docs.rs/evalite/latest/evalite/struct.StructureError.html
@@ -534,6 +573,7 @@ mod message;
 mod methods;
 mod parser;
 mod program;
+mod references;
 mod sig;
 mod structure;
 mod syntax;
@@ -569,6 +609,9 @@ mod literal_tests;
 #[cfg(test)]
 mod types_tests;
 
+#[cfg(test)]
+mod references_tests;
+
 pub use self::check::{compile, compile_debug, compile_with};
 pub use self::complete::{CompleteError, Completion, CompletionKind};
 pub use self::debug::DebugInfo;
@@ -579,6 +622,7 @@ pub use self::parser::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, Options};
 #[cfg(test)]
 pub(crate) use self::parser::{Parsed, Tree, parse_with};
 pub use self::program::{Memory, Program};
+pub use self::references::{Reference, ReferenceKind, Step, StepKind, references};
 pub use self::structure::{
     BinaryOp, EditError, HOLE, Node, NodeId, Structure, StructureError, StructureErrors, UnaryOp,
 };
