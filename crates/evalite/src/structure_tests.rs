@@ -696,9 +696,9 @@ fn tampered_structures_are_refused() {
     bytes[0] = 7;
     assert!(matches!(
         Structure::from_bytes(&bytes).map_err(|e| e.message().clone()),
-        Err(Message::WrongFormat { .. } | Message::NotDecoded)
+        Err(Message::WrongFormat { found: 7, reads: 4 })
     ));
-    let error = Structure::from_bytes(&[1, 2, 3]).unwrap_err();
+    let error = Structure::from_bytes(&[4, 2, 3]).unwrap_err();
     assert_eq!(*error.message(), Message::NotDecoded);
     assert_eq!(
         format!("{error:#}"),
@@ -1019,17 +1019,22 @@ fn stored_form_is_stable() {
         97, 100, 5, 2, 0, 1, 1, 30, 2, 1, 0, 1, 6, 3, 0, 11, 1, 31, 2, 32, 6, 3, 0, 2, 1, 29, 2,
         33, 6, 3, 0, 0, 1, 25, 2, 34, 2, 35,
     ];
-    // These bytes are format 1's. Format 3 writes the same nodes after its
-    // number, and still reads format 1.
-    assert_eq!(bytes[..2], golden[..2]);
-    assert_eq!((golden[2], bytes[2]), (1, 3));
-    assert_eq!(bytes[3..], golden[3..]);
+    // These bytes are format 1's, which held its number as the body's first
+    // field (tag 0), the nodes as tag 1 and the root as tag 2. Format 4
+    // writes its number ahead of a body of the same nodes (tag 0) and root
+    // (tag 1), and still reads format 1.
+    let (nodes, root) = (&golden[4..golden.len() - 2], &golden[golden.len() - 2..]);
+    assert_eq!(golden[..4], [3, 0, 1, 1]);
+    assert_eq!(root, [2, 35]);
+    assert_eq!(bytes[..3], [4, 2, 0]);
+    assert_eq!(bytes[3..bytes.len() - 2], *nodes);
+    assert_eq!(bytes[bytes.len() - 2..], [1, 35]);
     assert_eq!(Structure::from_bytes(golden).unwrap(), structure);
     assert_eq!(Structure::from_bytes(&bytes).unwrap(), structure);
 
     // A hexadecimal integer is a node of its own, after the others.
     let hex = s("0x1F").to_bytes().unwrap();
-    assert_eq!(hex, [3, 0, 3, 1, 1, 13, 1, 0, 62, 2, 0]);
+    assert_eq!(hex, [4, 2, 0, 1, 13, 1, 0, 62, 1, 0]);
 }
 
 #[test]
@@ -1097,23 +1102,30 @@ fn hexadecimal_integers_are_stored() {
     assert_eq!(back.to_text(), "wits + 0xAB");
 
     // Format 1 is still read, and holds decimal integers alone.
-    let mut old = stored_with(vec![Node(Repr::Int(7))], 0);
-    assert_eq!(old[2], 3);
-    old[2] = 1;
+    let old = crate::structure::test_legacy(1, vec![Node(Repr::Int(7))], id(0));
     let old = Structure::from_bytes(&old).unwrap();
     assert_eq!(old.to_text(), "7");
 
-    // Format 2, which added them, is too.
-    let mut old = stored_with(vec![Node(Repr::Hex(7))], 0);
-    old[2] = 2;
-    assert_eq!(Structure::from_bytes(&old).unwrap().to_text(), "0x7");
+    // Formats 2, which added them, and 3 are too.
+    for format in [2, 3] {
+        let old = crate::structure::test_legacy(format, vec![Node(Repr::Hex(7))], id(0));
+        assert_eq!(Structure::from_bytes(&old).unwrap().to_text(), "0x7");
+    }
 
-    // A format after this one is not.
-    let mut new = stored_with(vec![Node(Repr::Hex(7))], 0);
-    new[2] = 4;
+    // A body of their layout numbered outside them is not.
+    let odd = crate::structure::test_legacy(0, vec![Node(Repr::Hex(7))], id(0));
+    assert!(matches!(
+        Structure::from_bytes(&odd).map_err(|e| e.message().clone()),
+        Err(Message::WrongFormat { found: 0, reads: 4 })
+    ));
+
+    // A format after this one is refused by its number, before its body is
+    // read, whatever that body's layout.
+    let mut new = musli::storage::to_vec(&5u32).unwrap();
+    new.extend([0xff, 0x00, 0x13, 0x37]);
     assert!(matches!(
         Structure::from_bytes(&new).map_err(|e| e.message().clone()),
-        Err(Message::WrongFormat { found: 4, reads: 3 })
+        Err(Message::WrongFormat { found: 5, reads: 4 })
     ));
 }
 
@@ -1210,7 +1222,7 @@ fn maps_compile() {
 }
 
 /// Format 3 stores a map as its own node, after the others; formats 1 and
-/// 2, which have none, are still read.
+/// 2, which have none, are still read. Format 4 stores it as format 3 did.
 #[test]
 fn maps_are_stored() {
     let structure = s(r#"{0x1F: "a", -2: wits}"#);
@@ -1221,12 +1233,11 @@ fn maps_are_stored() {
 
     // The bytes of `{1: 2}` are pinned.
     let map = s("{1: 2}").to_bytes().unwrap();
-    assert_eq!(map[2], 3);
     assert_eq!(Structure::from_bytes(&map).unwrap(), s("{1: 2}"));
     assert_eq!(
         map,
         [
-            3, 0, 3, 1, 3, 1, 1, 0, 2, 1, 1, 0, 4, 14, 1, 0, 1, 2, 0, 1, 2, 2
+            4, 2, 0, 3, 1, 1, 0, 2, 1, 1, 0, 4, 14, 1, 0, 1, 2, 0, 1, 1, 2
         ]
     );
 

@@ -66,10 +66,10 @@ fn huge_length_prefix() {
     let bytes = evalite::compile("i", &env).unwrap().to_bytes().unwrap();
     assert!(Program::from_bytes(&bytes).is_ok());
 
-    // The stored form starts with its field count, then each field's tag
-    // and value: `format` (tag 0) and `types` (tag 1), whose first byte is
-    // its length. Every length prefix of the program is tried.
-    assert_eq!(&bytes[..4], &[9, 0, 7, 1]);
+    // The stored form starts with its format, then the body's field count,
+    // then each field's tag and value: `types` (tag 0) first, whose first
+    // byte is its length. Every length prefix of the program is tried.
+    assert_eq!(&bytes[..3], &[8, 8, 0]);
 
     for at in 0..bytes.len() {
         for claimed in [u64::from(u32::MAX), u64::MAX >> 1, u64::MAX] {
@@ -87,7 +87,7 @@ fn huge_length_prefix() {
                 "byte {at} claiming {claimed} allocated {largest} bytes"
             );
 
-            if at == 4 {
+            if at == 3 {
                 let error = result.expect_err("a huge length prefix decoded");
                 assert_eq!(error.to_string(), "the bytes do not decode", "{error:?}");
             }

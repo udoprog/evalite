@@ -16,7 +16,7 @@ use std::mem::discriminant;
 
 use crate::check_tests::{env, generate};
 use crate::message::Message;
-use crate::program::{Constant, Instr, Memory, Stored};
+use crate::program::{Constant, FORMAT, Instr, Memory, Stored};
 use crate::tests::Rng;
 use crate::types::{TypeId, TypeNode, Types};
 use crate::*;
@@ -2255,13 +2255,13 @@ fn tampered_programs_never_fault() {
         let bytes = program.to_bytes().unwrap();
 
         for _ in 0..4 {
-            let mut stored: Stored = musli::storage::from_slice(&bytes).unwrap();
+            let mut stored: Stored = crate::framed::body(&bytes);
 
             for _ in 0..=rng.below(3) {
                 tamper(&mut rng, &mut stored);
             }
 
-            let tampered = musli::storage::to_vec(&stored).unwrap();
+            let tampered = crate::framed::to_bytes(FORMAT, &stored).unwrap();
 
             let Ok(program) = Program::from_bytes(&tampered) else {
                 refused += 1;
@@ -2633,13 +2633,14 @@ fn tampered_map_programs_never_fault() {
     for round in 0..2_000 {
         let source = sources[rng.below(sources.len())];
         let bytes = compile_in(source, &[]).to_bytes().unwrap();
-        let mut stored: Stored = musli::storage::from_slice(&bytes).unwrap();
+        let mut stored: Stored = crate::framed::body(&bytes);
 
         for _ in 0..=rng.below(3) {
             tamper(&mut rng, &mut stored);
         }
 
-        let Ok(program) = Program::from_bytes(&musli::storage::to_vec(&stored).unwrap()) else {
+        let Ok(program) = Program::from_bytes(&crate::framed::to_bytes(FORMAT, &stored).unwrap())
+        else {
             refused += 1;
             continue;
         };

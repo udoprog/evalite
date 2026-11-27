@@ -734,6 +734,7 @@ mod complete;
 mod debug;
 mod env;
 mod error;
+mod framed;
 mod globals;
 pub mod highlight;
 mod lexer;

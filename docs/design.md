@@ -902,21 +902,25 @@ the 30th cycle with 65 words live.
 Compaction otherwise only runs once more than half the heap is free.
 ## 8. Stored formats and verification
 
-All stored forms are encoded with musli `storage` and start with a
-`format: u32`.
+All versioned stored forms are a `format: u32` encoded with musli
+`storage`, then the body, a value of its own (`framed.rs`). A reader decodes
+the number alone and checks it before it decodes the body, so bytes of a
+later format whose body changed layout are refused as `WrongFormat`, not
+`NotDecoded`.
 
-**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 7 (4 added `Map`,
+**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 8 (4 added `Map`,
 5 map literals, 6 each global's slot and the layout fingerprint, 7 dropped
 `Memory::globals`, as a program's values are in the store, not the
-machine). The stored form is
-`Stored { format, types, constants, globals, functions, code, result, memory, layout }`,
+machine, 8 moved the number ahead of the body). The body is
+`Stored { types, constants, globals, functions, code, result, memory, layout }`,
 where each global is (name, type, slot). `layout` is last, so a length
 prefix's offset doesn't depend on its varint width.
 `from_bytes`:
 
-1. decodes the bytes (`NotDecoded` on failure);
-2. requires `format == FORMAT` exactly (`WrongFormat`): older programs are
+1. decodes the number (`NotDecoded` on failure) and requires
+   `format == FORMAT` exactly (`WrongFormat`): older programs are
    recompiled, not migrated;
+2. decodes the body (`NotDecoded`);
 3. checks the type table (`Types::from_stored`, section 4);
 4. runs the full verifier (section 3.5);
 5. requires the declared `memory` to equal the computed memory
@@ -946,8 +950,8 @@ their size, whatever the bytes repeat or share:
 - the globals' and host functions' types written out are bounded together
   (section 3.5).
 
-**Store values:** `Globals::to_bytes`/`from_bytes`, `FORMAT` = 1. The
-stored form is `Stored { format, values }`, each value
+**Store values:** `Globals::to_bytes`/`from_bytes`, `FORMAT` = 2 (2 moved
+the number ahead of the body). The body is `Stored { values }`, each value
 `{ name, parts }` for a set slot, in slot order. `parts` is the value
 flattened in pre-order: `Int`, `Bool`, `String`, `None`, `Some` (its value
 follows), `List(n)` (n entries follow), `Map(n)` (n key, value pairs
@@ -956,8 +960,8 @@ unique, whose values follow in that order). The store's words, free blocks
 and spare room are not stored, so the in-memory layout may change without a
 format bump. `from_bytes(&env, bytes)` (or `from_bytes_with_limit`):
 
-1. decodes the bytes (`NotDecoded`) and requires `format == FORMAT`
-   (`WrongFormat`);
+1. decodes the number (`NotDecoded`) and requires `format == FORMAT`
+   (`WrongFormat`), then the body (`NotDecoded`);
 2. for each value, requires its name declared (`NotDeclared`) and not
    stored before (`ValueTwice`);
 3. builds the value from its parts with an explicit list of open
@@ -978,10 +982,13 @@ migrated (`migrate` carries values between environments, section 10).
 `(start, end)` spans, and refuses a span that ends before it starts. It is
 not versioned and is kept apart from the program.
 
-**Structures:** `Structure::to_bytes`/`from_bytes`, `FORMAT` = 2 (2 added
-`Repr::Hex`). It reads formats 1 and 2. The stored form is
-`Stored { format, nodes, root }`, with only the live nodes, renumbered in
-post order. `from_bytes` checks:
+**Structures:** `Structure::to_bytes`/`from_bytes`, `FORMAT` = 4 (2 added
+`Repr::Hex`, 3 `Repr::Map`, 4 moved the number ahead of the body). The body
+is `Stored { nodes, root }`, with only the live nodes, renumbered in
+post order. It still reads formats 1 to 3, whose nodes are all format 4's:
+they wrote `Stored { format, nodes, root }` with the number inside, so their
+bytes start with that struct's field count, 3, which is never a later
+format's number. `from_bytes` checks:
 
 - every part index exists;
 - no node has two parents, and the root has none;

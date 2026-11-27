@@ -1400,11 +1400,11 @@ fn store_round_trip() {
 
 fn stored(source: &str) -> Stored {
     let bytes = compile(source, &env()).unwrap().to_bytes().unwrap();
-    musli::storage::from_slice(&bytes).unwrap()
+    crate::framed::body(&bytes)
 }
 
 fn load(stored: &Stored) -> Result<Program, StoreError> {
-    Program::from_bytes(&musli::storage::to_vec(stored).unwrap())
+    Program::from_bytes(&crate::framed::to_bytes(FORMAT, stored).unwrap())
 }
 
 fn invalid(stored: &Stored) -> String {
@@ -1892,7 +1892,7 @@ fn tampered_programs() {
 /// Load `stored`, failing when it takes longer than a few seconds. Inputs
 /// are sized so that work quadratic in them would take far longer.
 fn load_quickly(stored: &Stored) -> Result<Program, StoreError> {
-    let bytes = musli::storage::to_vec(stored).unwrap();
+    let bytes = crate::framed::to_bytes(FORMAT, stored).unwrap();
     let start = Instant::now();
     let loaded = Program::from_bytes(&bytes);
     let took = start.elapsed();
@@ -1971,7 +1971,7 @@ fn many_reads_of_a_wide_record_compile_and_verify_quickly() {
     assert!(took < Duration::from_secs(5), "compiling took {took:?}");
 
     let bytes = program.to_bytes().unwrap();
-    load_quickly(&musli::storage::from_slice(&bytes).unwrap()).unwrap();
+    load_quickly(&crate::framed::body(&bytes)).unwrap();
 }
 
 /// The id of the next type pushed onto a stored table.
@@ -2079,10 +2079,10 @@ fn shared_map_keys_verify_quickly() {
     let source = format!("{{{:?}: 1, {:?}: 2}}.len()", long('a'), long('b'));
     let options = Options::new().max_len(usize::MAX);
     let program = compile_with(&source, &Environment::new(), &options).unwrap();
-    let one: Stored = musli::storage::from_slice(&program.to_bytes().unwrap()).unwrap();
+    let one: Stored = crate::framed::body(&program.to_bytes().unwrap());
 
     // Many maps of the one key constant, their lengths summed.
-    let mut many: Stored = musli::storage::from_slice(&program.to_bytes().unwrap()).unwrap();
+    let mut many: Stored = crate::framed::body(&program.to_bytes().unwrap());
     many.code = one
         .code
         .iter()
@@ -2106,11 +2106,13 @@ fn stored_bytes_errors() {
         }
     }
 
-    let mut stored = stored("wits + 1");
-    stored.format = FORMAT + 1;
+    // A later format is refused by its number, before its body is read,
+    // whatever that body's layout.
+    let mut newer = musli::storage::to_vec(&(FORMAT + 1)).unwrap();
+    newer.extend([0xff, 0x00, 0x13, 0x37]);
 
     assert_eq!(
-        format!("{:#}", load(&stored).unwrap_err()),
+        format!("{:#}", Program::from_bytes(&newer).unwrap_err()),
         format!(
             "it was stored in format {}, this evalite reads format {FORMAT}: while reading a stored program",
             FORMAT + 1
@@ -2124,7 +2126,7 @@ fn stored_bytes_errors() {
     );
     assert!(std::error::Error::source(&error).is_some());
 
-    stored.format = FORMAT;
+    let mut stored = stored("wits + 1");
     stored.memory.stack = 0;
     let error = load(&stored).unwrap_err();
     assert_eq!(

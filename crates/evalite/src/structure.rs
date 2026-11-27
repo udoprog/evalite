@@ -25,12 +25,14 @@ use crate::types::{is_field_name, is_value_name};
 type N<'a> = TreeNode<'a, Syntax, Flavor>;
 
 /// What a stored structure starts with, so later versions can tell. Format 2
-/// adds [`Repr::Hex`] and format 3 [`Repr::Map`]; formats 1 and 2 are read
-/// as well, since their nodes are all format 3's.
-const FORMAT: u32 = 3;
+/// adds [`Repr::Hex`], format 3 [`Repr::Map`], and format 4 moves the number
+/// out of the body, ahead of it. Formats 1 to 3 are read as well, since
+/// their nodes are all format 4's.
+const FORMAT: u32 = 4;
 
-/// The oldest format [`Structure::from_bytes`] reads.
-const OLDEST_FORMAT: u32 = 1;
+/// What formats 1 to 3 start with: the field count of [`Legacy`], which
+/// held their number.
+const LEGACY: u32 = 3;
 
 /// How a hole is written as text, in a value's place or a member's name.
 pub const HOLE: &str = "_";
@@ -1093,6 +1095,13 @@ impl std::error::Error for StructureErrors {}
 
 #[derive(Encode, Decode)]
 struct Stored {
+    nodes: Vec<Node>,
+    root: NodeId,
+}
+
+/// The stored form of formats 1 to 3, numbered in the body.
+#[derive(Encode, Decode)]
+struct Legacy {
     format: u32,
     nodes: Vec<Node>,
     root: NodeId,
@@ -1515,13 +1524,7 @@ impl Structure {
             StoreError::from(Invalid::NotOneTree).context(Message::StoringStructure)
         })?;
 
-        let stored = Stored {
-            format: FORMAT,
-            nodes,
-            root,
-        };
-
-        musli::storage::to_vec(&stored).map_err(|e| {
+        crate::framed::to_bytes(FORMAT, &Stored { nodes, root }).map_err(|e| {
             StoreError::new(Message::CannotEncode)
                 .with_source(e.to_string())
                 .context(Message::StoringStructure)
@@ -1535,19 +1538,35 @@ impl Structure {
     /// Returns a [`StoreError`] when `bytes` do not decode, are of another
     /// format version, or are nodes that are not one tree.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, StoreError> {
-        let stored: Stored = musli::storage::from_slice(bytes).map_err(|e| {
+        let not_decoded = |e: musli::storage::Error| {
             StoreError::new(Message::NotDecoded)
                 .with_source(e.to_string())
                 .context(Message::DecodingStructure)
-        })?;
-
-        if !(OLDEST_FORMAT..=FORMAT).contains(&stored.format) {
-            return Err(StoreError::new(Message::WrongFormat {
-                found: stored.format,
+        };
+        let wrong_format = |found| {
+            StoreError::new(Message::WrongFormat {
+                found,
                 reads: FORMAT,
             })
-            .context(Message::DecodingStructure));
-        }
+            .context(Message::DecodingStructure)
+        };
+
+        let stored = match crate::framed::split(bytes).map_err(not_decoded)? {
+            (FORMAT, body) => musli::storage::from_slice::<Stored>(body).map_err(not_decoded)?,
+            (LEGACY, _) => {
+                let legacy: Legacy = musli::storage::from_slice(bytes).map_err(not_decoded)?;
+
+                if !(1..FORMAT).contains(&legacy.format) {
+                    return Err(wrong_format(legacy.format));
+                }
+
+                Stored {
+                    nodes: legacy.nodes,
+                    root: legacy.root,
+                }
+            }
+            (found, _) => return Err(wrong_format(found)),
+        };
 
         let mut parents = vec![None; stored.nodes.len()];
 
@@ -2352,8 +2371,14 @@ pub(crate) fn test_id(n: u32) -> NodeId {
 
 #[cfg(test)]
 pub(crate) fn test_stored(nodes: Vec<Node>, root: NodeId) -> Vec<u8> {
-    musli::storage::to_vec(&Stored {
-        format: FORMAT,
+    crate::framed::to_bytes(FORMAT, &Stored { nodes, root }).unwrap_or_default()
+}
+
+/// `nodes` as format `format` (1 to 3) stored them.
+#[cfg(test)]
+pub(crate) fn test_legacy(format: u32, nodes: Vec<Node>, root: NodeId) -> Vec<u8> {
+    musli::storage::to_vec(&Legacy {
+        format,
         nodes,
         root,
     })

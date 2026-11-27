@@ -1098,7 +1098,7 @@ impl From<Message> for RunError {
 /// ```
 /// use evalite::Program;
 ///
-/// let error = Program::from_bytes(b"not a program").unwrap_err();
+/// let error = Program::from_bytes(b"").unwrap_err();
 /// assert_eq!(error.to_string(), "the bytes do not decode");
 /// assert_eq!(format!("{error:#}"), "the bytes do not decode: while reading a stored program");
 /// assert!(std::error::Error::source(&error).is_some());

@@ -7,7 +7,7 @@ use crate::message::{Invalid, Message, StoreError};
 use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 7;
+pub(crate) const FORMAT: u32 = 8;
 
 /// How many nodes the globals' and host functions' types may have
 /// together, each written out in full, as [`Program::globals`] and
@@ -225,7 +225,6 @@ impl Memory {
 
 #[derive(Encode, Decode)]
 pub(crate) struct Stored {
-    pub(crate) format: u32,
     pub(crate) types: Vec<TypeNode>,
     pub(crate) constants: Vec<Constant>,
     pub(crate) globals: Vec<Global>,
@@ -336,7 +335,6 @@ impl Program {
     /// not do in practice.
     pub fn to_bytes(&self) -> Result<Vec<u8>, StoreError> {
         let stored = Stored {
-            format: FORMAT,
             types: self.types.nodes().to_vec(),
             constants: self.constants.clone(),
             globals: self.globals.clone(),
@@ -347,7 +345,7 @@ impl Program {
             layout: self.layout,
         };
 
-        musli::storage::to_vec(&stored).map_err(|e| {
+        crate::framed::to_bytes(FORMAT, &stored).map_err(|e| {
             StoreError::new(Message::CannotEncode)
                 .with_source(e.to_string())
                 .context(Message::StoringProgram)
@@ -364,19 +362,22 @@ impl Program {
     /// of bounds, or using other memory than it declares. Its `{:#}` chain says
     /// where, such as "at instruction 0: while verifying the program".
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, StoreError> {
-        let stored: Stored = musli::storage::from_slice(bytes).map_err(|e| {
+        let not_decoded = |e: musli::storage::Error| {
             StoreError::new(Message::NotDecoded)
                 .with_source(e.to_string())
                 .context(Message::DecodingProgram)
-        })?;
+        };
+        let (format, body) = crate::framed::split(bytes).map_err(not_decoded)?;
 
-        if stored.format != FORMAT {
+        if format != FORMAT {
             return Err(StoreError::new(Message::WrongFormat {
-                found: stored.format,
+                found: format,
                 reads: FORMAT,
             })
             .context(Message::DecodingProgram));
         }
+
+        let stored: Stored = musli::storage::from_slice(body).map_err(not_decoded)?;
 
         let verifying = |e: StoreError| e.context(Message::VerifyingProgram);
         let types = Types::from_stored(stored.types).map_err(verifying)?;

@@ -95,11 +95,11 @@ fn filled(env: &Environment) -> Globals {
 }
 
 fn stored(globals: &Globals) -> Stored {
-    musli::storage::from_slice(&globals.to_bytes().unwrap()).unwrap()
+    crate::framed::body(&globals.to_bytes().unwrap())
 }
 
 fn read(env: &Environment, stored: &Stored) -> Result<Globals, GlobalsError> {
-    Globals::from_bytes(env, &musli::storage::to_vec(stored).unwrap())
+    Globals::from_bytes(env, &crate::framed::to_bytes(FORMAT, stored).unwrap())
 }
 
 /// `{:#}` of what reading `stored` back gives.
@@ -303,15 +303,19 @@ fn tampered_bytes_are_refused() {
     let env = env();
     let good = stored(&filled(&env));
     let tamper = |f: &dyn Fn(&mut Stored)| {
-        let mut stored =
-            musli::storage::from_slice::<Stored>(&musli::storage::to_vec(&good).unwrap()).unwrap();
+        let mut stored: Stored =
+            crate::framed::body(&crate::framed::to_bytes(FORMAT, &good).unwrap());
         f(&mut stored);
         refused(&env, &stored)
     };
 
+    // A later format is refused by its number, before its body is read,
+    // whatever that body's layout.
+    let mut newer = musli::storage::to_vec(&(FORMAT + 1)).unwrap();
+    newer.extend([0xff, 0x00, 0x13, 0x37]);
     assert_eq!(
-        tamper(&|s| s.format = FORMAT + 1),
-        "it was stored in format 2, this evalite reads format 1: while reading stored values"
+        format!("{:#}", Globals::from_bytes(&env, &newer).unwrap_err()),
+        "it was stored in format 3, this evalite reads format 2: while reading stored values"
     );
     assert_eq!(
         tamper(&|s| s.values[0].name = "m".into()),
@@ -409,7 +413,6 @@ fn huge_counts_end_early() {
 
     for (name, part) in [("l", Part::List(u64::MAX)), ("m", Part::Map(u64::MAX))] {
         let stored = Stored {
-            format: FORMAT,
             values: vec![StoredValue {
                 name: name.into(),
                 parts: vec![part, Part::Int(1), Part::Int(2), Part::Int(3)],

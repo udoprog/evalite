@@ -19,12 +19,12 @@ use crate::types::Kind;
 use crate::value::{Repr, key_order};
 use crate::{DEFAULT_GLOBALS, Environment, MAX_TYPE_DEPTH, Type, Value};
 
-/// The version of the stored form [`Globals::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 1;
+/// The version of the stored form [`Globals::to_bytes`] writes. Format 2
+/// moved the number out of the body, ahead of it.
+pub(crate) const FORMAT: u32 = 2;
 
 #[derive(Debug, Encode, Decode)]
 pub(crate) struct Stored {
-    pub(crate) format: u32,
     /// Each set value, in slot order.
     pub(crate) values: Vec<StoredValue>,
 }
@@ -113,12 +113,9 @@ impl Globals {
             });
         }
 
-        let stored = Stored {
-            format: FORMAT,
-            values,
-        };
+        let stored = Stored { values };
 
-        musli::storage::to_vec(&stored).map_err(|_| {
+        crate::framed::to_bytes(FORMAT, &stored).map_err(|_| {
             self.error(&RunError::new(Message::CannotEncode).context(Message::StoringValues))
         })
     }
@@ -188,15 +185,19 @@ impl Globals {
     }
 
     fn read_stored(&mut self, bytes: &[u8]) -> Result<(), RunError> {
-        let stored: Stored = musli::storage::from_slice(bytes)
-            .map_err(|e| RunError::new(Message::NotDecoded).with_source(e.to_string()))?;
+        let not_decoded = |e: musli::storage::Error| {
+            RunError::new(Message::NotDecoded).with_source(e.to_string())
+        };
+        let (format, body) = crate::framed::split(bytes).map_err(not_decoded)?;
 
-        if stored.format != FORMAT {
+        if format != FORMAT {
             return Err(RunError::new(Message::WrongFormat {
-                found: stored.format,
+                found: format,
                 reads: FORMAT,
             }));
         }
+
+        let stored: Stored = musli::storage::from_slice(body).map_err(not_decoded)?;
 
         for stored in stored.values {
             let Some((n, held)) = self.held(&stored.name) else {
