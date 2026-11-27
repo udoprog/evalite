@@ -236,6 +236,8 @@ pub struct Program {
     pub(crate) code: Vec<Instr>,
     pub(crate) result: TypeId,
     pub(crate) memory: Memory,
+    /// The type of each global, built once so listing them does not.
+    pub(crate) global_types: Vec<Type>,
     /// Where each global is held, in words from the first.
     pub(crate) global_at: Vec<u32>,
     /// Where each constant is, in words from the first, and the length
@@ -267,16 +269,16 @@ impl Program {
     /// env.value("unused", Type::bool())?;
     ///
     /// let program = evalite::compile("wits + bonus.unwrap_or(wits)", &env)?;
-    /// let mut names: Vec<_> = program.globals().into_iter().map(|(name, _)| name).collect();
+    /// let mut names: Vec<_> = program.globals().map(|(name, _)| name).collect();
     /// names.sort();
     /// assert_eq!(names, ["bonus", "wits"]);
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
-    pub fn globals(&self) -> Vec<(&str, Type)> {
+    pub fn globals(&self) -> impl ExactSizeIterator<Item = (&str, &Type)> + Clone {
         self.globals
             .iter()
-            .map(|g| (g.name.as_str(), self.type_of(g.ty)))
-            .collect()
+            .zip(&self.global_types)
+            .map(|(g, ty)| (g.name.as_str(), ty))
     }
 
     /// The caller's functions it calls: each name, parameter types and
@@ -433,13 +435,18 @@ impl Program {
 
         verifier.known(result)?;
 
-        let global_types = global_at
+        let global_ids = global_at
             .iter()
             .copied()
             .zip(globals.iter().map(|g| g.ty))
             .collect::<HashMap<_, _>>();
 
-        let memory = verifier.code(&code, &global_types, &functions, result)?;
+        let memory = verifier.code(&code, &global_ids, &functions, result)?;
+
+        let ids: Vec<TypeId> = globals.iter().map(|g| g.ty).collect();
+        let global_types = types
+            .to_types(&ids)
+            .ok_or_else(|| StoreError::from(Invalid::BadGlobal))?;
 
         Ok(Self {
             memory: Memory {
@@ -453,6 +460,7 @@ impl Program {
             functions,
             code,
             result,
+            global_types,
             global_at,
             constant_at,
         })

@@ -710,9 +710,31 @@ impl Types {
 
     /// The [`Type`] of `id`, built from the leaves up so nothing recurses.
     pub(crate) fn to_type(&self, id: TypeId) -> Option<Type> {
-        // The ids `id` reaches, which are all at or below it.
-        let mut reach = vec![false; id.index().checked_add(1)?];
-        *reach.get_mut(id.index())? = true;
+        self.build(&[id])?.get_mut(id.index())?.take()
+    }
+
+    /// The [`Type`] of each of `ids`, built together so what they share is
+    /// built once.
+    pub(crate) fn to_types(&self, ids: &[TypeId]) -> Option<Vec<Type>> {
+        if ids.is_empty() {
+            return Some(Vec::new());
+        }
+
+        let built = self.build(ids)?;
+        ids.iter()
+            .map(|id| built.get(id.index())?.clone())
+            .collect()
+    }
+
+    /// The types of `ids` and what they reach, at their own ids.
+    fn build(&self, ids: &[TypeId]) -> Option<Vec<Option<Type>>> {
+        // The ids `ids` reach, which are all at or below the greatest.
+        let top = ids.iter().map(|id| id.index()).max()?;
+        let mut reach = vec![false; top.checked_add(1)?];
+
+        for id in ids {
+            *reach.get_mut(id.index())? = true;
+        }
 
         for at in (0..reach.len()).rev() {
             if !reach.get(at).copied().unwrap_or(false) {
@@ -753,7 +775,7 @@ impl Types {
             *built.get_mut(at)? = Some(ty);
         }
 
-        built.get_mut(id.index())?.take()
+        Some(built)
     }
 
     /// Check a stored table: each part before what holds it, each node

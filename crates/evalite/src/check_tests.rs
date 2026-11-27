@@ -1057,11 +1057,11 @@ fn globals_and_functions() {
     .unwrap();
 
     assert_eq!(
-        program.globals(),
+        program.globals().collect::<Vec<_>>(),
         [
-            ("health", track()),
-            ("wits", Type::int()),
-            ("bonus", Type::option(Type::int())),
+            ("health", &track()),
+            ("wits", &Type::int()),
+            ("bonus", &Type::option(Type::int())),
         ]
     );
 
@@ -1248,7 +1248,11 @@ fn store_round_trip() {
         assert_eq!(loaded.constants, program.constants, "{source:?}");
         assert_eq!(loaded.memory(), program.memory(), "{source:?}");
         assert_eq!(loaded.result_type(), program.result_type(), "{source:?}");
-        assert_eq!(loaded.globals(), program.globals(), "{source:?}");
+        assert_eq!(
+            loaded.globals().collect::<Vec<_>>(),
+            program.globals().collect::<Vec<_>>(),
+            "{source:?}"
+        );
         assert_eq!(loaded.functions(), program.functions(), "{source:?}");
         assert_eq!(loaded.to_bytes().unwrap(), bytes, "{source:?}");
     }

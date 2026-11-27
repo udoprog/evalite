@@ -181,12 +181,10 @@ impl PartialEq for VariablesEditorProps {
 pub fn VariablesEditor(props: &VariablesEditorProps) -> Html {
     let phrases = use_phrases_with(&L10N);
 
-    let used: Option<BTreeSet<String>> = props.program.as_ref().map(|p| {
-        p.globals()
-            .into_iter()
-            .map(|(name, _)| name.to_owned())
-            .collect()
-    });
+    let used: Option<BTreeSet<String>> = props
+        .program
+        .as_ref()
+        .map(|p| p.globals().map(|(name, _)| name.to_owned()).collect());
 
     let is_used = |v: &Variable| used.as_ref().map(|u| u.contains(v.name.trim()));
 

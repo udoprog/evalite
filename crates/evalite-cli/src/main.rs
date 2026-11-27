@@ -161,15 +161,11 @@ impl Session<'_> {
         let mut run = machine.load(&program).map_err(failed)?;
 
         // Variables the expression does not read are not bound.
-        let read = run
-            .globals()
-            .into_iter()
-            .map(|(n, _)| n)
-            .collect::<Vec<_>>();
+        let read = run.globals().map(|(n, _)| n).collect::<Vec<_>>();
 
         for var in &self.cli.vars {
             if read.contains(&var.name.as_str()) {
-                run.bind(&var.name, var.value.clone()).map_err(failed)?;
+                run.bind(&var.name, &var.value).map_err(failed)?;
             }
         }
 

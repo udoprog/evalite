@@ -149,7 +149,7 @@ impl Host for NoHost {
 /// let program = evalite::compile("a * 2 + 1", &env)?;
 /// let mut machine = Machine::new(Limits::new());
 /// let mut run = machine.load(&program)?;
-/// run.bind("a", Value::int(20))?;
+/// run.bind("a", &Value::int(20))?;
 ///
 /// let outcome = run.run()?;
 /// assert_eq!(outcome.value(), &Value::int(41));
@@ -206,12 +206,12 @@ impl Outcome {
 ///
 /// let mut machine = Machine::new(Limits::new());
 /// let mut run = machine.load(&program)?;
-/// run.bind("strength", Value::int(3))?;
-/// run.bind("bonus", Value::some(Value::int(2)))?;
+/// run.bind("strength", &Value::int(3))?;
+/// run.bind("bonus", &Value::some(Value::int(2)))?;
 /// assert_eq!(run.run()?.value(), &Value::int(5));
 ///
 /// let mut run = machine.load(&program)?;
-/// let error = run.bind("strength", Value::bool(true)).unwrap_err();
+/// let error = run.bind("strength", &Value::bool(true)).unwrap_err();
 /// let labels: Vec<String> = error.labels(&program, None).map(|l| l.message().to_string()).collect();
 /// assert_eq!(labels, ["expected Int, found Bool", "while binding `strength`"]);
 /// # Ok::<_, Box<dyn std::error::Error>>(())
@@ -341,7 +341,7 @@ enum Read {
 
 impl<'a> Run<'a> {
     /// The values the program reads, with their types, each to be bound.
-    pub fn globals(&self) -> Vec<(&'a str, Type)> {
+    pub fn globals(&self) -> impl ExactSizeIterator<Item = (&'a str, &'a Type)> + Clone + use<'a> {
         self.program.globals()
     }
 
@@ -353,7 +353,7 @@ impl<'a> Run<'a> {
     /// Returns a [`RunError`] when the program reads no value `name`, it is
     /// already bound, `value` is not of its declared type (the error's labels
     /// give the path into `value`), or `value` does not fit in the memory left.
-    pub fn bind(&mut self, name: &str, value: Value) -> Result<(), RunError> {
+    pub fn bind(&mut self, name: &str, value: &Value) -> Result<(), RunError> {
         let program = self.program;
 
         let (n, global) = program
@@ -364,7 +364,7 @@ impl<'a> Run<'a> {
             .ok_or_else(|| RunError::new(Message::UnknownValue))?;
 
         let id = u32::try_from(n).map_err(|_| fault(Fault::PastAddressSpace))?;
-        self.bind_global(n, global.ty, &value)
+        self.bind_global(n, global.ty, value)
             .context(Message::Binding { global: id })
     }
 

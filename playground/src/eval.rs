@@ -84,16 +84,11 @@ pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Do
     };
     let mut run = machine.load(&program).map_err(failed)?;
 
-    let read = run
-        .globals()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect::<Vec<_>>();
+    let read = run.globals().map(|(name, _)| name).collect::<Vec<_>>();
 
     for binding in bindings {
         if read.contains(&binding.name.as_str()) {
-            run.bind(&binding.name, binding.value.clone())
-                .map_err(failed)?;
+            run.bind(&binding.name, &binding.value).map_err(failed)?;
         }
     }
 

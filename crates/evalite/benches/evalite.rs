@@ -331,7 +331,6 @@ fn prepare(source: &str, env: &Environment, values: &BTreeMap<String, Value>) ->
     let bytes = program.to_bytes().unwrap();
     let bindings = program
         .globals()
-        .into_iter()
         .map(|(name, _)| (name.to_owned(), values[name].clone()))
         .collect();
 
@@ -353,7 +352,7 @@ fn evaluate(machine: &mut Machine, prepared: &Prepared) -> evalite::Outcome {
     let mut run = machine.load(&prepared.program).unwrap();
 
     for (name, value) in &prepared.bindings {
-        run.bind(name, value.clone()).unwrap();
+        run.bind(name, value).unwrap();
     }
 
     run.run_with(&mut host).unwrap()
@@ -388,7 +387,7 @@ fn stages(c: &mut Criterion) {
                 let mut run = machine.load(black_box(&prepared.program)).unwrap();
 
                 for (name, value) in &prepared.bindings {
-                    run.bind(name, value.clone()).unwrap();
+                    run.bind(name, value).unwrap();
                 }
             })
         });
@@ -403,7 +402,7 @@ fn stages(c: &mut Criterion) {
                 let mut run = machine.load(&program).unwrap();
 
                 for (name, _) in program.globals() {
-                    run.bind(name, values[name].clone()).unwrap();
+                    run.bind(name, &values[name]).unwrap();
                 }
 
                 run.run_with(&mut host).unwrap()
@@ -488,7 +487,7 @@ fn whole_sheet(c: &mut Criterion) {
                 let mut run = machine.load(&p.program).unwrap();
 
                 for (name, _) in p.program.globals() {
-                    run.bind(name, values[name].clone()).unwrap();
+                    run.bind(name, &values[name]).unwrap();
                 }
 
                 black_box(run.run_with(&mut host).unwrap());

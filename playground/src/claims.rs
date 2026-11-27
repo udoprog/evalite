@@ -154,9 +154,9 @@ pub const CLAIMS: &[Claim] = &[
              // Later, whenever the values change:\n\
              let program = Program::from_bytes(&bytes)?;\n\
              let mut run = machine.load(&program)?;\n\
-             run.bind(\"wits\", Value::int(3))?;\n\
-             run.bind(\"dexterity\", Value::int(2))?;\n\
-             run.bind(\"athletics\", Value::int(1))?;\n\
+             run.bind(\"wits\", &Value::int(3))?;\n\
+             run.bind(\"dexterity\", &Value::int(2))?;\n\
+             run.bind(\"athletics\", &Value::int(1))?;\n\
              run.run()?; // 3",
         ),
         hint: None,
@@ -319,9 +319,9 @@ mod tests {
         let program = Program::from_bytes(&bytes).unwrap();
         let mut machine = Machine::new(Limits::new());
         let mut run = machine.load(&program).unwrap();
-        run.bind("wits", Value::int(3)).unwrap();
-        run.bind("dexterity", Value::int(2)).unwrap();
-        run.bind("athletics", Value::int(1)).unwrap();
+        run.bind("wits", &Value::int(3)).unwrap();
+        run.bind("dexterity", &Value::int(2)).unwrap();
+        run.bind("athletics", &Value::int(1)).unwrap();
         assert_eq!(run.run().unwrap().value().as_int(), Some(3));
 
         let error = Program::from_bytes(&bytes[..bytes.len() - 1]).unwrap_err();

@@ -135,7 +135,7 @@ fn bind_all(run: &mut Run<'_>, extra: &[(&str, Type, Value)]) -> Result<(), RunE
             None => binding(name).0,
         };
 
-        run.bind(name, value)?;
+        run.bind(name, &value)?;
     }
 
     Ok(())
@@ -808,20 +808,20 @@ fn binding_errors() {
 
     for (name, value, message) in cases {
         let mut run = machine.load(&program).unwrap();
-        let error = run.bind(name, value.clone()).unwrap_err();
+        let error = run.bind(name, value).unwrap_err();
         assert_eq!(chain(&error, &program), *message, "{name} = {value}");
     }
 
     // Binding twice is an error, and so is not binding at all.
     let mut run = machine.load(&program).unwrap();
-    run.bind("wits", int(1)).unwrap();
+    run.bind("wits", &int(1)).unwrap();
     assert_eq!(
-        chain(&run.bind("wits", int(1)).unwrap_err(), &program),
+        chain(&run.bind("wits", &int(1)).unwrap_err(), &program),
         "`wits` is already bound: while binding `wits`"
     );
 
     let mut run = machine.load(&program).unwrap();
-    run.bind("wits", int(1)).unwrap();
+    run.bind("wits", &int(1)).unwrap();
     assert_eq!(
         chain(&run.run_with(&mut test_host).unwrap_err(), &program),
         "`bonus` is not bound, bind a Option<Int> before running: while running the program"
@@ -829,8 +829,8 @@ fn binding_errors() {
 
     // A failed binding leaves the value unbound, and a good one binds.
     let mut run = machine.load(&program).unwrap();
-    run.bind("wits", Value::bool(true)).unwrap_err();
-    run.bind("wits", int(1)).unwrap();
+    run.bind("wits", &Value::bool(true)).unwrap_err();
+    run.bind("wits", &int(1)).unwrap();
 }
 
 #[test]
@@ -852,7 +852,7 @@ fn memory_budget() {
 
     let mut machine = Machine::new(Limits::new().memory(7));
     let mut run = machine.load(&program).unwrap();
-    run.bind("i", int(2)).unwrap();
+    run.bind("i", &int(2)).unwrap();
     let outcome = run.run().unwrap();
     assert_eq!(outcome.value, Value::some(int(12)));
     assert_eq!(outcome.memory, 7);
@@ -876,7 +876,7 @@ fn memory_budget() {
 
     let mut machine = Machine::new(Limits::new().memory(7));
     let mut run = machine.load(&program).unwrap();
-    run.bind("i", int(1)).unwrap();
+    run.bind("i", &int(1)).unwrap();
     let outcome = run.run().unwrap();
     assert_eq!(outcome.value, ints(&[1, 1, 1]));
     assert!(outcome.memory <= 7, "{outcome:?}");
@@ -905,14 +905,14 @@ fn binding_memory() {
 
     let mut machine = Machine::new(Limits::new().memory(5));
     let mut run = machine.load(&program).unwrap();
-    run.bind("l", ints(&[1, 2, 3])).unwrap();
+    run.bind("l", &ints(&[1, 2, 3])).unwrap();
     let outcome = run.run().unwrap();
     assert_eq!(outcome.value, int(3));
     assert_eq!(outcome.memory, 5);
 
     let mut run = machine.load(&program).unwrap();
     assert_eq!(
-        chain(&run.bind("l", ints(&[1, 2, 3, 4])).unwrap_err(), &program),
+        chain(&run.bind("l", &ints(&[1, 2, 3, 4])).unwrap_err(), &program),
         "the value needs 4 words of memory, 3 are left: while binding `l`"
     );
 
@@ -921,13 +921,14 @@ fn binding_memory() {
     let needed = program.memory().total();
     let mut machine = Machine::new(Limits::new().memory(needed as u32 + 2));
     let mut run = machine.load(&program).unwrap();
-    run.bind("s", Value::from("0123456789abcdef")).unwrap();
+    run.bind("s", &Value::from("0123456789abcdef")).unwrap();
     assert_eq!(run.run().unwrap().value, int(2));
 
     let mut run = machine.load(&program).unwrap();
     assert_eq!(
         chain(
-            &run.bind("s", Value::from("0123456789abcdef!")).unwrap_err(),
+            &run.bind("s", &Value::from("0123456789abcdef!"))
+                .unwrap_err(),
             &program
         ),
         "the value needs 3 words of memory, 2 are left: while binding `s`"
@@ -1013,8 +1014,8 @@ fn machines_are_reused() {
 
     for n in 0..10 {
         let mut run = machine.load(&program).unwrap();
-        run.bind("wits", int(n)).unwrap();
-        run.bind("dexterity", int(-n)).unwrap();
+        run.bind("wits", &int(n)).unwrap();
+        run.bind("dexterity", &int(-n)).unwrap();
         assert_eq!(run.run().unwrap().value, ints(&[n, -n]));
     }
 }
@@ -1040,6 +1041,7 @@ fn faulty_programs() {
             constants: 0,
             globals: 0,
         },
+        global_types: Vec::new(),
         global_at: Vec::new(),
         constant_at: Vec::new(),
     };
@@ -1111,7 +1113,6 @@ fn random_programs() {
         // the parts of those values.
         let parts = program
             .globals()
-            .iter()
             .map(|(name, _)| binding(name).1 as u64)
             .sum::<u64>();
         let needed = program.memory().total() + parts;
@@ -1318,7 +1319,7 @@ fn option_layouts() {
                             _ => unreachable!(),
                         };
 
-                        run.bind(name, bound).unwrap();
+                        run.bind(name, &bound).unwrap();
                     }
 
                     let given = o.clone();
@@ -1403,8 +1404,8 @@ fn list_of_optional_ints() {
 
         for (name, _) in run.globals() {
             match name {
-                "l" => run.bind("l", l.clone()).unwrap(),
-                _ => run.bind("o", Value::some(int(-1))).unwrap(),
+                "l" => run.bind("l", &l).unwrap(),
+                _ => run.bind("o", &Value::some(int(-1))).unwrap(),
             }
         }
 
@@ -1455,7 +1456,7 @@ fn word_budget() {
 
     let mut machine = Machine::new(Limits::new().memory(14));
     let mut run = machine.load(&program).unwrap();
-    run.bind("o", Value::some(int(i64::MIN))).unwrap();
+    run.bind("o", &Value::some(int(i64::MIN))).unwrap();
     let outcome = run.run().unwrap();
     assert_eq!(
         outcome.value.to_string(),
@@ -1481,7 +1482,7 @@ fn word_budget() {
 
         let mut machine = Machine::new(Limits::new().memory(words));
         let mut run = machine.load(&program).unwrap();
-        run.bind("l", list.clone()).unwrap();
+        run.bind("l", &list).unwrap();
         let outcome = run.run().unwrap();
         assert_eq!(outcome.value, int(k as i64));
         assert_eq!(outcome.memory, u64::from(words));
@@ -1489,7 +1490,7 @@ fn word_budget() {
         let mut machine = Machine::new(Limits::new().memory(words - 1));
         let mut run = machine.load(&program).unwrap();
         assert_eq!(
-            chain(&run.bind("l", list).unwrap_err(), &program),
+            chain(&run.bind("l", &list).unwrap_err(), &program),
             format!(
                 "the value needs {} words of memory, {} are left: while binding `l`",
                 2 * k,
@@ -1505,14 +1506,14 @@ fn word_budget() {
     for (s, words) in [("", 0), ("12345678", 1), ("123456789", 2)] {
         let mut machine = Machine::new(Limits::new().memory(base + words));
         let mut run = machine.load(&program).unwrap();
-        run.bind("s", Value::from(s)).unwrap();
+        run.bind("s", &Value::from(s)).unwrap();
         assert_eq!(run.run().unwrap().value, Value::some(Value::from(s)));
 
         if words > 0 {
             let mut machine = Machine::new(Limits::new().memory(base + words - 1));
             let mut run = machine.load(&program).unwrap();
             assert!(matches!(
-                run.bind("s", Value::from(s)).unwrap_err().message(),
+                run.bind("s", &Value::from(s)).unwrap_err().message(),
                 Message::TooLarge { .. }
             ));
         }
@@ -1735,8 +1736,8 @@ fn tampered_programs_never_fault() {
             let mut run = machine.load(&program).unwrap();
 
             for (name, ty) in run.globals() {
-                let value = value_of(&mut rng, &ty);
-                run.bind(name, value).unwrap();
+                let value = value_of(&mut rng, ty);
+                run.bind(name, &value).unwrap();
             }
 
             let functions = program.functions();

@@ -88,7 +88,7 @@ pub fn compile_with(
 ///
 /// let mut machine = Machine::default();
 /// let mut run = machine.load(&program)?;
-/// run.bind("bonus", Value::int(0))?;
+/// run.bind("bonus", &Value::int(0))?;
 /// let error = run.run().unwrap_err();
 ///
 /// let span = error.labels(&program, Some(&debug)).next().and_then(|l| l.span());

@@ -215,7 +215,6 @@ impl Evalite {
 
         let bindings = program
             .globals()
-            .into_iter()
             .map(|(name, _)| {
                 let value = VARIABLES
                     .iter()
@@ -237,7 +236,7 @@ impl Evalite {
             .map_err(|e| Error::new("evalite", e))?;
 
         for (name, value) in &program.bindings {
-            run.bind(name, value.clone())
+            run.bind(name, value)
                 .map_err(|e| Error::new("evalite", e))?;
         }
 

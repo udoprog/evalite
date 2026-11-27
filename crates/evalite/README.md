@@ -69,9 +69,9 @@ assert_eq!(program.result_type(), Type::int());
 
 let mut machine = Machine::new(Limits::new());
 let mut run = machine.load(&program)?;
-run.bind("wits", Value::int(3))?;
-run.bind("dexterity", Value::int(2))?;
-run.bind("bonus", Value::some(Value::int(1)))?;
+run.bind("wits", &Value::int(3))?;
+run.bind("dexterity", &Value::int(2))?;
+run.bind("bonus", &Value::some(Value::int(1)))?;
 
 let outcome = run.run()?;
 assert_eq!(outcome.value().as_int(), Some(3));
@@ -274,11 +274,11 @@ let (stored, stored_debug) = (program.to_bytes()?, debug.to_bytes()?);
 
 let program = Program::from_bytes(&stored)?;
 let debug = DebugInfo::from_bytes(&stored_debug)?;
-assert_eq!(program.globals(), [("rank", Type::int())]);
+assert_eq!(program.globals().collect::<Vec<_>>(), [("rank", &Type::int())]);
 
 let mut machine = Machine::default();
 let mut run = machine.load(&program)?;
-run.bind("rank", Value::int(0))?;
+run.bind("rank", &Value::int(0))?;
 let error = run.run().unwrap_err();
 let primary = error.labels(&program, Some(&debug)).next().and_then(|l| l.span());
 assert_eq!(primary.map(|s| s.range()), Some(0..9));

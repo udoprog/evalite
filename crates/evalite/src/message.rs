@@ -629,7 +629,7 @@ fn field_name(program: Option<&Program>, record: TypeId, field: u32) -> Option<&
 ///
 /// let mut machine = Machine::default();
 /// let mut run = machine.load(&program)?;
-/// let error = run.bind("strength", Value::bool(true)).unwrap_err();
+/// let error = run.bind("strength", &Value::bool(true)).unwrap_err();
 ///
 /// assert_eq!(error.to_string(), "expected another type, found Bool");
 /// assert_eq!(format!("{error:#}"), "expected another type, found Bool: while binding a value");
@@ -736,7 +736,7 @@ impl RunError {
     ///
     /// let mut machine = Machine::default();
     /// let mut run = machine.load(&program)?;
-    /// run.bind("a", Value::int(7))?;
+    /// run.bind("a", &Value::int(7))?;
     /// let error = run.run().unwrap_err();
     ///
     /// let labels = error.labels(&program, Some(&debug)).collect::<Vec<_>>();
