@@ -1140,11 +1140,11 @@ impl Structure {
             return None;
         };
 
-        // Another key that isn't a name makes the literal a map.
-        if entries
-            .iter()
-            .any(|(k, _)| *k != at && !matches!(self.get(*k), Some(Node(Repr::Name(_)))))
-        {
+        // Another key that is neither a name nor a hole makes the literal a
+        // map.
+        if entries.iter().any(|(k, _)| {
+            *k != at && !matches!(self.get(*k), Some(Node(Repr::Name(_) | Repr::Hole)))
+        }) {
             return None;
         }
 
@@ -1153,8 +1153,9 @@ impl Structure {
         for pattern in patterns {
             if let Pattern::Type(Type(Kind::Record(fields))) = pattern {
                 for (name, ty) in fields {
-                    // A field that isn't a name can't be written as a key.
-                    if !crate::types::is_value_name(&name) {
+                    // A field that isn't written as a key's name can't be
+                    // offered, as in a record literal.
+                    if !is_field_name(&name) || is_reserved(&name) {
                         continue;
                     }
 

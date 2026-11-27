@@ -1265,6 +1265,17 @@ fn record_literal_keys_skip_unwritable_and_mixed() {
     assert!(!labels("{\"a\": 1, _: _}", 0, Some(&ty)).contains(&"b".to_owned()));
 }
 
+#[test]
+fn record_literal_keys_match_the_parser() {
+    // A capitalised field is written as a key; `true` is no key.
+    let ty = Type::record([("Athletics", Type::int()), ("true", Type::int())]);
+    assert_eq!(labels("{_: _}", 0, Some(&ty)), ["Athletics"]);
+
+    // Another key still a hole doesn't make the literal a map.
+    let ty = Type::record([("a", Type::int()), ("b", Type::int())]);
+    assert_eq!(labels("{_: _, _: _}", 0, Some(&ty)), ["a", "b"]);
+}
+
 /// A host function's option parameter takes `None` and `Some(_)`, which
 /// compile there once filled.
 #[test]
