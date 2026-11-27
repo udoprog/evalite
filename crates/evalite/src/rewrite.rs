@@ -75,11 +75,13 @@ impl<'a> Rewrite<'a> {
 
         let same = from.kind == to.kind
             && from.steps.len() == to.steps.len()
-            && from
-                .steps
-                .iter()
-                .zip(&to.steps)
-                .all(|(a, b)| mem::discriminant(a) == mem::discriminant(b));
+            && from.steps.iter().zip(&to.steps).all(|(a, b)| match (a, b) {
+                // A map is keyed by Ints or by strings, never both.
+                (StepRepr::Key(a), StepRepr::Key(b)) => {
+                    a.as_int().is_some() == b.as_int().is_some()
+                }
+                _ => mem::discriminant(a) == mem::discriminant(b),
+            });
 
         if !same {
             return Err(RewriteKind::Shape(from.clone(), to.clone()).into());

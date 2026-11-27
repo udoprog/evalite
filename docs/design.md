@@ -806,8 +806,8 @@ many references were rewritten:
   `Display`s as `specialties[26].dice`. `Reference::starts_with(&path)` tests
   a reference against it. A dynamic step starts with no literal step.
 - `Rewrite::new(from, to)`, optionally `.check(&new_env)`. `from` and `to`
-  must start at the same kind of name and have the same kinds of steps. Each
-  part that differs is replaced in place, which covers renaming a value, a
+  must start at the same kind of name and have the same kinds of steps (an
+  Int key and a String key are different kinds). Each part that differs is replaced in place, which covers renaming a value, a
   host function or a field along a path, and re-keying. `to`'s root must be a
   valid name.
 - References are found against `env`, the environment the expression

@@ -265,6 +265,10 @@ fn refusals() {
         "cannot rewrite `m[1]` to `m[1]`, which starts at another kind of name or has other kinds of steps"
     );
     assert_eq!(
+        refuse(v("m").int_key(1), v("m").string_key("x")),
+        "cannot rewrite `m[1]` to `m[\"x\"]`, which starts at another kind of name or has other kinds of steps"
+    );
+    assert_eq!(
         refuse(Path::function("roll"), v("roll")),
         "cannot rewrite `roll()` to `roll`, which starts at another kind of name or has other kinds of steps"
     );
