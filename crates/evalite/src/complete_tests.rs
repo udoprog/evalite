@@ -191,19 +191,14 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             ],
         ),
         ("_!", 0, Some(Type::bool()), vec!["_!"]),
-        // An option fits where one is wanted.
+        // An option fits where one is wanted, `None` too: compiled as a
+        // value of the root's type, it takes its type from the root.
+        ("_", 0, Some(Type::option(Type::int())), OPTION.to_vec()),
         (
-            "_",
+            "{boxes: _}",
             0,
-            Some(Type::option(Type::int())),
-            vec![
-                "bonus",
-                "dots.get(_)",
-                "health.count.get(_)",
-                "m.brawl",
-                "Some(_)",
-                "_!",
-            ],
+            Some(Type::record([("boxes", Type::option(Type::int()))])),
+            OPTION.to_vec(),
         ),
         ("_", 0, Some(Type::string()), vec!["table", r#""""#, "_!"]),
         (
@@ -241,11 +236,12 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         ("{1: bonus, 2: _}", 0, None, OPTION.to_vec()),
         ("bonus == _", 0, None, OPTION.to_vec()),
         ("_ != m.brawl", 0, None, OPTION.to_vec()),
-        ("[_]", 0, Some(Type::list(Type::option(Type::int()))), {
-            let mut v = OPTION.to_vec();
-            v.retain(|l| *l != "None");
-            v
-        }),
+        (
+            "[_]",
+            0,
+            Some(Type::list(Type::option(Type::int()))),
+            OPTION.to_vec(),
+        ),
         ("Some(_)", 0, None, ANY.to_vec()),
         ("Some(_)", 0, Some(Type::option(Type::int())), INT.to_vec()),
         ("[Some(_), bonus]", 0, None, INT.to_vec()),
@@ -565,7 +561,15 @@ fn applying_completions() {
                 continue;
             }
 
-            let program = s.compile(&env).unwrap_or_else(|e| {
+            // What takes its type only from the root, as `None` does,
+            // compiles against it. Some cases' roots disagree with what
+            // is written, so the root is the fallback.
+            let result = s.compile(&env).or_else(|e| match &root {
+                Some(root) => s.compile_as(&env, &Options::new(), root),
+                None => Err(e),
+            });
+
+            let program = result.unwrap_or_else(|e| {
                 panic!(
                     "{text:?} with {:?}: {} does not compile: {e}",
                     completion.label, s

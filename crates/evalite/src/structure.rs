@@ -1474,6 +1474,37 @@ impl Structure {
         compile_node(&self.nodes, self.root, env, options)
     }
 
+    /// Compile against `env` as a value of type `expected`, which it must
+    /// have: the same program, or the same error, as
+    /// [`evalite::compile_as`](crate::compile_as) of
+    /// [`to_text`](Self::to_text), once it has no holes. This is the type
+    /// to pass [`complete`](Self::complete) as its `root`.
+    ///
+    /// ```
+    /// use evalite::{Environment, Options, Structure, Type};
+    ///
+    /// let env = Environment::new();
+    /// let ty = Type::option(Type::int());
+    ///
+    /// let s = Structure::from_text("None")?;
+    /// assert_eq!(s.compile_as(&env, &Options::new(), &ty)?.result_type(), ty);
+    /// assert!(s.compile(&env).is_err());
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`compile_with`](Self::compile_with), and when the expression's
+    /// type is not `expected`.
+    pub fn compile_as(
+        &self,
+        env: &Environment,
+        options: &Options,
+        expected: &Type,
+    ) -> Result<Program, StructureErrors> {
+        Ok(compile_node_debug(&self.nodes, self.root, env, options, Some(expected))?.0)
+    }
+
     /// Compile against `env` as [`compile_with`](Self::compile_with) does,
     /// also giving the [`DebugInfo`] whose spans are into
     /// [`to_text`](Self::to_text).
@@ -1505,7 +1536,7 @@ impl Structure {
         env: &Environment,
         options: &Options,
     ) -> Result<(Program, DebugInfo), StructureErrors> {
-        compile_node_debug(&self.nodes, self.root, env, options)
+        compile_node_debug(&self.nodes, self.root, env, options, None)
     }
 
     /// Every name the structure uses, as [`evalite::references`] reports
@@ -1845,21 +1876,23 @@ pub(crate) fn compile_node(
     env: &Environment,
     options: &Options,
 ) -> Result<Program, StructureErrors> {
-    Ok(compile_node_debug(nodes, root, env, options)?.0)
+    Ok(compile_node_debug(nodes, root, env, options, None)?.0)
 }
 
-/// Compile the expression at `root`, with its debug information.
+/// Compile the expression at `root`, with its debug information, as a
+/// value of the `expected` type if one is given.
 fn compile_node_debug(
     nodes: &[Node],
     root: NodeId,
     env: &Environment,
     options: &Options,
+    expected: Option<&Type>,
 ) -> Result<(Program, DebugInfo), StructureErrors> {
     let (text, spans) = render(nodes, root);
     check_nodes(nodes, root, &spans)?;
     let error = located(&spans, root);
     let parsed = parse_with(&text, options).map_err(error)?;
-    compile_parsed(&text, parsed, env).map_err(error)
+    compile_parsed(&text, parsed, env, expected).map_err(error)
 }
 
 /// The references of the expression at `root`, with spans into its text

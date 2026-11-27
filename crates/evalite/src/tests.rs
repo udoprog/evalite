@@ -1552,7 +1552,7 @@ fn recovery_is_linear() {
         assert!(errors.len() <= MAX_DIAGNOSTICS + 1);
 
         let parsed = crate::parse_with(&source, &unlimited).unwrap();
-        let all = crate::check::compile_parsed(&source, parsed, &env).unwrap_err();
+        let all = crate::check::compile_parsed(&source, parsed, &env, None).unwrap_err();
         assert!(all.len() <= MAX_DIAGNOSTICS + 1);
     }
 }
@@ -1583,7 +1583,7 @@ fn checking_maps_is_linear() {
             let parsed = crate::parse_with(&source, &unlimited).unwrap();
 
             let start = Instant::now();
-            let _ = crate::check::compile_parsed(&source, parsed, &env);
+            let _ = crate::check::compile_parsed(&source, parsed, &env, None);
             times.push(start.elapsed().as_secs_f64());
         }
 
@@ -1701,7 +1701,7 @@ fn check_any(source: &str, options: &Options, max_depth: usize) {
 
     let parsed = crate::parse_with(source, options).unwrap();
 
-    match crate::check::compile_parsed(source, parsed, &env) {
+    match crate::check::compile_parsed(source, parsed, &env, None) {
         Ok(..) => assert!(errors.is_empty(), "{source:?}: {errors:?}"),
         Err(all) => {
             for error in &all {

@@ -121,15 +121,20 @@ them (`some`, `none` stay legal names). Where an expected type comes from:
   (`opt.unwrap_or(None)` on an `Option<Option<Int>>`);
 - the operands of `==`/`!=`, each the other's type (`bonus == None`,
   `Some(None) == Some(Some(1))`);
-- parentheses pass it through, a sibling's wait too (`[(None), Some(1)]`).
+- parentheses pass it through, a sibling's wait too (`[(None), Some(1)]`);
+- the whole expression, compiled with `compile_as(source, env, options, ty)`
+  (or `Structure::compile_as`) as a value of `ty`: `None` against
+  `Option<Int>`, `{boxes: None}` against `{boxes: Option<Int>}`, `[]`
+  against `List<String>`. Its type must then be exactly `ty`, else
+  `expected Option<Int>, found Int` at the expression (3.3).
 
 Not covered (gaps, each a later card if wanted): a path call's arguments
 (`Option::unwrap_or(x, None)`), a `None` inside a list, map or record that
 is itself a sibling (`[[None], [Some(1)]]`, `[{a: None}, {a: Some(1)}]`, as
 the inner literal is typed by its own parts and the slot's type comes only
 after it; the reverse order checks), which would need a field or entry path
-per pending literal where `Some(...)` needs only a depth, and a program's declared result type, which the compile
-API does not have. An explicit annotation, `None::<T>`, reaches those.
+per pending literal where `Some(...)` needs only a depth. An explicit
+annotation, `None::<T>`, reaches those.
 
 **Annotated `None` (phase 4):** `None::<T>` is an `Option<T>` whatever its
 context. `T` is written in the type grammar of `Type::parse` (`Int`,
@@ -467,6 +472,16 @@ two have one checker and identical errors (section 9).
     its type `T`, it is peeled `depth` option layers once, each `Some`
     patched to its layer and the literal to the innermost, or the literal
     reported (no type if a layer is not an option, as in the other order);
+  - the root: `run` takes the expected result type of `compile_as`, interns
+    it once (an error if it nests too deep or is too large) and enters the
+    root with `Expect::Type` of it. After the walk the one value left must
+    have that `TypeId` (types are hash-consed, so the id is the type), else
+    `ResultType` (`expected T, found U`) at the root's span; a value in
+    error is not reported again, so `None` against `Int` reads only as the
+    `None` error. `compile`, `compile_with` and `compile_debug` pass none.
+    The API is a separate function, not an `Options` field: `Options` is
+    `Copy` and `const` and says how to parse, which a `Type` would break;
+    the program's `result_type` is already stored, so nothing changes there;
   - every expected type is a `TypeId` handle, copied, never a cloned `Type`.
     Host function parameters and a method's resolved parameters are interned
     once per call, as checking the call already does. So the walk stays
@@ -1328,10 +1343,10 @@ stored form's, so variants keep their order.
    - `Int::min`/`Int::max` by shape;
    - literals `0`, `true`, `false`, `""`;
    - `Some(_)` where an option fits, and `None` where the place names one
-     option type that the expression itself gives (a sibling, a parameter,
-     `==`'s other side, not only the `root_type`, which compiling does not
-     know, see 2's gaps). Neither is offered to `!`, whose operand is
-     already known to be an option;
+     option type (a sibling, a parameter, `==`'s other side, or the
+     `root_type`, which the expression is then compiled against with
+     `compile_as`). Neither is offered to `!`, whose operand is already
+     known to be an option;
    - `[_]`;
    - `Int` operators and `-_`, `Bool` operators and `!_`;
    - `_!`.

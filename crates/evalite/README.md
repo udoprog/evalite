@@ -137,6 +137,12 @@ compiled, and nothing converts implicitly:
   (`bonus == None`). Elsewhere, write its type after it: `None::<Int>`.
   A bare `None` with nothing to give it a type is an error.
 
+An expression that must be a value of a known type, such as the value of
+a setting declared `Option<Int>`, is compiled with [`compile_as`], which
+gives that type to the whole expression: `None`, `[]`, `{}` and record
+literals take it (`{boxes: None}` as a `{boxes: Option<Int>}`), and any
+other type is an error, `expected Option<Int>, found Int`.
+
 Types and values are written the same way outside an expression, such as
 in a form or on a command line: [`Type::parse`] reads `Option<List<Int>>`,
 `Map<Int, String>` or `{boxes: Int}`, and [`Value::parse`] reads a value
@@ -702,6 +708,7 @@ tests use are `pub(crate)`. Every public item is documented, with an
 example covering its failure paths, which `#![deny(missing_docs)]` and
 clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 
+[`compile_as`]: https://docs.rs/evalite/latest/evalite/fn.compile_as.html
 [`compile_debug`]: https://docs.rs/evalite/latest/evalite/fn.compile_debug.html
 [`DebugInfo::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.DebugInfo.html#method.to_bytes
 [`DebugInfo`]: https://docs.rs/evalite/latest/evalite/struct.DebugInfo.html

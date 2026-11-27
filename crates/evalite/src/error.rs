@@ -557,6 +557,9 @@ pub(crate) enum ErrorKind {
     /// `None::<T>`, an `annotated` option, where another type is
     /// `expected`.
     AnnotatedNone { annotated: Type, expected: Type },
+    /// An expression compiled as a value of the `expected` type, with
+    /// [`compile_as`](crate::compile_as), whose type is another.
+    ResultType { expected: Type, found: Type },
     /// A value whose type nests more than
     /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH) levels.
     TypeTooDeep,
@@ -1044,6 +1047,9 @@ impl fmt::Display for Diagnostic {
                 let expected = expected.to_string();
                 let a = article(&expected);
                 write!(f, "`None` is an option, but {a} {expected} is expected here")
+            }
+            ErrorKind::ResultType { expected, found } => {
+                write!(f, "expected {expected}, found {found}")
             }
             ErrorKind::TypeTooDeep => write!(
                 f,

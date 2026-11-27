@@ -4177,3 +4177,114 @@ fn repeated_declarations() {
         format!("`never` takes {} or more Int, found 1", usize::MAX)
     );
 }
+
+/// Compile `source` against [`env`] as a value of `ty`.
+fn compile_as(source: &str, ty: &Type) -> Result<Program, Diagnostics> {
+    crate::compile_as(source, &env(), &Options::new(), ty)
+}
+
+#[test]
+fn expected_result_types() {
+    let int = Type::int();
+    let option = Type::option(int.clone());
+
+    let cases = [
+        ("None", option.clone()),
+        ("Some(None)", Type::option(option.clone())),
+        ("[]", Type::list(Type::string())),
+        ("{}", Type::map(Type::string(), int.clone())),
+        ("[None, Some(1)]", Type::list(option.clone())),
+        ("[[]]", Type::list(Type::list(int.clone()))),
+        ("{boxes: None}", Type::record([("boxes", option.clone())])),
+        (
+            "{boxes: None, count: []}",
+            Type::record([
+                ("boxes", option.clone()),
+                ("count", Type::list(int.clone())),
+            ]),
+        ),
+        ("{1: None}", Type::map(int.clone(), option.clone())),
+        ("(None)", option.clone()),
+        ("wits + 1", int.clone()),
+        ("Some(wits)", option.clone()),
+    ];
+
+    for (source, ty) in cases {
+        let program = compile_as(source, &ty).unwrap_or_else(|e| panic!("{source:?}: {e}"));
+        assert_eq!(program.result_type(), ty, "{source:?}");
+    }
+
+    // Without the expected type, these have none.
+    for source in ["None", "[]", "{}", "{boxes: None}"] {
+        assert!(compile(source, &env()).is_err(), "{source:?}");
+    }
+}
+
+#[test]
+fn expected_result_type_mismatches() {
+    let int = Type::int();
+    let option = Type::option(int.clone());
+
+    let cases = [
+        ("1", option.clone(), "expected Option<Int>, found Int", 0..1),
+        (
+            "Some(true)",
+            option.clone(),
+            "expected Option<Int>, found Option<Bool>",
+            0..10,
+        ),
+        ("(wits)", Type::bool(), "expected Bool, found Int", 0..6),
+        (
+            "[1]",
+            Type::list(Type::string()),
+            "expected List<String>, found List<Int>",
+            0..3,
+        ),
+        (
+            "{boxes: 1}",
+            Type::record([("boxes", option.clone())]),
+            "expected {boxes: Option<Int>}, found {boxes: Int}",
+            0..10,
+        ),
+        // What has no type of its own is reported once, as it is.
+        (
+            "None",
+            int.clone(),
+            "`None` is an option, but an Int is expected here",
+            0..4,
+        ),
+        (
+            "[]",
+            int.clone(),
+            "`[]` is a list, but an Int is expected here",
+            0..2,
+        ),
+        (
+            "None::<Bool>",
+            option.clone(),
+            "this `None` is Option<Bool>, but an Option<Int> is expected here",
+            0..12,
+        ),
+        // An error inside is not reported again at the root.
+        (
+            "1 + true",
+            option.clone(),
+            "`+` takes Int and Int, found Int and Bool",
+            0..8,
+        ),
+    ];
+
+    for (source, ty, message, span) in cases {
+        let errors = compile_as(source, &ty).unwrap_err();
+        assert_eq!(errors.to_string(), message, "{source:?}");
+        let labels = errors.iter().next().map(|d| d.span().range());
+        assert_eq!(labels, Some(span), "{source:?}");
+    }
+
+    // A type too deep to intern is an error, not a panic.
+    let mut deep = Type::int();
+    for _ in 0..crate::MAX_TYPE_DEPTH + 2 {
+        deep = Type::option(deep);
+    }
+    assert!(compile_as("1", &deep).is_err());
+}

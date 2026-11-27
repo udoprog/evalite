@@ -73,7 +73,52 @@ pub fn compile_with(
     env: &Environment,
     options: &Options,
 ) -> Result<Program, Diagnostics> {
-    Ok(compile_parsed(source, parse_with(source, options)?, env)?.0)
+    Ok(compile_parsed(source, parse_with(source, options)?, env, None)?.0)
+}
+
+/// Parse `source` with `options` and compile it against `env` as a value
+/// of type `expected`, which it must have.
+///
+/// The expression is checked expecting `expected`, so what has no type of
+/// its own takes it: `None`, `[]`, `{}` and record literals, at the root
+/// or inside a list, map, record or `Some(...)` there. Its
+/// [`result_type`](Program::result_type) is then `expected`.
+///
+/// # Errors
+///
+/// As [`compile_with`], and when the expression's type is not `expected`,
+/// reported at the expression.
+///
+/// # Examples
+///
+/// ```
+/// use evalite::{Environment, Options, Type};
+///
+/// let env = Environment::new();
+/// let options = Options::new();
+///
+/// let ty = Type::option(Type::int());
+/// let program = evalite::compile_as("None", &env, &options, &ty)?;
+/// assert_eq!(program.result_type(), ty);
+///
+/// let ty = Type::record([("boxes", Type::option(Type::int()))]);
+/// let program = evalite::compile_as("{boxes: None}", &env, &options, &ty)?;
+/// assert_eq!(program.result_type(), ty);
+///
+/// let ty = Type::list(Type::string());
+/// assert_eq!(evalite::compile_as("[]", &env, &options, &ty)?.result_type(), ty);
+///
+/// let errors = evalite::compile_as("1", &env, &options, &Type::option(Type::int())).unwrap_err();
+/// assert_eq!(errors.to_string(), "expected Option<Int>, found Int");
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
+pub fn compile_as(
+    source: &str,
+    env: &Environment,
+    options: &Options,
+    expected: &Type,
+) -> Result<Program, Diagnostics> {
+    Ok(compile_parsed(source, parse_with(source, options)?, env, Some(expected))?.0)
 }
 
 /// Parse `source` with `options` and compile it against `env`, also giving
@@ -110,16 +155,18 @@ pub fn compile_debug(
     env: &Environment,
     options: &Options,
 ) -> Result<(Program, DebugInfo), Diagnostics> {
-    compile_parsed(source, parse_with(source, options)?, env)
+    compile_parsed(source, parse_with(source, options)?, env, None)
 }
 
 /// Compile what [`parse_with`] made of `source`, with its debug
 /// information. Its syntax errors are reported with the type errors, in
-/// source order, and its `Error` nodes check as anything.
+/// source order, and its `Error` nodes check as anything. With an
+/// `expected` type, the expression must have it.
 pub(crate) fn compile_parsed(
     source: &str,
     parsed: Parsed,
     env: &Environment,
+    expected: Option<&Type>,
 ) -> Result<(Program, DebugInfo), Diagnostics> {
     let Parsed { tree, reporter } = parsed;
     let mut compiler = Compiler::new(source, env, reporter).map_err(Diagnostics::one)?;
@@ -129,7 +176,7 @@ pub(crate) fn compile_parsed(
         .and_then(|root| exprs(root).next())
         .ok_or_else(|| Diagnostics::one(internal("a tree without an expression")))?;
 
-    if let Err(fatal) = compiler.run(root) {
+    if let Err(fatal) = compiler.run(root, expected) {
         compiler.reporter.report(fatal);
     }
 
@@ -152,7 +199,7 @@ pub(crate) fn references_parsed(
         .and_then(|root| exprs(root).next())
         .ok_or_else(|| Diagnostics::one(internal("a tree without an expression")))?;
 
-    if let Err(fatal) = compiler.run(root) {
+    if let Err(fatal) = compiler.run(root, None) {
         compiler.reporter.report(fatal);
     }
 
@@ -544,9 +591,16 @@ impl<'a> Compiler<'a> {
 
     /// Check and compile the expression at `root`, reporting each error and
     /// continuing past it. Only an error in evalite itself, or in the size
-    /// of the program, stops it.
-    fn run(&mut self, root: N<'a>) -> Result<(), Diagnostic> {
-        let mut work = vec![Work::Enter(root, Expect::Nothing)];
+    /// of the program, stops it. With an `expected` type, the expression is
+    /// entered expecting it and must have it.
+    fn run(&mut self, root: N<'a>, expected: Option<&Type>) -> Result<(), Diagnostic> {
+        let expected = match expected {
+            Some(ty) => Some(self.intern(ty, *root.span())?),
+            None => None,
+        };
+
+        let expect = expected.map_or(Expect::Nothing, Expect::Type);
+        let mut work = vec![Work::Enter(root, expect)];
 
         while let Some(item) = work.pop() {
             self.span = *item.node().span();
@@ -562,6 +616,19 @@ impl<'a> Compiler<'a> {
                 self.report(error);
                 self.push(self.error, self.span);
             }
+        }
+
+        // What is in error has been reported already.
+        if let (Some(expected), [value]) = (expected, self.values.as_slice())
+            && value.ty != expected
+            && value.ty != self.error
+        {
+            let (span, found) = (value.span, self.ty(value.ty));
+            let expected = self.ty(expected);
+            self.report(Diagnostic::new(
+                span,
+                ErrorKind::ResultType { expected, found },
+            ));
         }
 
         Ok(())

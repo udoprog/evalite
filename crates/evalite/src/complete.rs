@@ -753,16 +753,7 @@ impl Structure {
                     .map_err(CompleteKind::Receiver)?;
                 members(&program.result_type(), &want)
             }
-            _ => {
-                // `None` takes its type from the expression, never from the
-                // type asked of its result, which compiling does not know.
-                let none = match (want.none(), root) {
-                    (Some(_), Some(_)) => self.want(env, at, None).none(),
-                    (none, _) => none,
-                };
-
-                self.values(env, at, &want, root, none)
-            }
+            _ => self.values(env, at, &want, root, want.none()),
         };
 
         let keep = {
