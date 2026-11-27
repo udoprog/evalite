@@ -7,6 +7,7 @@
 )]
 
 use std::ops::Range;
+use std::time::{Duration, Instant};
 
 use crate::env::DeclareKind;
 use crate::error::ErrorKind;
@@ -1696,6 +1697,68 @@ fn tampered_programs() {
         tamper(&mut stored);
         assert_eq!(invalid(&stored), reason, "{source:?}");
     }
+}
+
+/// Load `stored`, failing when it takes longer than a few seconds. Inputs
+/// are sized so that work quadratic in them would take far longer.
+fn load_quickly(stored: &Stored) -> Result<Program, StoreError> {
+    let bytes = musli::storage::to_vec(stored).unwrap();
+    let start = Instant::now();
+    let loaded = Program::from_bytes(&bytes);
+    let took = start.elapsed();
+    assert!(took < Duration::from_secs(5), "loading took {took:?}");
+    loaded
+}
+
+#[test]
+fn deep_stacks_with_many_jumps_verify_quickly() {
+    const DEPTH: usize = 100_000;
+    const JUMPS: usize = 100_000;
+
+    // A deep stack of `Bool`s, the top one `&&`ed many times, then folded
+    // with `==`: each jump lands with the whole stack.
+    let mut deep = stored("1 == 1");
+    deep.code = std::iter::repeat_n(Instr::Bool(true), DEPTH + 1)
+        .chain((0..JUMPS).flat_map(|_| [Instr::And(1), Instr::Bool(true)]))
+        .chain(std::iter::repeat_n(Instr::Eq, DEPTH))
+        .collect();
+    deep.memory.stack = u32::try_from(DEPTH + 1).unwrap();
+
+    load_quickly(&deep).unwrap();
+
+    // Going on with another type than a jump over it keeps is found where
+    // they meet.
+    let at = DEPTH + 1 + JUMPS + 1;
+    deep.code[at] = Instr::Int(1);
+    let error = load_quickly(&deep).unwrap_err();
+    assert_eq!(
+        format!("{error:#}"),
+        format!(
+            "the instruction is reached with two different stacks: at instruction {}: while verifying the program",
+            at + 1
+        )
+    );
+
+    // Two jumps landing at the end with deep stacks of one depth, which
+    // differ near the top, disagree.
+    let mut disagree = stored("1 == 1");
+    disagree.code = std::iter::repeat_n(Instr::Bool(true), DEPTH + 1)
+        .chain([
+            Instr::And(4),
+            Instr::Eq,
+            Instr::Int(1),
+            Instr::Bool(true),
+            Instr::And(0),
+        ])
+        .collect();
+    let error = load_quickly(&disagree).unwrap_err();
+    assert_eq!(
+        format!("{error:#}"),
+        format!(
+            "the instruction jumps where another jump lands with another stack: at instruction {}: while verifying the program",
+            DEPTH + 5
+        )
+    );
 }
 
 #[test]

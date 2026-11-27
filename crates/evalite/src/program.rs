@@ -571,15 +571,10 @@ impl Verifier<'_> {
         let int = self.find(TypeNode::Int).ok();
         let bool = self.find(TypeNode::Bool).ok();
 
-        let mut stack = Model {
-            types: self.types,
-            stack: Vec::new(),
-            words: 0,
-            max: 0,
-        };
+        let mut stack = Model::new(self.types);
         let mut heap = 0usize;
         // The stack each pending jump expects where it lands.
-        let mut targets = BTreeMap::<usize, Vec<TypeId>>::new();
+        let mut targets = BTreeMap::<usize, usize>::new();
 
         for (at, instr) in code.iter().enumerate() {
             let fail = |invalid: Invalid| {
@@ -587,7 +582,7 @@ impl Verifier<'_> {
             };
 
             if let Some(expected) = targets.remove(&at)
-                && expected != stack.stack
+                && expected != stack.top
             {
                 return Err(fail(Invalid::TwoStacks));
             }
@@ -640,17 +635,15 @@ impl Verifier<'_> {
                     self.find(TypeNode::Bool)?
                 }
                 Instr::And(skip) | Instr::Or(skip) => {
-                    let top = stack.pop();
-                    need(top, bool)?;
+                    // It lands with the operand it keeps.
+                    let landing = stack.top;
+                    need(stack.pop(), bool)?;
 
                     let target = usize::try_from(skip)
                         .ok()
                         .and_then(|skip| at.checked_add(skip)?.checked_add(1))
                         .filter(|target| *target <= code.len())
                         .ok_or_else(|| fail(Invalid::JumpPastEnd))?;
-
-                    let mut landing = stack.stack.clone();
-                    landing.extend(top);
 
                     if targets.get(&target).is_some_and(|other| *other != landing) {
                         return Err(fail(Invalid::JumpsDisagree));
@@ -809,7 +802,7 @@ impl Verifier<'_> {
         }
 
         if let Some(expected) = targets.remove(&code.len())
-            && expected != stack.stack
+            && expected != stack.top
         {
             return Err(Invalid::EndStackDisagrees.into());
         }
@@ -818,9 +811,11 @@ impl Verifier<'_> {
             return Err(Invalid::JumpIntoNothing.into());
         }
 
-        if stack.stack != [result] {
+        let values = stack.len();
+
+        if values != 1 || stack.pop() != Some(result) {
             return Err(Invalid::NotOneResult {
-                values: u64::try_from(stack.stack.len()).unwrap_or(u64::MAX),
+                values: u64::try_from(values).unwrap_or(u64::MAX),
             }
             .into());
         }
@@ -880,25 +875,78 @@ impl Verifier<'_> {
 }
 
 /// The verifier's model of the stack: the type of each value on it, and
-/// the words they take.
+/// the words they take. It is a persistent stack in which equal stacks
+/// share one id, so a jump records and compares the stack it lands with
+/// in constant time, however deep it is.
 struct Model<'a> {
     types: &'a Types,
-    stack: Vec<TypeId>,
-    words: usize,
+    /// Every stack seen, by id; the first is the empty stack.
+    frames: Vec<Frame>,
+    /// The id of each stack by the id of the stack below its top and the
+    /// type on top.
+    ids: HashMap<(usize, TypeId), usize>,
+    /// The id of the stack as it is now.
+    top: usize,
     max: usize,
 }
 
-impl Model<'_> {
+#[derive(Clone, Copy)]
+struct Frame {
+    below: usize,
+    ty: TypeId,
+    words: usize,
+    len: usize,
+}
+
+impl<'a> Model<'a> {
+    fn new(types: &'a Types) -> Self {
+        Self {
+            types,
+            frames: vec![Frame {
+                below: 0,
+                ty: TypeId(0),
+                words: 0,
+                len: 0,
+            }],
+            ids: HashMap::new(),
+            top: 0,
+            max: 0,
+        }
+    }
+
+    fn frame(&self) -> Option<Frame> {
+        self.frames.get(self.top).copied()
+    }
+
+    fn len(&self) -> usize {
+        self.frame().map_or(0, |f| f.len)
+    }
+
     fn pop(&mut self) -> Option<TypeId> {
-        let ty = self.stack.pop()?;
-        self.words = self.words.saturating_sub(self.types.width(ty));
-        Some(ty)
+        let frame = self.frame().filter(|f| f.len > 0)?;
+        self.top = frame.below;
+        Some(frame.ty)
     }
 
     fn push(&mut self, ty: TypeId) {
-        self.stack.push(ty);
-        self.words = self.words.saturating_add(self.types.width(ty));
-        self.max = self.max.max(self.words);
+        let (words, len) = self.frame().map_or((0, 0), |f| (f.words, f.len));
+
+        let frame = Frame {
+            below: self.top,
+            ty,
+            words: words.saturating_add(self.types.width(ty)),
+            len: len.saturating_add(1),
+        };
+
+        let next = self.frames.len();
+        let id = *self.ids.entry((self.top, ty)).or_insert(next);
+
+        if id == next {
+            self.frames.push(frame);
+        }
+
+        self.top = id;
+        self.max = self.max.max(frame.words);
     }
 }
 

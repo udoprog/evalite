@@ -300,7 +300,10 @@ from `compile_debug`, and stored separately.
 ### 3.5 Verifier (`Program::verify`)
 
 The verifier runs the code once over types instead of values (`Model`: a
-stack of `TypeId`s and a running word count). It checks:
+stack of `TypeId`s and a running word count). The model is a persistent
+stack whose equal stacks share one id, hash-consed by (stack below, type on
+top), so a jump records the stack it lands with, and the target compares
+it, in constant time however deep the stack is. It checks:
 
 - every constant is well typed, and a constant list's `Scalar::Const` entries
   refer only to earlier constants;
