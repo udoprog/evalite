@@ -1,13 +1,13 @@
 {
-  "measured_at": "2026-11-26T17:02:54Z",
+  "measured_at": "2026-11-27T15:51:13Z",
   "machine": {
     "cpu": "AMD Ryzen 9 9950X3D 16-Core Processor",
-    "os": "Fedora Linux 45 (Workstation Edition) (kernel 7.3.4-300.fc45.x86_64), x86_64"
+    "os": "Fedora Linux 45 (Workstation Edition) (kernel 7.3.5-300.fc45.x86_64), x86_64"
   },
   "engines": [
     {
       "name": "evalite",
-      "version": "0.1.2"
+      "version": "0.2.0"
     },
     {
       "name": "evalexpr",
@@ -26,20 +26,20 @@
         {
           "engine": "evalite",
           "source": "(strength + brawl) * 2 - armor * 3 + 1",
-          "compile_ns": 2178.286482234168,
-          "evaluate_ns": 141.4165236493444
+          "compile_ns": 1909.138541235834,
+          "evaluate_ns": 102.04126184017912
         },
         {
           "engine": "evalexpr",
           "source": "(strength + brawl) * 2 - armor * 3 + 1",
-          "compile_ns": 1213.2768384780456,
-          "evaluate_ns": 220.99993047655164
+          "compile_ns": 1212.1456213634392,
+          "evaluate_ns": 216.7300466797741
         },
         {
           "engine": "fasteval",
           "source": "(strength + brawl) * 2 - armor * 3 + 1",
-          "compile_ns": 417.098952273217,
-          "evaluate_ns": 44.94144042324422
+          "compile_ns": 394.9418961763408,
+          "evaluate_ns": 50.957585172747926
         }
       ]
     },
@@ -50,20 +50,20 @@
         {
           "engine": "evalite",
           "source": "strength + dexterity + stamina + wits + composure + resolve + brawl + athletics + stealth + armor + size + humanity + blood_potency + health + damage + bonus",
-          "compile_ns": 7029.961687266306,
-          "evaluate_ns": 491.41132184475134
+          "compile_ns": 5278.338042588042,
+          "evaluate_ns": 308.726845044971
         },
         {
           "engine": "evalexpr",
           "source": "strength + dexterity + stamina + wits + composure + resolve + brawl + athletics + stealth + armor + size + humanity + blood_potency + health + damage + bonus",
-          "compile_ns": 4022.820755638295,
-          "evaluate_ns": 728.6563678386384
+          "compile_ns": 3687.8341517857143,
+          "evaluate_ns": 723.1429331572999
         },
         {
           "engine": "fasteval",
           "source": "strength + dexterity + stamina + wits + composure + resolve + brawl + athletics + stealth + armor + size + humanity + blood_potency + health + damage + bonus",
-          "compile_ns": 863.1042777471348,
-          "evaluate_ns": 225.47966992586913
+          "compile_ns": 879.3305526284978,
+          "evaluate_ns": 221.22269444444447
         }
       ]
     },
@@ -73,21 +73,21 @@
       "results": [
         {
           "engine": "evalite",
-          "source": "min(max(strength + brawl - armor, 0), 5) + max(wits, composure, 1)",
-          "compile_ns": 4041.9661195286194,
-          "evaluate_ns": 202.8055035004328
+          "source": "Int::min(Int::max(strength + brawl - armor, 0), 5) + Int::max(wits, composure, 1)",
+          "compile_ns": 3451.825159489633,
+          "evaluate_ns": 137.69330418284392
         },
         {
           "engine": "evalexpr",
           "source": "min(max(strength + brawl - armor, 0), 5) + max(wits, composure, 1)",
-          "compile_ns": 2420.0489244001274,
-          "evaluate_ns": 537.8827907869245
+          "compile_ns": 2389.4353059887017,
+          "evaluate_ns": 532.3514194228787
         },
         {
           "engine": "fasteval",
           "source": "min(max(strength + brawl - armor, 0), 5) + max(wits, composure, 1)",
-          "compile_ns": 613.4285046039829,
-          "evaluate_ns": 76.95652272536206
+          "compile_ns": 580.2690021396616,
+          "evaluate_ns": 88.3118550262349
         }
       ]
     },
@@ -98,20 +98,20 @@
         {
           "engine": "evalite",
           "source": "humanity >= 5 && health - damage > 2 || blood_potency == 3 && stealth < 2",
-          "compile_ns": 3333.9502298263533,
-          "evaluate_ns": 180.5598821268511
+          "compile_ns": 2741.8958592916215,
+          "evaluate_ns": 145.4681464174455
         },
         {
           "engine": "evalexpr",
           "source": "humanity >= 5 && health - damage > 2 || blood_potency == 3 && stealth < 2",
-          "compile_ns": 1835.7781952933929,
-          "evaluate_ns": 290.4387041949111
+          "compile_ns": 1803.914009028688,
+          "evaluate_ns": 304.30154266637317
         },
         {
           "engine": "fasteval",
           "source": "humanity >= 5 && health - damage > 2 || blood_potency == 3 && stealth < 2",
-          "compile_ns": 542.9629444712257,
-          "evaluate_ns": 68.79777756798639
+          "compile_ns": 564.2957563423538,
+          "evaluate_ns": 71.93008945286658
         }
       ]
     },
@@ -122,20 +122,20 @@
         {
           "engine": "evalite",
           "source": "strength - dexterity * 2 + stamina * 3 - wits + composure * 2 - resolve * 3 + brawl - athletics * 2 + stealth * 3 - armor + size * 2 - humanity * 3 + blood_potency - health * 2 + damage * 3 - bonus + strength * 2 - dexterity * 3 + stamina - wits * 2 + composure * 3 - resolve + brawl * 2 - athletics * 3 + stealth - armor * 2 + size * 3 - humanity + blood_potency * 2 - health * 3 + damage - bonus * 2 + strength * 3 - dexterity + stamina * 2 - wits * 3 + composure - resolve * 2 + brawl * 3 - athletics + stealth * 2 - armor * 3 + size - humanity * 2 + blood_potency * 3 - health + damage * 2 - bonus * 3 + strength - dexterity * 2 + stamina * 3 - wits + composure * 2 - resolve * 3 + brawl - athletics * 2 + stealth * 3 - armor + size * 2 - humanity * 3 + blood_potency - health * 2 + damage * 3 - bonus",
-          "compile_ns": 24481.612689393936,
-          "evaluate_ns": 888.0477531425895
+          "compile_ns": 20244.890484504584,
+          "evaluate_ns": 793.3772959490841
         },
         {
           "engine": "evalexpr",
           "source": "strength - dexterity * 2 + stamina * 3 - wits + composure * 2 - resolve * 3 + brawl - athletics * 2 + stealth * 3 - armor + size * 2 - humanity * 3 + blood_potency - health * 2 + damage * 3 - bonus + strength * 2 - dexterity * 3 + stamina - wits * 2 + composure * 3 - resolve + brawl * 2 - athletics * 3 + stealth - armor * 2 + size * 3 - humanity + blood_potency * 2 - health * 3 + damage - bonus * 2 + strength * 3 - dexterity + stamina * 2 - wits * 3 + composure - resolve * 2 + brawl * 3 - athletics + stealth * 2 - armor * 3 + size - humanity * 2 + blood_potency * 3 - health + damage * 2 - bonus * 3 + strength - dexterity * 2 + stamina * 3 - wits + composure * 2 - resolve * 3 + brawl - athletics * 2 + stealth * 3 - armor + size * 2 - humanity * 3 + blood_potency - health * 2 + damage * 3 - bonus",
-          "compile_ns": 22905.412721893492,
-          "evaluate_ns": 3999.384944684945
+          "compile_ns": 21994.89159359396,
+          "evaluate_ns": 4909.028623025675
         },
         {
           "engine": "fasteval",
           "source": "strength - dexterity * 2 + stamina * 3 - wits + composure * 2 - resolve * 3 + brawl - athletics * 2 + stealth * 3 - armor + size * 2 - humanity * 3 + blood_potency - health * 2 + damage * 3 - bonus + strength * 2 - dexterity * 3 + stamina - wits * 2 + composure * 3 - resolve + brawl * 2 - athletics * 3 + stealth - armor * 2 + size * 3 - humanity + blood_potency * 2 - health * 3 + damage - bonus * 2 + strength * 3 - dexterity + stamina * 2 - wits * 3 + composure - resolve * 2 + brawl * 3 - athletics + stealth * 2 - armor * 3 + size - humanity * 2 + blood_potency * 3 - health + damage * 2 - bonus * 3 + strength - dexterity * 2 + stamina * 3 - wits + composure * 2 - resolve * 3 + brawl - athletics * 2 + stealth * 3 - armor + size * 2 - humanity * 3 + blood_potency - health * 2 + damage * 3 - bonus",
-          "compile_ns": 7833.693180276723,
-          "evaluate_ns": 1101.078468386031
+          "compile_ns": 7958.622933251684,
+          "evaluate_ns": 1294.490618097332
         }
       ]
     }
