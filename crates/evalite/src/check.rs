@@ -1140,11 +1140,7 @@ impl<'a> Compiler<'a> {
             return Err(Diagnostic::new(at, kind));
         };
 
-        let Some((at_word, field)) = self
-            .types
-            .field_offsets(fields)
-            .find(|(_, f)| f.name == name)
-        else {
+        let Some((at_word, field)) = self.types.field_named(receiver.ty, name) else {
             return Err(Diagnostic::new(
                 at,
                 ErrorKind::UnknownField {

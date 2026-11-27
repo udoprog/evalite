@@ -655,17 +655,13 @@ impl Verifier<'_> {
                 Instr::Field { at, ty } => {
                     let record = stack.pop().ok_or_else(|| fail(Invalid::PopsEmpty))?;
 
-                    let Some(TypeNode::Record(fields)) = self.types.get(record) else {
+                    if !matches!(self.types.get(record), Some(TypeNode::Record(_))) {
                         return Err(fail(Invalid::FieldOfNonRecord));
-                    };
+                    }
 
                     let at = usize::try_from(at).unwrap_or(usize::MAX);
 
-                    if !self
-                        .types
-                        .field_offsets(fields)
-                        .any(|(offset, field)| offset == at && field.ty == ty)
-                    {
+                    if self.types.field_at(record, at).is_none_or(|f| f.ty != ty) {
                         return Err(fail(Invalid::NoSuchField));
                     }
 

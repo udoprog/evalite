@@ -492,6 +492,10 @@ pub(crate) struct Types {
     sizes: Vec<usize>,
     /// The words a value of each type takes where it is held.
     widths: Vec<usize>,
+    /// The word offset of each field of each record, in name order, so a
+    /// field is found by offset or name in logarithmic time. Empty for
+    /// other types.
+    offsets: Vec<Vec<usize>>,
     /// The ids of `Int`, `Bool` and `String`, found without hashing.
     leaves: [Option<TypeId>; 3],
     /// Where each node's hash starts, random for each table.
@@ -507,6 +511,7 @@ impl Default for Types {
             depths: Vec::new(),
             sizes: Vec::new(),
             widths: Vec::new(),
+            offsets: Vec::new(),
             leaves: [None; 3],
             seed: RandomState::new().hash_one(0u8),
         }
@@ -711,6 +716,28 @@ impl Types {
         })
     }
 
+    /// The field of the record `id` at `at` words from its start.
+    pub(crate) fn field_at(&self, id: TypeId, at: usize) -> Option<&FieldNode> {
+        let TypeNode::Record(fields) = self.get(id)? else {
+            return None;
+        };
+
+        let n = self.offsets.get(id.index())?.binary_search(&at).ok()?;
+        fields.get(n)
+    }
+
+    /// The field of the record `id` named `name`, and its word offset.
+    pub(crate) fn field_named(&self, id: TypeId, name: &str) -> Option<(usize, &FieldNode)> {
+        let TypeNode::Record(fields) = self.get(id)? else {
+            return None;
+        };
+
+        let n = fields
+            .binary_search_by(|f| f.name.as_str().cmp(name))
+            .ok()?;
+        Some((*self.offsets.get(id.index())?.get(n)?, fields.get(n)?))
+    }
+
     /// The words the fields of a record take.
     pub(crate) fn record_words(&self, fields: &[FieldNode]) -> usize {
         fields
@@ -788,6 +815,11 @@ impl Types {
         let id = TypeId(u32::try_from(self.nodes.len()).ok()?);
         let leaf = leaf(&node);
 
+        let offsets = match &node {
+            TypeNode::Record(fields) => self.field_offsets(fields).map(|(at, _)| at).collect(),
+            _ => Vec::new(),
+        };
+
         let before = match leaf {
             Some(_) => None,
             None => self.heads.insert(hash, id),
@@ -802,6 +834,7 @@ impl Types {
         self.depths.push(depth);
         self.sizes.push(size);
         self.widths.push(width);
+        self.offsets.push(offsets);
         Some(id)
     }
 

@@ -1762,6 +1762,29 @@ fn deep_stacks_with_many_jumps_verify_quickly() {
 }
 
 #[test]
+fn many_reads_of_a_wide_record_compile_and_verify_quickly() {
+    // With the record itself, the most nodes a type may have.
+    const FIELDS: usize = 65_535;
+    const READS: usize = 50_000;
+
+    let mut env = Environment::new();
+    let fields = (0..FIELDS).map(|n| (format!("f{n:05}"), Type::int()));
+    env.value("x", Type::record(fields)).unwrap();
+
+    // The last field, which a scan of the fields finds last.
+    let source = vec![format!("x.f{:05}", FIELDS - 1); READS].join(" + ");
+    let options = Options::new().max_len(usize::MAX);
+
+    let start = Instant::now();
+    let program = compile_with(&source, &env, &options).unwrap();
+    let took = start.elapsed();
+    assert!(took < Duration::from_secs(5), "compiling took {took:?}");
+
+    let bytes = program.to_bytes().unwrap();
+    load_quickly(&musli::storage::from_slice(&bytes).unwrap()).unwrap();
+}
+
+#[test]
 fn stored_bytes_errors() {
     let bytes = compile("wits + 1", &env()).unwrap().to_bytes().unwrap();
 

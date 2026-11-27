@@ -378,7 +378,10 @@ last, which keeps the stored encoding of the older variants.
   - `sizes`: nodes with shared parts written out, saturating, refused past
     `MAX_TYPE_NODES`;
   - `widths`: the words a value of the type takes where it is held
-    (section 5).
+    (section 5);
+  - `offsets`: each record field's word offset, in name order, so
+    `field_at` (the verifier's `Field` check) and `field_named` (the
+    compiler's field access) are binary searches, not scans of the fields.
 - **Back to `Type`.** `to_type`/`to_types` build `Type` trees from the leaves
   up over the ids reached (`reach`), each reached id once. `reached_size`
   gives what such a build holds, which the verifier bounds for globals.
