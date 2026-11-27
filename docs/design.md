@@ -946,6 +946,34 @@ their size, whatever the bytes repeat or share:
 - the globals' and host functions' types written out are bounded together
   (section 3.5).
 
+**Store values:** `Globals::to_bytes`/`from_bytes`, `FORMAT` = 1. The
+stored form is `Stored { format, values }`, each value
+`{ name, parts }` for a set slot, in slot order. `parts` is the value
+flattened in pre-order: `Int`, `Bool`, `String`, `None`, `Some` (its value
+follows), `List(n)` (n entries follow), `Map(n)` (n key, value pairs
+follow, in key order) and `Record(names)` (the field names, sorted and
+unique, whose values follow in that order). The store's words, free blocks
+and spare room are not stored, so the in-memory layout may change without a
+format bump. `from_bytes(&env, bytes)` (or `from_bytes_with_limit`):
+
+1. decodes the bytes (`NotDecoded`) and requires `format == FORMAT`
+   (`WrongFormat`);
+2. for each value, requires its name declared (`NotDeclared`) and not
+   stored before (`ValueTwice`);
+3. builds the value from its parts with an explicit list of open
+   containers, at most `MAX_TYPE_DEPTH` deep (`ValueTooDeep`), refusing
+   parts that end early or run past the value, unsorted or repeated field
+   names, and map keys not strictly ascending; a count reserves nothing, so
+   `List(u64::MAX)` costs only the entries that follow;
+4. sets it as `Globals::set` does: checked against the declared type with
+   path-named errors, the length checks, and the store's limit.
+
+A fresh store takes each block by bump, so the store read back has no free
+words and no spare room. Reading is linear in the bytes, and the values
+built are a constant times their size. The stored form names no types: the
+environment given decides them, and a value of another type is refused, not
+migrated (`migrate` carries values between environments, section 10).
+
 **Debug info:** `DebugInfo::to_bytes`/`from_bytes` is a list of
 `(start, end)` spans, and refuses a span that ends before it starts. It is
 not versioned and is kept apart from the program.
@@ -969,7 +997,7 @@ These checks are linear.
 - environments (only the layout's fingerprint and the read slots), nor
   whether a program was compiled here, so a decoded program is checked read
   by read at load (section 7);
-- a store's values (Globals 6 stores them);
+- a store's words (its values are stored as values, above);
 - type table hashes.
 
 `Type`/`Value` text forms (section 2) round-trip through `Display`.
@@ -1178,8 +1206,9 @@ compatibility check. Globals 2 is built (sections 6.1 and 7): the store,
 and `Run::bind` removed. Globals 3 is built (section 7): `set_at`/`get_at`
 by path. Globals 4 is built (sections 5 and 7): capacity, growth and
 shrinking, `insert`/`push`/`remove`. Globals 5 is built (section 7):
-reuse across sizes, compaction, `stats()`. The rest is not built yet. Breaking changes are
-allowed (board rule, 2026-11-27).
+reuse across sizes, compaction, `stats()`. Globals 6 is built (sections 8
+and 10.2): `to_bytes`/`from_bytes` of values and `migrate`. Breaking changes
+are allowed (board rule, 2026-11-27).
 
 ### 10.1 Why
 
@@ -1247,7 +1276,7 @@ the sheet's values persistent:
     (they're trees, so each block is reached once);
   - it copies them densely and rewrites the references;
   - this is O(live size), and memory stays proportional to the live data.
-- **Persistence and migration.**
+- **Persistence and migration** (built).
   - `to_bytes` writes each set slot's value (not raw words) in the musli
     storage format, versioned.
   - `from_bytes(&env, bytes)` re-checks every value against the environment
@@ -1255,7 +1284,8 @@ the sheet's values persistent:
   - `migrate(&old, &new_env)` carries over each value whose name still exists
     with an equal type. Record fields carry over by name when only fields
     were added or removed. A new field without a value leaves the global
-    unset, and each dropped value is reported with a reason.
+    unset, and each dropped value is reported with a reason and its old
+    value (`Dropped`, `DropReason`).
 
 Store memory:
 
@@ -1276,7 +1306,7 @@ Store memory:
 | 8823970e | Globals 3 (built) | `set_at`/`get_at` by path, reusing the references path type. Literal steps only, existing keys and indexes only. O(path + new value), plus O(log n) per map step. |
 | e5e312bd | Globals 4 (built) | Capacity, growth and shrink. Map `insert`/`remove` (binary search plus a `copy_within` shift). List `push`/`insert`/`remove`. Bench: 1 000 single-entry updates on a 100 000-entry map versus a whole-map set. |
 | ae875cb2 | Globals 5 (built) | Best-fit reuse of freed blocks, compaction at more than half free, `stats()` (live, spare, free, heap). |
-| fbaa6f18 | Globals 6 | `to_bytes`/`from_bytes` of values, `migrate` between layouts. |
+| fbaa6f18 | Globals 6 (built) | `to_bytes`/`from_bytes` of values, `migrate` between layouts. |
 
 They wait on each other in order. Globals 1 waited on this document, map
 literals (f3b53baf) and references (b128c319), which all touch
@@ -1352,6 +1382,22 @@ decisions):
 | Compacting lists and maps | Keep their room | Trimming it to their length: the next insert would move them again. |
 | Shrinking | In place, as Globals 4 does | Moving to a fresh block of half the room: it takes words, so a remove could fail at the limit; best fit and compaction take the freed tail again. |
 | `stats()` | `live`, `spare`, `free` and `heap` words, by walking the values | Counters kept as values change: a walk is a check that no block is lost, which the tests use. |
+
+**Taken while building Globals 6** (worker, 2026-11-27, within the card's
+decisions):
+
+| Question | Picked | Alternatives and why not |
+|---|---|---|
+| The stored value form | A flat list of parts in pre-order, each container with its count or field names | musli of a recursive `Value`: decoding hostile bytes would recurse as deep as they nest. A type-directed form without tags: smaller, but a value read against the wrong type could decode as garbage of the right shape instead of being refused. |
+| Types in the bytes | None: the environment given decides each value's type | Storing each value's type: `from_bytes` would still have to refuse any other type, and `migrate` works between stores, which hold their types already. |
+| Checking a read value | Build it (depth capped at `MAX_TYPE_DEPTH`, counts never reserved), then `set` it | A walk of its own over parts and type: a second type check beside `set`'s, which could drift from it. |
+| A value `env` declares with another type, or does not declare | Refused, the whole read failing | Dropping it, as `migrate` does: `from_bytes` reads one layout's bytes; changes go through `migrate`. |
+| The read store's limit | `DEFAULT_GLOBALS`, or `from_bytes_with_limit`; never from the bytes | Stored in the bytes: hostile bytes would pick their own limit. |
+| When a record gains a field | Type level: the value is dropped whatever it holds, even when no record of the type is in it (an absent option, an empty list) | Value level, carrying values with no such record: whether a value survives would depend on what it holds now. |
+| Which reason wins | A changed part type (`Retyped`, both whole types) over a new field (`NewField`, the record type and the field) | The first found: the order would depend on the walk. |
+| Filling a new field | The caller, from the old value `Dropped` gives back, with `set` | A default per field or a fill callback: implicit defaults were refused (decision 16), and a callback is API this card does not need. |
+| The migrated store | Built densely in the new layout, with the old store's limit | The new environment's default limit: a store that fit would no longer fit. |
+| Errors | `GlobalsError`, `{:#}` ending `while reading stored values` | `StoreError` as programs: errors setting a value name the store's values, which only `GlobalsError` resolves. |
 
 ### 10.5 Questions raised while writing this
 

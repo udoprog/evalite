@@ -1,5 +1,6 @@
-//! A stored program whose length prefix claims a huge number of entries
-//! fails to load without allocating for them. It is its own test binary
+//! A stored program, or a store's stored values, whose length prefix
+//! claims a huge number of entries fails to load without allocating for
+//! them. It is its own test binary
 //! so it can count allocations.
 
 #![allow(
@@ -9,13 +10,17 @@
 )]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use evalite::{Environment, Program, Type};
+use evalite::{Environment, Globals, Program, Type, Value};
 
 struct Counting;
 
 static LARGEST: AtomicUsize = AtomicUsize::new(0);
+
+/// Held by each test, so one's allocations are not counted as another's.
+static SERIAL: Mutex<()> = Mutex::new(());
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -55,6 +60,7 @@ fn varint(mut n: u64) -> Vec<u8> {
 
 #[test]
 fn huge_length_prefix() {
+    let _serial = SERIAL.lock().unwrap();
     let mut env = Environment::new();
     env.value("i", Type::int()).unwrap();
     let bytes = evalite::compile("i", &env).unwrap().to_bytes().unwrap();
@@ -85,6 +91,47 @@ fn huge_length_prefix() {
                 let error = result.expect_err("a huge length prefix decoded");
                 assert_eq!(error.to_string(), "the bytes do not decode", "{error:?}");
             }
+        }
+    }
+}
+
+#[test]
+fn huge_length_prefix_in_stored_values() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut env = Environment::new();
+    env.value("names", Type::list(Type::string())).unwrap();
+    env.value("dots", Type::map(Type::int(), Type::int()))
+        .unwrap();
+
+    let mut globals = Globals::new(&env);
+    globals
+        .set(
+            "names",
+            &Value::list([Value::string("Ada"), Value::string("Bea")]),
+        )
+        .unwrap();
+    globals
+        .set("dots", &Value::map([(Value::int(1), Value::int(2))]))
+        .unwrap();
+    let bytes = globals.to_bytes().unwrap();
+    assert!(Globals::from_bytes(&env, &bytes).is_ok());
+
+    // Each byte is taken for a length prefix, or a list's or map's count:
+    // neither reserves for what it claims.
+    for at in 0..bytes.len() {
+        for claimed in [u64::from(u32::MAX), u64::MAX >> 1, u64::MAX] {
+            let mut tampered = bytes[..at].to_vec();
+            tampered.extend(varint(claimed));
+            tampered.extend(&bytes[at + 1..]);
+
+            LARGEST.store(0, Ordering::Relaxed);
+            let _ = Globals::from_bytes(&env, &tampered);
+            let largest = LARGEST.load(Ordering::Relaxed);
+
+            assert!(
+                largest <= 1 << 20,
+                "byte {at} claiming {claimed} allocated {largest} bytes"
+            );
         }
     }
 }

@@ -127,6 +127,10 @@ pub(crate) enum Message {
     StoringStructure,
     /// Context: reading a stored structure.
     DecodingStructure,
+    /// Context: storing a store's values.
+    StoringValues,
+    /// Context: reading a store's stored values.
+    DecodingValues,
     /// Context: one entry of a stored type table.
     AtType { at: u32 },
     /// Context: one stored constant.
@@ -249,6 +253,12 @@ pub(crate) enum Invalid {
     UnusedNodes,
     NotOneTree,
     SpanBackwards,
+    ValueEndsEarly,
+    ValuePastEnd,
+    ValueTooDeep,
+    ValueFieldsUnsorted,
+    ValueKeysUnsorted,
+    ValueTwice,
 }
 
 impl fmt::Display for Invalid {
@@ -331,6 +341,12 @@ impl fmt::Display for Invalid {
             Self::UnusedNodes => "some nodes are not part of the expression",
             Self::NotOneTree => "the structure's nodes are not one tree",
             Self::SpanBackwards => "the span ends before it starts",
+            Self::ValueEndsEarly => "the value's parts end before the value does",
+            Self::ValuePastEnd => "the value has parts past its end",
+            Self::ValueTooDeep => "the value nests too deeply",
+            Self::ValueFieldsUnsorted => "the value has a record of fields not sorted and unique",
+            Self::ValueKeysUnsorted => "the value has a map of keys not sorted and unique",
+            Self::ValueTwice => "the value is stored twice",
         };
 
         f.write_str(what)
@@ -742,6 +758,8 @@ impl fmt::Display for Shown<'_> {
             Message::DecodingDebugInfo => f.write_str("while reading stored debug info"),
             Message::StoringStructure => f.write_str("while storing the structure"),
             Message::DecodingStructure => f.write_str("while reading a stored structure"),
+            Message::StoringValues => f.write_str("while storing the values"),
+            Message::DecodingValues => f.write_str("while reading stored values"),
             Message::AtType { at } => write!(f, "at type {at}"),
             Message::AtConstant { at } => write!(f, "at constant {at}"),
             Message::AtGlobal { at } => write!(f, "at value {at}"),

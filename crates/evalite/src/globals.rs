@@ -15,6 +15,11 @@ use crate::value::Repr;
 use crate::word::Word;
 use crate::{Environment, Path, Program, ReferenceKind, Type, Value};
 
+#[path = "persist.rs"]
+pub(crate) mod persist;
+
+pub use self::persist::{DropReason, Dropped};
+
 /// The words a [`Globals`] store may take for the parts of its values
 /// unless [`Globals::with_limit`] says otherwise: 2^20 words, 8 MiB.
 pub const DEFAULT_GLOBALS: u32 = 1 << 20;

@@ -405,6 +405,37 @@ globals.push(&Path::value("health").field("damage"), &Value::int(3))?;
 assert_eq!(machine.load(&programs[0], &globals)?.run()?.value(), &Value::int(6));
 ```
 
+A store is saved as its values, not its words: [`Globals::to_bytes`]
+writes each set value by name, and [`Globals::from_bytes`] reads them back
+into a store of an environment, setting each as [`Globals::set`] does, so
+bytes from anyone are checked against the declared types and the store's
+limit. When a sheet's environment changes, [`Globals::migrate`] carries
+the values of an old store over to a store of the new one: each whose
+name is still declared with its type, or with fields only removed from its
+records, and gives back every other value with why it was dropped.
+
+```rust
+use evalite::{Environment, Globals, Type, Value};
+
+let mut env = Environment::new();
+env.value("health", Type::record([("boxes", Type::int()), ("bashing", Type::int())]))?;
+env.value("stamina", Type::int())?;
+
+let mut globals = Globals::new(&env);
+globals.set("health", &Value::record([("boxes", Value::int(7)), ("bashing", Value::int(1))]))?;
+globals.set("stamina", &Value::int(3))?;
+let saved = globals.to_bytes()?;
+
+// The next version of the sheet drops `bashing`, and `stamina` with it.
+let mut next = Environment::new();
+next.value("health", Type::record([("boxes", Type::int())]))?;
+
+let (globals, dropped) = Globals::migrate(&Globals::from_bytes(&env, &saved)?, &next);
+assert_eq!(globals.get("health"), Some(Value::record([("boxes", Value::int(7))])));
+assert_eq!(dropped.len(), 1);
+assert_eq!(dropped[0].to_string(), "`stamina` is no longer declared");
+```
+
 <br>
 
 ## Errors
@@ -656,7 +687,10 @@ clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 [`Limits::memory`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.memory
 [`Machine::load`]: https://docs.rs/evalite/latest/evalite/struct.Machine.html#method.load
 [`Globals`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html
+[`Globals::from_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.from_bytes
+[`Globals::migrate`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.migrate
 [`Globals::set`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.set
+[`Globals::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.to_bytes
 [`Globals::with_limit`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.with_limit
 [`Limits`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html
 [`MAX_DIAGNOSTICS`]: https://docs.rs/evalite/latest/evalite/constant.MAX_DIAGNOSTICS.html
