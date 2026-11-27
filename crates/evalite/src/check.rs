@@ -1660,7 +1660,7 @@ impl<'a> Compiler<'a> {
             return Err(Diagnostics::one(internal("not one value at the end")));
         };
 
-        let mut program = Program::verify(
+        let program = Program::verify(
             self.env.fingerprint(),
             self.types,
             self.constants,
@@ -1673,8 +1673,6 @@ impl<'a> Compiler<'a> {
             Diagnostics::one(internal(format!("the compiled program is invalid: {e:#}")))
         })?;
 
-        // Its slots are the environment's, whose fingerprint it carries.
-        program.compiled = true;
         Ok((program, DebugInfo::new(self.spans)))
     }
 }

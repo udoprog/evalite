@@ -648,26 +648,24 @@ and on every platform. A test pins its values. Functions are not part of it.
 **Programs.** The compiler emits `Instr::Global { at: slot, ty }` and
 records each read global as (name, type, slot), with the fingerprint as
 `Program::fingerprint()`. `Environment::accepts(&program)` and
-`Globals::accepts(&program)` (decision C) share `env::refused`:
+`Globals::accepts(&program)` (decision C) share `env::refused`, which
+accepts a program when each global it reads is declared with an equal type
+at the same slot. Appending values keeps stored programs accepted. Checking
+every read costs the program's global types, which are bounded by
+`MAX_GLOBAL_TYPE_NODES`. `Machine::load` refuses a program its store does
+not accept.
 
-- the program was compiled here (`Program::compiled`) and the
-  fingerprints match (the fast path); or
-- each global the program reads is declared with an equal type at the same
-  slot.
-
-Appending values keeps stored programs accepted. Checking every read costs
-the program's global types, which are bounded by `MAX_GLOBAL_TYPE_NODES`.
-`Machine::load` refuses a program its store does not accept.
-
-The fast path is only for compiled programs (decided in Globals 2): stored
-bytes may claim any fingerprint, and a program read with
-`Program::from_bytes` whose global types were tampered with, but whose
-fingerprint was kept, would pass the verifier (each `Instr::Global`
-agrees with its tampered record) and read a slot's words as another type.
-The machine bounds-checks every access, so that would be a fault, not
-unsafety, but faults are reserved for evalite's own bugs. So a decoded
-program is always checked read by read. `compiled` is not stored, and is
-set only by the compiler after `Program::verify`.
+There is no fingerprint fast path (removed in the store hardening card,
+e3868667). A matching fingerprint is no proof of the same layout: FNV-1a 64
+collisions cost about 2^32 work, and in characterize environments the
+layout comes from user-defined sheet templates, so it is untrusted. A
+collision would let a program read a slot's words as another type. The
+machine bounds-checks every access, so that would be a fault, not
+unsafety, but faults are reserved for evalite's own bugs. Stored bytes
+could claim any fingerprint anyway. So every program, compiled or decoded,
+is checked read by read, which is linear in its reads. The fingerprint is
+kept as stored metadata and a quick hint (`Program::fingerprint()` against
+`Environment::fingerprint()`), never as grounds to accept.
 
 **The store** (`globals.rs`). `Globals::new(&env)` (or `with_limit(&env,
 words)`) copies the environment's slots (name, `Type`, slot word), interns
@@ -1065,8 +1063,9 @@ the sheet's values persistent:
 - **Layout fingerprint** (built, section 7). A stable 64-bit hash of the
   ordered (name, type) list. It uses a fixed algorithm (FNV-1a), never the
   per-table random seed of section 4, so it is identical across processes.
-  Programs carry it. Loading a program the store's environment doesn't
-  `accepts` (the same fingerprint, or every read slot matching) is refused.
+  Programs carry it as metadata. Loading a program the store's environment
+  doesn't `accepts` (every read slot matching; a matching fingerprint alone
+  is not enough) is refused.
 - **Runs read the store, read-only** (built). `machine.load(&program,
   &globals)` then `run.run()`/`run.run_with(host)`: the store is given at
   load, so load can refuse a program the store does not accept. A run reads
@@ -1165,7 +1164,7 @@ decisions):
 | "Simple free" | Exact-size free lists, reused by the next block of that size; the limit checked by matching the new value's block sizes against free and old blocks before changing anything | Bump only (a store replacing values grows until its limit); freeing only a block at the heap's end (order-dependent); checking the limit without reuse (a same-size replace fails at the limit). |
 | What the store limit counts | The heap, freed blocks included; not the slots, which the environment bounds | Slots too: the limit would depend on how many values are declared. |
 | `Memory::globals` | Removed, `FORMAT` 7 | Kept: it counted the slots as machine memory, which they no longer are. |
-| The fingerprint fast path | Only for programs compiled here; a decoded program is checked read by read | For every program: stored bytes may keep the fingerprint and tamper the types, which reads a slot as another type (a fault). |
+| The fingerprint fast path | Only for programs compiled here; a decoded program is checked read by read. **Superseded** (e3868667): no fast path at all, every program is checked read by read | For every program: stored bytes may keep the fingerprint and tamper the types, which reads a slot as another type (a fault). A compiled program's fingerprint can collide too, from an untrusted layout. |
 
 **Taken while building Globals 3** (worker, 2026-11-27, within the card's
 decisions):
@@ -1187,7 +1186,8 @@ The lead decided each of these on 2026-11-27, taking the recommended option
 - **Decided:** A, one address space split at a boundary (Globals 2). B,
   refuse redeclaring, with an ordered slot list in `Environment` (Globals 1).
   C, accept on a fingerprint match, or else when every read (name, slot,
-  type) matches (Globals 1). D, append-only environments, with removal as a
+  type) matches (Globals 1); the fingerprint match was later dropped as
+  grounds to accept (e3868667, section 7). D, append-only environments, with removal as a
   new layout plus `migrate` (Globals 1/6). B and C are built (section 7):
   `DeclareKind::Redeclared`, and `Environment::accepts`.
 

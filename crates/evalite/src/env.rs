@@ -324,12 +324,11 @@ impl Environment {
     }
 
     /// Whether `program` reads its values where this environment holds
-    /// them: it was compiled against this layout (the same
-    /// [`fingerprint`](Self::fingerprint)), or else each value it reads is
-    /// declared here with the same type, in the same slot. Slots never
-    /// move, so a program stays accepted as values are declared after the
-    /// ones it reads. A program read with [`Program::from_bytes`] is always
-    /// checked value by value, as stored bytes may claim any fingerprint.
+    /// them: each value it reads is declared here with the same type, in
+    /// the same slot. Slots never move, so a program stays accepted as
+    /// values are declared after the ones it reads. The check is made
+    /// value by value however the [`fingerprint`](Self::fingerprint)s
+    /// compare, as a hash that matches is no proof of the same layout.
     ///
     /// ```
     /// use evalite::{Environment, Type};
@@ -348,7 +347,7 @@ impl Environment {
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn accepts(&self, program: &Program) -> bool {
-        refused(self.fingerprint(), program, |name| {
+        refused(program, |name| {
             self.slot(name).map(|slot| (slot.at, &slot.ty))
         })
         .is_none()
@@ -370,23 +369,20 @@ impl Environment {
     }
 }
 
-/// The first of the values `program` reads that a layout of fingerprint
-/// `fingerprint`, whose slot (word and type) of a name `slot` gives, does
-/// not hold where and as the program reads it, by its index among the
-/// program's globals; `None` when it holds them all.
+/// The first of the values `program` reads that a layout, whose slot
+/// (word and type) of a name `slot` gives, does not hold where and as the
+/// program reads it, by its index among the program's globals; `None` when
+/// it holds them all.
 ///
-/// A program compiled against the same layout is taken on its
-/// fingerprint. One read from bytes is checked value by value however its
-/// fingerprint reads, as the bytes may claim any.
+/// Every read is checked, however the fingerprints compare: a 64-bit hash
+/// is no proof two layouts are the same, as one made to collide with
+/// another (from a user's own sheet template, say) would have a program
+/// read its slots as another type. The check costs the program's global
+/// types, which `MAX_GLOBAL_TYPE_NODES` bounds.
 pub(crate) fn refused<'a>(
-    fingerprint: u64,
     program: &Program,
     slot: impl Fn(&str) -> Option<(u32, &'a Type)>,
 ) -> Option<usize> {
-    if program.compiled && program.layout == fingerprint {
-        return None;
-    }
-
     program
         .globals
         .iter()

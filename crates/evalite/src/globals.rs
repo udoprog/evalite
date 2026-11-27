@@ -214,7 +214,7 @@ impl Globals {
     /// The first of the values `program` reads that this store does not
     /// hold where and as it reads it.
     pub(crate) fn refused(&self, program: &Program) -> Option<usize> {
-        refused(self.layout.fingerprint, program, |name| {
+        refused(program, |name| {
             let held = self.held(name)?.1;
             Some((held.at, &held.ty))
         })

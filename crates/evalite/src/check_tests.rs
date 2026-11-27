@@ -3406,6 +3406,33 @@ fn accepted_layouts() {
     assert!(Environment::new().accepts(&compile("1", &env).unwrap()));
 }
 
+/// A fingerprint that matches is no proof of the layout: a compiled
+/// program whose fingerprint collides with another layout's is checked
+/// read by read, and refused where it would read a slot as another type.
+#[test]
+fn colliding_fingerprints_are_not_accepted() {
+    let mut env = Environment::new();
+    env.value("wits", Type::int()).unwrap();
+    let mut program = compile("wits + 1", &env).unwrap();
+
+    let mut other = Environment::new();
+    other.value("wits", Type::string()).unwrap();
+    // As if FNV-1a had collided: the hashes match, the layouts do not.
+    program.layout = other.fingerprint();
+    assert_eq!(program.fingerprint(), other.fingerprint());
+
+    assert!(!other.accepts(&program));
+    let globals = Globals::new(&other);
+    assert!(!globals.accepts(&program));
+
+    let mut machine = Machine::default();
+    let error = machine.load(&program, &globals).unwrap_err();
+    assert_eq!(error.message(), &Message::OtherLayout { global: Some(0) });
+
+    // The layout it was compiled against still takes it.
+    assert!(env.accepts(&program));
+}
+
 /// The environment works out a slot's width from the type as the type
 /// table does from its id.
 #[test]

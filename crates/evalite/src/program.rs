@@ -247,10 +247,6 @@ pub(crate) struct Stored {
 pub struct Program {
     /// The fingerprint of the layout it was compiled against.
     pub(crate) layout: u64,
-    /// Whether it was compiled here, rather than read from bytes: only
-    /// then is its fingerprint known to be that of the slots it reads,
-    /// as stored bytes may claim any fingerprint.
-    pub(crate) compiled: bool,
     pub(crate) types: Types,
     pub(crate) constants: Vec<Constant>,
     pub(crate) globals: Vec<Global>,
@@ -302,8 +298,9 @@ impl Program {
     }
 
     /// The [`fingerprint`](crate::Environment::fingerprint) of the
-    /// environment it was compiled against, which
-    /// [`Environment::accepts`](crate::Environment::accepts) compares.
+    /// environment it was compiled against. It is a hint, not a proof:
+    /// [`Environment::accepts`](crate::Environment::accepts) checks each
+    /// value the program reads however the fingerprints compare.
     pub fn fingerprint(&self) -> u64 {
         self.layout
     }
@@ -525,7 +522,6 @@ impl Program {
                 ..memory
             },
             layout,
-            compiled: false,
             types,
             constants,
             globals,

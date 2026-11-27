@@ -1338,7 +1338,6 @@ fn faulty_programs() {
 
     let faulty = |code: Vec<Instr>, stack: u32| Program {
         layout: 0,
-        compiled: false,
         types: types.clone(),
         constants: Vec::new(),
         globals: Vec::new(),
