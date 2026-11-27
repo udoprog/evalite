@@ -133,8 +133,11 @@ Not covered (gaps, each a later card if wanted): a path call's arguments
 is itself a sibling (`[[None], [Some(1)]]`, `[{a: None}, {a: Some(1)}]`, as
 the inner literal is typed by its own parts and the slot's type comes only
 after it; the reverse order checks), which would need a field or entry path
-per pending literal where `Some(...)` needs only a depth. An explicit
-annotation, `None::<T>`, reaches those.
+per pending literal where `Some(...)` needs only a depth, and an overloaded
+host function whose overloads disagree on the parameter even when only one
+overload fits the call (`h(None)` with `h(Option<Int>)` and `h(List<Int>)`
+expects nothing, as overloads are told apart only after the arguments are
+typed). An explicit annotation, `None::<T>`, reaches those.
 
 **Annotated `None` (phase 4):** `None::<T>` is an `Option<T>` whatever its
 context. `T` is written in the type grammar of `Type::parse` (`Int`,
@@ -487,6 +490,17 @@ two have one checker and identical errors (section 9).
     once per call, as checking the call already does. So the walk stays
     linear (`check_tests::option_literals_are_linear`, which covers `[]` and
     `{}` too);
+  - diagnostics are the one place a `TypeId` becomes an owned `Type` (a
+    tree, up to `MAX_TYPE_NODES` nodes). `Compiler::shown` builds it only
+    when `Reporter::keeps` says the diagnostic will be kept, else it puts
+    `Int` in its place, as a dropped diagnostic is never shown; `fields_fit`
+    builds the expected record once for all its diagnostics. As errors are
+    found close to source order, only about `MAX_DIAGNOSTICS` builds are
+    made whatever the number of errors; one found earlier in the source
+    than a kept one replaces it and costs a build
+    (`tests::reporting_large_types_is_bounded`). Not taken: an
+    `Arc<Type>` per `TypeId`, which needs `Type`'s public, owned
+    `ErrorKind` fields to change, and still costs one build per type;
   - alternatives: unification with type variables (a fresh variable per
     `None`, solved at the end) handles every nesting, but needs a
     substitution table, an occurs check and a second pass to emit typed code,

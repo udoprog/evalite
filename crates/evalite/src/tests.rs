@@ -1592,6 +1592,54 @@ fn checking_maps_is_linear() {
     }
 }
 
+/// Reporting is bounded however large the types it shows: a diagnostic
+/// past [`MAX_DIAGNOSTICS`] builds none of them, so four times the errors
+/// against a large declared record cost about what the kept ones do, not
+/// four times as much.
+#[test]
+fn reporting_large_types_is_bounded() {
+    use std::time::Instant;
+
+    let unlimited = Options::new().max_depth(usize::MAX).max_len(usize::MAX);
+    let mut env = Environment::new();
+    let fields = (0..2_000).map(|i| (format!("f{i}"), Type::int()));
+    let record = Type::record([("z", Type::record(fields))]);
+    env.value("r", record).unwrap();
+
+    fn repeat(item: &str, n: usize) -> String {
+        vec![item; n].join(", ")
+    }
+
+    let shapes: [fn(usize) -> String; 5] = [
+        |n| format!("[r, {}]", repeat("1", n)),
+        |n| format!("[r, {}]", repeat("[]", n)),
+        |n| format!("[{}, r]", repeat("[]", n)),
+        |n| format!("[r, {}]", repeat("None", n)),
+        |n| {
+            let fields = (0..n).map(|i| format!("g{i}: 1")).collect::<Vec<_>>();
+            format!("[r, {{z: {{{}}}}}]", fields.join(", "))
+        },
+    ];
+
+    for shape in shapes {
+        let mut times = Vec::new();
+
+        for n in [MAX_DIAGNOSTICS, MAX_DIAGNOSTICS * 4] {
+            let source = shape(n);
+            let parsed = crate::parse_with(&source, &unlimited).unwrap();
+
+            let start = Instant::now();
+            let errors = crate::check::compile_parsed(&source, parsed, &env, None).unwrap_err();
+            times.push(start.elapsed().as_secs_f64());
+            assert!(errors.len() <= MAX_DIAGNOSTICS + 1, "{source:.40}");
+        }
+
+        // The kept diagnostics cost the same both times; building the
+        // dropped ones too would take four times as long.
+        assert!(times[1] < times[0] * 2.5 + 0.05, "{times:?}");
+    }
+}
+
 #[test]
 fn unescapes() {
     assert_eq!(unescape(r#""""#).as_deref(), Some(""));

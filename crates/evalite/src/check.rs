@@ -471,6 +471,17 @@ impl<'a> Compiler<'a> {
         self.types.to_type(id).unwrap_or(Type::int())
     }
 
+    /// The type `id` as a diagnostic at `at` shows it: built only when the
+    /// reporter keeps that diagnostic, so reporting costs nothing per
+    /// dropped diagnostic, however large the type.
+    fn shown(&self, id: TypeId, at: Span<u32>) -> Type {
+        if self.reporter.keeps(at.start) {
+            self.ty(id)
+        } else {
+            Type::int()
+        }
+    }
+
     fn node(&mut self, node: TypeNode, at: Span<u32>) -> Result<TypeId, Diagnostic> {
         let large = self.types.is_large(&node);
 
@@ -967,7 +978,7 @@ impl<'a> Compiler<'a> {
 
             // A `Some` around it that the slot's type has no option for
             // leaves it with no type, as written after a sibling.
-            let expected = peeled.then(|| self.ty(own));
+            let expected = peeled.then(|| self.shown(own, p.span));
             self.report(Diagnostic::new(p.span, p.shape.error(expected)));
         }
     }
@@ -1092,8 +1103,8 @@ impl<'a> Compiler<'a> {
             return Err(Diagnostic::new(
                 span,
                 ErrorKind::AnnotatedNone {
-                    annotated: self.ty(ty),
-                    expected: self.ty(want),
+                    annotated: self.shown(ty, span),
+                    expected: self.shown(want, span),
                 },
             ));
         }
@@ -1115,7 +1126,10 @@ impl<'a> Compiler<'a> {
         };
 
         if !shape.fits(self.types.get(want)) {
-            return Err(Diagnostic::new(span, shape.error(Some(self.ty(want)))));
+            return Err(Diagnostic::new(
+                span,
+                shape.error(Some(self.shown(want, span))),
+            ));
         }
 
         self.emit(shape.instr(want));
@@ -1298,7 +1312,7 @@ impl<'a> Compiler<'a> {
                 span,
                 ErrorKind::Operator {
                     op,
-                    operands: vec![self.ty(value.ty)],
+                    operands: vec![self.shown(value.ty, span)],
                 },
             ));
         }
@@ -1357,7 +1371,7 @@ impl<'a> Compiler<'a> {
                 span,
                 ErrorKind::Operator {
                     op,
-                    operands: vec![self.ty(left.ty), self.ty(right.ty)],
+                    operands: vec![self.shown(left.ty, span), self.shown(right.ty, span)],
                 },
             ));
         }
@@ -1408,7 +1422,7 @@ impl<'a> Compiler<'a> {
                 span,
                 ErrorKind::Operator {
                     op,
-                    operands: vec![self.ty(left.ty), self.ty(right.ty)],
+                    operands: vec![self.shown(left.ty, span), self.shown(right.ty, span)],
                 },
             ));
         }
@@ -1461,7 +1475,7 @@ impl<'a> Compiler<'a> {
                 span,
                 ErrorKind::NoOverload {
                     function: name,
-                    found: found.iter().map(|t| self.ty(*t)).collect(),
+                    found: found.iter().map(|t| self.shown(*t, span)).collect(),
                     candidates: overloads.iter().map(Overload::describe).collect(),
                 },
             )),
@@ -1638,7 +1652,7 @@ impl<'a> Compiler<'a> {
                         callee,
                         index: n.saturating_add(1),
                         expected,
-                        found: self.ty(value.ty),
+                        found: self.shown(value.ty, value.span),
                     },
                 ),
                 None => internal("a mismatch past the arguments"),
@@ -1762,7 +1776,7 @@ impl<'a> Compiler<'a> {
         }
 
         let Some(TypeNode::Record(fields)) = self.types.get(receiver.ty) else {
-            let receiver = self.ty(receiver.ty);
+            let receiver = self.shown(receiver.ty, at);
 
             let kind = if dotted {
                 ErrorKind::NoFields {
@@ -1814,7 +1828,7 @@ impl<'a> Compiler<'a> {
         let Some(TypeNode::Option(value)) = self.types.get(operand.ty) else {
             return Err(Diagnostic::new(
                 *node.span(),
-                ErrorKind::UnwrapNonOption(self.ty(operand.ty)),
+                ErrorKind::UnwrapNonOption(self.shown(operand.ty, *node.span())),
             ));
         };
 
@@ -1862,7 +1876,7 @@ impl<'a> Compiler<'a> {
             }
             _ => Some(Diagnostic::new(
                 receiver.span,
-                ErrorKind::NotIndexable(self.ty(receiver.ty)),
+                ErrorKind::NotIndexable(self.shown(receiver.ty, receiver.span)),
             )),
         };
 
@@ -1897,9 +1911,9 @@ impl<'a> Compiler<'a> {
                     return Err(Diagnostic::new(
                         index.span,
                         ErrorKind::KeyType {
-                            map: self.ty(list.ty),
-                            key: self.ty(key),
-                            found: self.ty(index.ty),
+                            map: self.shown(list.ty, index.span),
+                            key: self.shown(key, index.span),
+                            found: self.shown(index.ty, index.span),
                         },
                     ));
                 }
@@ -1921,8 +1935,8 @@ impl<'a> Compiler<'a> {
             return Err(Diagnostic::new(
                 index.span,
                 ErrorKind::IndexType {
-                    list: self.ty(list.ty),
-                    found: self.ty(index.ty),
+                    list: self.shown(list.ty, index.span),
+                    found: self.shown(index.ty, index.span),
                 },
             ));
         }
@@ -1957,8 +1971,8 @@ impl<'a> Compiler<'a> {
                     value.span,
                     ErrorKind::ListEntry {
                         index: at.saturating_add(1),
-                        expected: self.ty(entry),
-                        found: self.ty(value.ty),
+                        expected: self.shown(entry, value.span),
+                        found: self.shown(value.ty, value.span),
                     },
                 ));
             }
@@ -2291,19 +2305,26 @@ impl<'a> Compiler<'a> {
             return true;
         }
 
-        let expected = self.ty(want);
+        // Built once, and only if a diagnostic that shows it is kept.
+        let mut expected = None;
+        let mut shown = |this: &Self, at: Span<u32>| {
+            if !this.reporter.keeps(at.start) {
+                return Type::int();
+            }
+
+            expected.get_or_insert_with(|| this.ty(want)).clone()
+        };
 
         for (field, at) in extra {
+            let expected = shown(self, at);
             self.report(Diagnostic::new(
                 at,
-                ErrorKind::ExtraField {
-                    field,
-                    expected: expected.clone(),
-                },
+                ErrorKind::ExtraField { field, expected },
             ));
         }
 
         if !missing.is_empty() {
+            let expected = shown(self, self.span);
             self.report(Diagnostic::new(
                 self.span,
                 ErrorKind::MissingFields {
@@ -2453,8 +2474,8 @@ impl<'a> Compiler<'a> {
                     value.span,
                     ErrorKind::MapValue {
                         index: at.saturating_add(1),
-                        expected: self.ty(entry),
-                        found: self.ty(value.ty),
+                        expected: self.shown(entry, value.span),
+                        found: self.shown(value.ty, value.span),
                     },
                 ));
             }

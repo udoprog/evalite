@@ -315,6 +315,12 @@ pub(crate) struct Reporter {
 }
 
 impl Reporter {
+    /// Whether a diagnostic found next at `start` would be kept, so what
+    /// it shows is worth building. A no stays a no as more are found.
+    pub(crate) fn keeps(&self, start: u32) -> bool {
+        self.kept.len() < MAX_DIAGNOSTICS || self.kept.iter().any(|(d, _)| start < d.span.start)
+    }
+
     pub(crate) fn report(&mut self, diagnostic: Diagnostic) {
         let key = (diagnostic.span.start, self.found);
         self.found = self.found.saturating_add(1);
