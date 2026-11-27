@@ -2,7 +2,7 @@
 //! it is being edited, and which compiles through the same parser and
 //! checker as text.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use musli::{Decode, Encode};
@@ -1316,19 +1316,22 @@ impl Structure {
     /// does not hold `at`.
     fn check_free(&self, node: &Node, at: Option<(NodeId, &[NodeId])>) -> Result<(), EditError> {
         let children = node.children();
+        // Sets, so a node of many parts is checked in linear time.
+        let old: HashSet<NodeId> = at
+            .map(|(_, old)| old.iter().copied().collect())
+            .unwrap_or_default();
+        let mut parts = HashSet::with_capacity(children.len());
 
-        for (n, child) in children.iter().enumerate() {
-            if self.get(*child).is_none() {
-                return Err(EditKind::UnknownNode(*child).into());
+        for child in children {
+            if self.get(child).is_none() {
+                return Err(EditKind::UnknownNode(child).into());
             }
 
-            let reused = at.is_some_and(|(_, old)| old.contains(child));
-
-            if *child == self.root
-                || (self.parent(*child).is_some() && !reused)
-                || children.iter().take(n).any(|c| c == child)
+            if child == self.root
+                || (self.parent(child).is_some() && !old.contains(&child))
+                || !parts.insert(child)
             {
-                return Err(EditKind::Attached(*child).into());
+                return Err(EditKind::Attached(child).into());
             }
         }
 
@@ -1339,7 +1342,7 @@ impl Structure {
             let mut steps = 0usize;
 
             while let Some(id) = up {
-                if children.contains(&id) {
+                if parts.contains(&id) {
                     return Err(EditKind::Cycle(id).into());
                 }
 

@@ -664,6 +664,9 @@ stored form's, so variants keep their order.
   - no part is an ancestor of the node being replaced (walking up, bounded by
     the node count).
 
+  The parts, and the replaced node's old parts, are checked against sets,
+  so an edit is linear in its parts plus the replaced node's depth.
+
   Nodes orphaned by edits stay in the table until stored.
 - **Text.**
   - `to_text`/`text_of` render iteratively (`render`), adding parentheses

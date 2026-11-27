@@ -599,6 +599,32 @@ fn many_holes_are_reported_quickly() {
 }
 
 #[test]
+fn nodes_of_many_parts_are_edited_quickly() {
+    const PARTS: usize = 100_000;
+
+    let mut s = Structure::new();
+    let holes: Vec<NodeId> = (0..PARTS).map(|_| s.add(Node::hole()).unwrap()).collect();
+
+    let list = quickly("adding", || s.add(Node::list(holes.clone())).unwrap());
+    s.set_root(list).unwrap();
+
+    // The old parts may be used again, in another order.
+    quickly("replacing", || {
+        s.replace(list, Node::list(holes.iter().rev().copied()))
+            .unwrap()
+    });
+    assert_eq!(s.get(list).unwrap().children().first(), holes.last());
+
+    // A part used twice is found, however far apart.
+    let mut twice = holes.clone();
+    twice.push(holes[0]);
+    let error = quickly("refusing", || {
+        s.replace(list, Node::list(twice)).unwrap_err()
+    });
+    assert_eq!(error, EditKind::Attached(holes[0]).into());
+}
+
+#[test]
 fn tampered_structures_are_refused() {
     let invalid = |bytes: Vec<u8>| match Structure::from_bytes(&bytes) {
         Err(e) if matches!(e.message(), Message::Invalid(..)) => format!("{e:#}"),
