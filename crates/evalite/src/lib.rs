@@ -360,12 +360,15 @@
 //! values, however large they are, so a sheet of a thousand formulas over one
 //! large map pays for the map once, not once a formula. Setting a value again
 //! replaces it, freeing the words of the old one for values of the same size.
-//! A run reads the store and never writes to it, and reading a value that is
-//! not set is a run error naming it. A store has a word limit of its own
-//! ([`Globals::with_limit`]), apart from the machine's [`Limits`].
+//! [`Globals::set_at`] replaces one part of a value in place, a field, a list
+//! entry or a map key's value, found by a [`Path`], so updating one entry of a
+//! large map costs the entry, not the map. A run reads the store and never
+//! writes to it, and reading a value that is not set is a run error naming it.
+//! A store has a word limit of its own ([`Globals::with_limit`]), apart from
+//! the machine's [`Limits`].
 //!
 //! ```
-//! use evalite::{Environment, Globals, Machine, Type, Value};
+//! use evalite::{Environment, Globals, Machine, Path, Type, Value};
 //!
 //! let mut env = Environment::new();
 //! env.value("health", Type::record([("boxes", Type::int()), ("damage", Type::list(Type::int()))]))?;
@@ -391,6 +394,9 @@
 //!
 //! globals.set("stamina", &Value::int(3))?;
 //! assert_eq!(machine.load(&programs[1], &globals)?.run()?.value(), &Value::int(10));
+//!
+//! globals.set_at(&Path::value("health").field("boxes"), &Value::int(9))?;
+//! assert_eq!(machine.load(&programs[0], &globals)?.run()?.value(), &Value::int(7));
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
 //!
@@ -712,6 +718,9 @@ mod check_tests;
 
 #[cfg(test)]
 mod vm_tests;
+
+#[cfg(test)]
+mod globals_tests;
 
 #[cfg(test)]
 mod structure_tests;

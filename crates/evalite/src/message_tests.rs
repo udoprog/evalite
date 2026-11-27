@@ -11,7 +11,7 @@
     clippy::string_slice
 )]
 
-use crate::message::{Fault, Found, Location, Message, Op, Root, Seg, show};
+use crate::message::{Fault, Found, Key, Location, Message, Op, PathStep, Root, Seg, show};
 use crate::types::TypeId;
 use crate::*;
 
@@ -90,6 +90,55 @@ fn every_message_with_and_without_a_program() {
             },
             "no value `nothing` is declared",
             "no value `nothing` is declared",
+        ),
+        (
+            Message::FunctionPath {
+                name: "count".into(),
+            },
+            "`count()` is what a function gives, not a value a store holds",
+            "`count()` is what a function gives, not a value a store holds",
+        ),
+        (
+            Message::NotSet { global: strength },
+            "`strength` is not set",
+            "the value is not set",
+        ),
+        (
+            Message::NoStep {
+                ty: int,
+                step: PathStep::Field("max".into()),
+            },
+            r#"Int has no field "max""#,
+            r#"the value has no field "max""#,
+        ),
+        (
+            Message::NoStep {
+                ty: health,
+                step: PathStep::Key(Key::string("brawl")),
+            },
+            r#"{boxes: Int, count: List<Int>} has no key "brawl""#,
+            r#"the value has no key "brawl""#,
+        ),
+        (
+            Message::NoStep {
+                ty: int,
+                step: PathStep::Index(-2),
+            },
+            "Int has no index -2",
+            "the value has no index -2",
+        ),
+        (
+            Message::NoneOnPath,
+            "the optional value is none",
+            "the optional value is none",
+        ),
+        (
+            Message::KeyMistyped {
+                expected: int,
+                found: Found::String,
+            },
+            "expected an Int key, found String",
+            "expected a key of another type, found String",
         ),
         (
             Message::OtherLayout {
@@ -305,6 +354,13 @@ fn every_message_with_and_without_a_program() {
             "while setting a value",
         ),
         (
+            Message::SettingAt {
+                path: "health.count[7]".into(),
+            },
+            "while setting `health.count[7]`",
+            "while setting `health.count[7]`",
+        ),
+        (
             Message::AtPath {
                 root: Root::Global(g("health")),
                 path: Box::new([
@@ -411,10 +467,15 @@ fn every_fault_has_its_own_text() {
         Fault::RecordWrongSize,
         Fault::RecordNotRecordType,
         Fault::ListLostEntries,
+        Fault::MapLostEntries,
+        Fault::MapUnsorted,
         Fault::RecordLostFields,
         Fault::OptionLostValue,
         Fault::ReadAsSeveral,
         Fault::NotUtf8,
+        Fault::StorePastLimit,
+        Fault::WriteToStore,
+        Fault::DynamicStep,
     ];
 
     let texts = faults

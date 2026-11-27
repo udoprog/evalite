@@ -26,6 +26,16 @@ pub(crate) enum Message {
     TooMuchMemory { needed: u64, allowed: u32 },
     /// A value set in a store that its environment does not declare.
     NotDeclared { name: Box<str> },
+    /// A path from what a function gives, which no store holds.
+    FunctionPath { name: Box<str> },
+    /// A path into a value of the store that is not set.
+    NotSet { global: u32 },
+    /// A path's `step` from a value of type `ty`, which has no such part.
+    NoStep { ty: TypeId, step: PathStep },
+    /// A path through an absent option.
+    NoneOnPath,
+    /// A path's map key of another type than the map's keys, `expected`.
+    KeyMistyped { expected: TypeId, found: Found },
     /// A program that reads `global` (or, when `None`, some value) where
     /// the store does not hold it with its type.
     OtherLayout { global: Option<u32> },
@@ -66,6 +76,9 @@ pub(crate) enum Message {
     LoadingProgram,
     /// Context: setting a value of a store.
     Setting { global: u32 },
+    /// Context: setting the part of a value of a store at `path`, as the
+    /// caller wrote it.
+    SettingAt { path: Box<str> },
     /// Context: the part of a value at `path` from `root`.
     AtPath { root: Root, path: Box<[Seg]> },
     /// Context: calling a function of the caller's.
@@ -124,21 +137,37 @@ pub(crate) enum Key {
     String(Box<str>),
 }
 
-/// The most characters of a `String` key an error shows.
+/// The most characters of a `String` key, or of a field's name, an error
+/// shows.
 pub(crate) const MAX_KEY_SHOWN: usize = 64;
 
 impl Key {
     /// The key `s`, cut short when it is long.
     pub(crate) fn string(s: &str) -> Self {
-        match s.char_indices().nth(MAX_KEY_SHOWN) {
-            Some((at, _)) => {
-                let mut cut = s.get(..at).unwrap_or_default().to_owned();
-                cut.push('…');
-                Self::String(cut.into())
-            }
-            None => Self::String(s.into()),
-        }
+        Self::String(cut(s))
     }
+}
+
+/// `s`, cut to [`MAX_KEY_SHOWN`] characters and an ellipsis when it is
+/// longer.
+pub(crate) fn cut(s: &str) -> Box<str> {
+    match s.char_indices().nth(MAX_KEY_SHOWN) {
+        Some((at, _)) => {
+            let mut cut = s.get(..at).unwrap_or_default().to_owned();
+            cut.push('…');
+            cut.into()
+        }
+        None => s.into(),
+    }
+}
+
+/// A step of a path a caller wrote, as an error names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PathStep {
+    /// A field's name, [`cut`] when it is long.
+    Field(Box<str>),
+    Key(Key),
+    Index(i64),
 }
 
 impl fmt::Display for Key {
@@ -393,6 +422,7 @@ pub(crate) enum Fault {
     NotUtf8,
     StorePastLimit,
     WriteToStore,
+    DynamicStep,
 }
 
 impl Fault {
@@ -436,6 +466,7 @@ impl Fault {
             Self::NotUtf8 => "a string is not UTF-8",
             Self::StorePastLimit => "a store past its limit",
             Self::WriteToStore => "writes to the store it reads",
+            Self::DynamicStep => "a path with a computed step",
         }
     }
 }
@@ -537,29 +568,46 @@ impl fmt::Display for Shown<'_> {
                     f.write_str("some(")?;
                 }
 
-                match found {
-                    Found::Int => f.write_str("Int")?,
-                    Found::Bool => f.write_str("Bool")?,
-                    Found::String => f.write_str("String")?,
-                    Found::List => f.write_str("a list")?,
-                    Found::Record => f.write_str("a record")?,
-                    Found::Map => f.write_str("a map")?,
-                    Found::None => f.write_str("none")?,
-                    Found::Some => f.write_str("some(..)")?,
-                    Found::RecordWithout { record, field } => {
-                        match field_name(p, *record, *field) {
-                            Some(name) => write!(f, "a record without `{name}`")?,
-                            None => f.write_str("a record without one of its fields")?,
-                        }
-                    }
-                    Found::RecordWithExtra => f.write_str("a record with an extra field")?,
-                }
+                write_found(f, p, *found)?;
 
                 if *in_some {
                     f.write_str(")")?;
                 }
 
                 Ok(())
+            }
+            Message::FunctionPath { name } => write!(
+                f,
+                "`{name}()` is what a function gives, not a value a store holds"
+            ),
+            Message::NotSet { global } => match global_name(p, *global) {
+                Some(name) => write!(f, "`{name}` is not set"),
+                None => f.write_str("the value is not set"),
+            },
+            Message::NoStep { ty, step } => {
+                match p.and_then(|p| p.types().to_type(*ty)) {
+                    Some(ty) => write!(f, "{ty} has no ")?,
+                    None => f.write_str("the value has no ")?,
+                }
+
+                match step {
+                    PathStep::Field(name) => write!(f, "field {name:?}"),
+                    PathStep::Key(key) => write!(f, "key {key}"),
+                    PathStep::Index(index) => write!(f, "index {index}"),
+                }
+            }
+            Message::NoneOnPath => f.write_str("the optional value is none"),
+            Message::KeyMistyped { expected, found } => {
+                match p.and_then(|p| p.types().to_type(*expected)) {
+                    Some(ty) => {
+                        let ty = ty.to_string();
+                        let a = crate::error::article(&ty);
+                        write!(f, "expected {a} {ty} key, found ")?;
+                    }
+                    None => f.write_str("expected a key of another type, found ")?,
+                }
+
+                write_found(f, p, *found)
             }
             Message::TooLarge { needed, left } => write!(
                 f,
@@ -609,6 +657,7 @@ impl fmt::Display for Shown<'_> {
                 Some(name) => write!(f, "while setting `{name}`"),
                 None => f.write_str("while setting a value"),
             },
+            Message::SettingAt { path } => write!(f, "while setting `{path}`"),
             Message::AtPath { root, path } => {
                 f.write_str("at `")?;
 
@@ -713,6 +762,25 @@ impl<T: fmt::Display + Copy + PartialEq + From<u8>> fmt::Display for Plural<T> {
 
 fn index<T>(items: &[T], at: u32) -> Option<&T> {
     items.get(usize::try_from(at).ok()?)
+}
+
+/// What a mistyped value was `found` to be.
+fn write_found(f: &mut fmt::Formatter<'_>, p: Option<&dyn Names>, found: Found) -> fmt::Result {
+    match found {
+        Found::Int => f.write_str("Int"),
+        Found::Bool => f.write_str("Bool"),
+        Found::String => f.write_str("String"),
+        Found::List => f.write_str("a list"),
+        Found::Record => f.write_str("a record"),
+        Found::Map => f.write_str("a map"),
+        Found::None => f.write_str("none"),
+        Found::Some => f.write_str("some(..)"),
+        Found::RecordWithout { record, field } => match field_name(p, record, field) {
+            Some(name) => write!(f, "a record without `{name}`"),
+            None => f.write_str("a record without one of its fields"),
+        },
+        Found::RecordWithExtra => f.write_str("a record with an extra field"),
+    }
 }
 
 fn global_name(names: Option<&dyn Names>, global: u32) -> Option<&str> {

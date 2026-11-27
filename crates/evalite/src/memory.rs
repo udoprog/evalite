@@ -116,6 +116,18 @@ pub(crate) fn measure(
     ty: TypeId,
     root: Root,
 ) -> Result<usize, RunError> {
+    measure_at(types, value, ty, root, &[])
+}
+
+/// As [`measure`], for a value held at `prefix` from `root`, which a
+/// mismatch's path starts with.
+pub(crate) fn measure_at(
+    types: &Types,
+    value: &Value,
+    ty: TypeId,
+    root: Root,
+    prefix: &[Seg],
+) -> Result<usize, RunError> {
     match walk(types, value, ty, &mut NoPaths, &mut ()) {
         Ok(total) => Ok(total),
         Err(Stop::Fault(error)) => Err(error),
@@ -123,7 +135,7 @@ pub(crate) fn measure(
             let mut nodes = Nodes::default();
 
             match walk(types, value, ty, &mut nodes, &mut ()) {
-                Err(Stop::Mismatch(mismatch)) => Err(mistyped(mismatch, root, &nodes.0)),
+                Err(Stop::Mismatch(mismatch)) => Err(mistyped(mismatch, root, prefix, &nodes.0)),
                 Err(Stop::Fault(error)) => Err(error),
                 // The same walk, so the same mismatch.
                 Ok(_) => Err(fault(Fault::ValueChangedType)),
@@ -660,6 +672,73 @@ pub(crate) fn blocks(
     Ok(out)
 }
 
+/// Where the entry of `key`, an `Int` or a `String`, starts in the map of
+/// `len` entries of `stride` words from `start`, found by binary search
+/// over its sorted keys: a probe per halving, and a word per 8 bytes of a
+/// `String` key compared. `None` when the map has no such key, or `key` is
+/// of neither type.
+pub(crate) fn find_key(
+    words: &(impl Words + ?Sized),
+    start: usize,
+    len: usize,
+    stride: usize,
+    key: &Value,
+) -> Result<Option<usize>, RunError> {
+    inside(words, start, len.checked_mul(stride))?;
+
+    let mut low = 0usize;
+    let mut high = len;
+
+    while low < high {
+        let mid = low.saturating_add(high.saturating_sub(low) / 2);
+        let at = mid
+            .checked_mul(stride)
+            .and_then(|at| at.checked_add(start))
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+        let probe = get(words, Some(at))?;
+
+        let order = match &key.0 {
+            Repr::Int(n) => probe.as_int().cmp(n),
+            Repr::String(s) => compare_string(words, probe, s.as_bytes())?,
+            _ => return Ok(None),
+        };
+
+        match order {
+            Ordering::Less => low = mid.saturating_add(1),
+            Ordering::Greater => high = mid,
+            Ordering::Equal => return Ok(Some(at)),
+        }
+    }
+
+    Ok(None)
+}
+
+/// The order of the string `word` refers to and `bytes`, by their bytes.
+fn compare_string(
+    words: &(impl Words + ?Sized),
+    word: Word,
+    bytes: &[u8],
+) -> Result<Ordering, RunError> {
+    let (at, len) = word.as_reference()?;
+    let common = len.min(bytes.len());
+
+    for (n, theirs) in bytes
+        .get(..common)
+        .unwrap_or_default()
+        .chunks(8)
+        .enumerate()
+    {
+        let ours = get(words, at.checked_add(n))?.as_bytes();
+        let order = ours.get(..theirs.len()).cmp(&Some(theirs));
+
+        if order != Ordering::Equal {
+            return Ok(order);
+        }
+    }
+
+    Ok(len.cmp(&bytes.len()))
+}
+
 /// Where a walk found a value not of its type: the type `expected`, what
 /// was `found` instead, and the `node` of its path.
 struct Mismatch {
@@ -732,7 +811,12 @@ impl Trail for Nodes {
 /// path from `root`.
 #[cold]
 #[inline(never)]
-fn mistyped(mismatch: Mismatch, root: Root, nodes: &[(usize, Option<Seg>)]) -> RunError {
+fn mistyped(
+    mismatch: Mismatch,
+    root: Root,
+    prefix: &[Seg],
+    nodes: &[(usize, Option<Seg>)],
+) -> RunError {
     let Mismatch {
         expected,
         found,
@@ -747,6 +831,16 @@ fn mistyped(mismatch: Mismatch, root: Root, nodes: &[(usize, Option<Seg>)]) -> R
         node = *parent;
     }
 
+    // A whole value is named by the setting's or the function's context.
+    if path.is_empty() {
+        return RunError::new(Message::Mistyped {
+            expected,
+            found,
+            in_some,
+        });
+    }
+
+    path.extend(prefix.iter().rev().cloned());
     path.reverse();
 
     let error = RunError::new(Message::Mistyped {
@@ -754,11 +848,6 @@ fn mistyped(mismatch: Mismatch, root: Root, nodes: &[(usize, Option<Seg>)]) -> R
         found,
         in_some,
     });
-
-    // A whole value is named by the setting's or the function's context.
-    if path.is_empty() {
-        return error;
-    }
 
     error.context(Message::AtPath {
         root,

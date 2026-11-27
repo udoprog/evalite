@@ -5,11 +5,15 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::env::refused;
-use crate::memory::{self, Words, WordsMut, count, fault};
-use crate::message::{Fault, Labels, Message, Names, Root, RunError, Shown};
-use crate::types::{TypeId, Types};
+use crate::memory::{self, Words, WordsMut, count, fault, get, inside};
+use crate::message::{
+    Fault, Key, Labels, Message, Names, PathStep, Root, RunError, Seg, Shown, cut,
+};
+use crate::references::StepRepr;
+use crate::types::{TypeId, TypeNode, Types};
+use crate::value::Repr;
 use crate::word::Word;
-use crate::{Environment, Program, Type, Value};
+use crate::{Environment, Path, Program, ReferenceKind, Type, Value};
 
 /// The words a [`Globals`] store may take for the parts of its values
 /// unless [`Globals::with_limit`] says otherwise: 2^20 words, 8 MiB.
@@ -269,15 +273,39 @@ impl Globals {
         at: u32,
         value: &Value,
     ) -> Result<(), RunError> {
-        let types = &self.layout.types;
         let id = id.ok_or_else(|| fault(Fault::NoSuchType))?;
         let global = u32::try_from(n).map_err(|_| fault(Fault::PastAddressSpace))?;
         let at = usize::try_from(at).map_err(|_| fault(Fault::PastAddressSpace))?;
+        let set = self.set.get(at).copied().unwrap_or(false);
 
-        memory::measure(types, value, id, Root::Global(global))?;
+        let place = Place {
+            global,
+            at,
+            ty: id,
+            segs: Vec::new(),
+        };
+
+        self.replace(&place, value, set)?;
+
+        if let Some(set) = self.set.get_mut(at) {
+            *set = true;
+        }
+
+        Ok(())
+    }
+
+    /// Write `value` at `place`, replacing the value there when `held`,
+    /// whose parts are freed.
+    fn replace(&mut self, place: &Place, value: &Value, held: bool) -> Result<(), RunError> {
+        let types = &self.layout.types;
+        let Place {
+            global, at, ty: id, ..
+        } = *place;
+
+        memory::measure_at(types, value, id, Root::Global(global), &place.segs)?;
         let sizes = memory::parts(types, value, id)?;
 
-        let old = if self.set.get(at).copied().unwrap_or(false) {
+        let old = if held {
             memory::blocks(&self.heap, types, at, id)?
         } else {
             Vec::new()
@@ -300,13 +328,7 @@ impl Globals {
             self.heap.free.entry(words).or_default().push(start);
         }
 
-        memory::write(&mut self.heap, types, value, id, at)?;
-
-        if let Some(set) = self.set.get_mut(at) {
-            *set = true;
-        }
-
-        Ok(())
+        memory::write(&mut self.heap, types, value, id, at)
     }
 
     /// The words that blocks of `sizes` take past the parts, once the free
@@ -367,6 +389,256 @@ impl Globals {
         }
 
         memory::read(&self.heap, &self.layout.types, at, held.id?).ok()
+    }
+
+    /// Set the part at `path` of a value already set to `value`, replacing
+    /// the part there: a record's field, a list's entry or the value of a
+    /// map's key. [`set`](Self::set) a value as a whole by its name alone,
+    /// as `set_at` of a path without steps does.
+    ///
+    /// A path steps through a present option, as `bonus!.dice` reads the
+    /// field of what `bonus` holds, so `Path::value("bonus").field("dice")`
+    /// is that field. Only the part is written: the value around it stays
+    /// where it is, and runs read the new part from then on. It takes the
+    /// words the new part needs as [`set`](Self::set) does, reusing those of
+    /// the part it replaces, so a part of the same size takes no more. It
+    /// takes as long as the path is long, and the old and new parts are
+    /// large, plus a binary search of each map the path takes a key of.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`GlobalsError`], leaving the store as it was, when:
+    ///
+    /// - the path is of what a function gives, or names a value that is not
+    ///   declared or, past it, not set;
+    /// - a step is not to a part the value has: a field its record does not
+    ///   have, a key its map does not have, an index past either end of its
+    ///   list, a step of the wrong kind, or one through an absent option;
+    /// - `value` is not of the part's type, or its parts do not fit in the
+    ///   words left.
+    ///
+    /// Inserting a key, or an entry of a list, is not setting one.
+    ///
+    /// ```
+    /// use evalite::{Environment, Globals, Machine, Path, Type, Value};
+    ///
+    /// let mut env = Environment::new();
+    /// let skill = Type::record([("dots", Type::int()), ("specialties", Type::list(Type::string()))]);
+    /// env.value("skills", Type::map(Type::string(), skill))?;
+    ///
+    /// let mut globals = Globals::new(&env);
+    /// let skill = |dots, specialties: &[&str]| {
+    ///     let specialties = specialties.iter().map(|s| Value::string(*s));
+    ///     Value::record([("dots", Value::int(dots)), ("specialties", Value::list(specialties))])
+    /// };
+    /// globals.set("skills", &Value::map([
+    ///     (Value::string("brawl"), skill(2, &[])),
+    ///     (Value::string("occult"), skill(3, &["ghosts"])),
+    /// ]))?;
+    ///
+    /// let occult = Path::value("skills").string_key("occult");
+    /// globals.set_at(&occult.clone().field("dots"), &Value::int(4))?;
+    /// globals.set_at(&occult.clone().field("specialties").index(0), &Value::string("rituals"))?;
+    /// assert_eq!(globals.get_at(&occult), Some(skill(4, &["rituals"])));
+    ///
+    /// let program = evalite::compile(r#"skills["occult"].dots + skills["brawl"].dots"#, &env)?;
+    /// assert_eq!(Machine::default().load(&program, &globals)?.run()?.value(), &Value::int(6));
+    ///
+    /// let brawl = Path::value("skills").string_key("brawl");
+    /// let error = globals.set_at(&brawl.clone().field("specialties").index(0), &Value::string("grappling"));
+    /// assert_eq!(
+    ///     format!("{:#}", error.unwrap_err()),
+    ///     r#"index 0 is out of range of a list of 0 entries: at `skills["brawl"].specialties`: while setting `skills["brawl"].specialties[0]`"#,
+    /// );
+    ///
+    /// let error = globals.set_at(&brawl.field("dots"), &Value::bool(true)).unwrap_err();
+    /// assert_eq!(format!("{error:#}"), r#"expected Int, found Bool: while setting `skills["brawl"].dots`"#);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn set_at(&mut self, path: &Path, value: &Value) -> Result<(), GlobalsError> {
+        if path.kind == ReferenceKind::Value && path.steps.is_empty() {
+            return self.set(&path.name, value);
+        }
+
+        let result = match self.locate(path) {
+            Ok(place) => self.replace(&place, value, true),
+            Err(error) => Err(error),
+        };
+
+        result.map_err(|e| {
+            let path = path.to_string().into_boxed_str();
+            self.error(&e.context(Message::SettingAt { path }))
+        })
+    }
+
+    /// The part at `path` of a value, as [`set_at`](Self::set_at) finds it,
+    /// or `None` when there is no such part, or the value is not set. A
+    /// path without steps is the value [`get`](Self::get) gives.
+    ///
+    /// ```
+    /// use evalite::{Environment, Globals, Path, Type, Value};
+    ///
+    /// let mut env = Environment::new();
+    /// env.value("bonus", Type::option(Type::record([("dice", Type::int())])))?;
+    ///
+    /// let mut globals = Globals::new(&env);
+    /// let dice = Path::value("bonus").field("dice");
+    /// assert_eq!(globals.get_at(&dice), None);
+    ///
+    /// globals.set("bonus", &Value::some(Value::record([("dice", Value::int(2))])))?;
+    /// assert_eq!(globals.get_at(&dice), Some(Value::int(2)));
+    ///
+    /// globals.set("bonus", &Value::none())?;
+    /// assert_eq!(globals.get_at(&dice), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn get_at(&self, path: &Path) -> Option<Value> {
+        let place = self.locate(path).ok()?;
+        memory::read(&self.heap, &self.layout.types, place.at, place.ty).ok()
+    }
+
+    /// Where the part at `path` is held, and its type.
+    ///
+    /// Each step is checked against the type of the part before it, and
+    /// reads the reference word it steps through: a constant number of
+    /// words for a field or an index, a binary search for a key.
+    fn locate(&self, path: &Path) -> Result<Place, RunError> {
+        if path.kind != ReferenceKind::Value {
+            let name = cut(&path.name);
+            return Err(RunError::new(Message::FunctionPath { name }));
+        }
+
+        let Some((n, held)) = self.held(&path.name) else {
+            let name = path.name.as_str().into();
+            return Err(RunError::new(Message::NotDeclared { name }));
+        };
+
+        let global = u32::try_from(n).map_err(|_| fault(Fault::PastAddressSpace))?;
+        let mut at = usize::try_from(held.at).map_err(|_| fault(Fault::PastAddressSpace))?;
+        let mut ty = held.id.ok_or_else(|| fault(Fault::NoSuchType))?;
+
+        if !self.set.get(at).copied().unwrap_or(false) {
+            return Err(RunError::new(Message::NotSet { global }));
+        }
+
+        let types = &self.layout.types;
+        let words = &self.heap;
+        let mut segs = Vec::with_capacity(path.steps.len());
+
+        for step in &path.steps {
+            // Through each present option to what it holds.
+            while let Some(TypeNode::Option(inner)) = types.get(ty) {
+                let word = get(words, Some(at))?;
+
+                let present = if types.tagged(ty).is_some() {
+                    at = at
+                        .checked_add(1)
+                        .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                    word.as_bool()?
+                } else {
+                    !word.is_none()
+                };
+
+                if !present {
+                    return Err(off_path(Message::NoneOnPath, global, &segs));
+                }
+
+                ty = *inner;
+            }
+
+            let node = types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))?;
+
+            let (seg, next, next_ty) = match (step, node) {
+                (StepRepr::Field(name), TypeNode::Record(fields)) => {
+                    let Some((n, offset, field)) = types.field_index(ty, name) else {
+                        let step = PathStep::Field(cut(name));
+                        return Err(off_path(Message::NoStep { ty, step }, global, &segs));
+                    };
+
+                    let (start, len) = get(words, Some(at))?.as_reference()?;
+
+                    if len != types.record_words(fields) {
+                        return Err(fault(Fault::RecordWrongSize));
+                    }
+
+                    inside(words, start, Some(len))?;
+                    let field_ty = field.ty;
+                    let seg = Seg::Field {
+                        record: ty,
+                        field: u32::try_from(n).map_err(|_| fault(Fault::FieldPastRecord))?,
+                    };
+                    (seg, start.checked_add(offset), field_ty)
+                }
+                (StepRepr::Key(key), TypeNode::Map { key: key_ty, value }) => {
+                    let shown = match (&key.0, types.get(*key_ty)) {
+                        (Repr::Int(n), Some(TypeNode::Int)) => Key::Int(*n),
+                        (Repr::String(s), Some(TypeNode::String)) => Key::string(s),
+                        _ => {
+                            let mistyped = Message::KeyMistyped {
+                                expected: *key_ty,
+                                found: key.describe(),
+                            };
+                            return Err(off_path(mistyped, global, &segs));
+                        }
+                    };
+
+                    let (start, len) = get(words, Some(at))?.as_reference()?;
+                    let stride = types
+                        .width(*value)
+                        .checked_add(1)
+                        .ok_or_else(|| fault(Fault::ListTooLarge))?;
+
+                    let Some(entry) = memory::find_key(words, start, len, stride, key)? else {
+                        let missing = Message::NoSuchKey { key: shown };
+                        return Err(off_path(missing, global, &segs));
+                    };
+
+                    (Seg::Key(shown), entry.checked_add(1), *value)
+                }
+                (StepRepr::Index(index), TypeNode::List(entry)) => {
+                    let (start, len) = get(words, Some(at))?.as_reference()?;
+                    let width = types.width(*entry);
+
+                    let Some(n) = usize::try_from(*index).ok().filter(|n| *n < len) else {
+                        let range = Message::IndexOutOfRange {
+                            index: *index,
+                            len: count(len),
+                        };
+                        return Err(off_path(range, global, &segs));
+                    };
+
+                    inside(words, start, len.checked_mul(width))?;
+                    let next = n.checked_mul(width).and_then(|n| n.checked_add(start));
+                    (Seg::Index(count(n)), next, *entry)
+                }
+                (StepRepr::Dynamic, _) => return Err(fault(Fault::DynamicStep)),
+                (step, _) => {
+                    let step = match step {
+                        StepRepr::Field(name) => PathStep::Field(cut(name)),
+                        StepRepr::Key(key) => match (&key.0, key.as_int()) {
+                            (_, Some(n)) => PathStep::Key(Key::Int(n)),
+                            (Repr::String(s), _) => PathStep::Key(Key::string(s)),
+                            _ => return Err(fault(Fault::ValueChangedType)),
+                        },
+                        StepRepr::Index(index) => PathStep::Index(*index),
+                        StepRepr::Dynamic => return Err(fault(Fault::DynamicStep)),
+                    };
+
+                    return Err(off_path(Message::NoStep { ty, step }, global, &segs));
+                }
+            };
+
+            at = next.ok_or_else(|| fault(Fault::OutsideMemory))?;
+            ty = next_ty;
+            segs.push(seg);
+        }
+
+        Ok(Place {
+            global,
+            at,
+            ty,
+            segs,
+        })
     }
 
     /// The value `name` and where it is among the slots.
@@ -446,6 +718,26 @@ impl WordsMut for Heap {
         self.words.resize(end, Word::int(0));
         Ok(at)
     }
+}
+
+/// Where a part of a value is held: the value it is part of, the word it
+/// starts at, its type, and the path to it.
+struct Place {
+    global: u32,
+    at: usize,
+    ty: TypeId,
+    segs: Vec<Seg>,
+}
+
+/// `message` about a step of a path, from the part at `segs` of the value
+/// `global`.
+#[cold]
+#[inline(never)]
+fn off_path(message: Message, global: u32, segs: &[Seg]) -> RunError {
+    RunError::new(message).context(Message::AtPath {
+        root: Root::Global(global),
+        path: segs.into(),
+    })
 }
 
 /// Why a value could not be set in a [`Globals`] store.

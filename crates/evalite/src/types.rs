@@ -740,6 +740,13 @@ impl Types {
 
     /// The field of the record `id` named `name`, and its word offset.
     pub(crate) fn field_named(&self, id: TypeId, name: &str) -> Option<(usize, &FieldNode)> {
+        let (_, offset, field) = self.field_index(id, name)?;
+        Some((offset, field))
+    }
+
+    /// The field of the record `id` named `name`, its index in name order
+    /// and its word offset.
+    pub(crate) fn field_index(&self, id: TypeId, name: &str) -> Option<(usize, usize, &FieldNode)> {
         let TypeNode::Record(fields) = self.get(id)? else {
             return None;
         };
@@ -747,7 +754,7 @@ impl Types {
         let n = fields
             .binary_search_by(|f| f.name.as_str().cmp(name))
             .ok()?;
-        Some((*self.offsets.get(id.index())?.get(n)?, fields.get(n)?))
+        Some((n, *self.offsets.get(id.index())?.get(n)?, fields.get(n)?))
     }
 
     /// The words the fields of a record take.

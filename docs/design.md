@@ -1,9 +1,9 @@
 # evalite design
 
 This document describes how evalite works, and the decisions behind it, for
-review. Sections 1 to 9 describe `main` as of Globals 2 (5885897e, the
-globals store). Section 10 is the globals store's plan: decided, and built
-up to Globals 2.
+review. Sections 1 to 9 describe `main` as of Globals 3 (8823970e, updates
+by path). Section 10 is the globals store's plan: decided, and built up to
+Globals 3.
 
 Every card that changes the design updates this file in the same commit,
 including each decision taken and the alternatives it was weighed against
@@ -615,7 +615,8 @@ size, which the host supplies, and by the store's limit.
 
 Globals 1 (da3c369c) gave the `Environment` the layout. Globals 2
 (5885897e) holds the values in a `Globals` store that runs read in place
-(section 10).
+(section 10). Globals 3 (8823970e) updates a part of a value in place by
+path.
 
 **Slots.** `Environment` keeps `slots: Vec<Slot { name, ty, at }>` in
 declaration order, plus a name-ordered index (`names`) for lookup and for
@@ -704,6 +705,53 @@ value), plus a log per block for the free-list map. Freed blocks are only
 reused at their exact size; size classes and compaction are Globals 5.
 
 `get(name)` reads a set value back (`None` when unset or not declared).
+
+**Updates by path** (Globals 3). `set_at(&path, &value)` replaces one part
+of a set value: a record's field, a list's entry, or the value of a map's
+key. The path is the `Path` of section 9.3, whose steps are literal fields,
+keys and indexes, never `Dynamic`. A path without steps is `set` (so it may
+set an unset value); `get_at(&path)` reads a part (`None` for anything
+`set_at` would refuse; no steps is `get`).
+
+1. `locate` walks the steps from the slot, each against the type it
+   reached, keeping the `Seg`s of the path so far:
+   - through each present option first (tagged: check the tag, step past
+     it; niche: check the word is not `Word::NONE`), as `bonus!.dice`
+     reads `bonus.dice` (section 9.3);
+   - a field: `Types::field_index` (binary search by name), then the
+     record's reference word, its size checked against the type, then the
+     field's offset;
+   - a key: the key's kind against the map's key type, then
+     `memory::find_key`, a binary search of the sorted entries comparing
+     `Int`s, or a string's words against the key's bytes. The part is the
+     word after the key;
+   - an index: `0 <= index < len`, then `start + index × width`.
+
+   It never writes, so any error leaves the store as it was. A step error
+   carries `AtPath`, the part it was taken from.
+2. `replace` is `set`'s steps 2 to 5 at that word: `measure_at` checks the
+   value against the part's type (a mismatch inside it is named by the
+   whole path, `at sheet.tracks[1].marks[1]`), `parts` and `blocks` of the
+   old part give the sizes, the limit is checked before anything changes,
+   the old part's blocks are freed, and the new part is `write`n in place.
+   The words around it (the record's other fields, the list's other
+   entries, the map's keys) are untouched, so a map stays sorted.
+
+So a fixed-size part (`Int`, `Bool`, a tag and its words) is written over
+in place and a part with blocks takes blocks of its sizes, reusing the old
+part's, so a same-shaped replace does not grow the store. The cost is
+O(path) steps, a binary search per key step (a word per 8 bytes of a
+`String` key per probe), plus O(old part + new part). The old part is
+walked to free it; a part has no other record of its blocks.
+
+Errors carry `SettingAt { path }`, the path as the caller wrote it
+(`Path`'s `Display`), outermost. The new messages: `FunctionPath`
+(a `Path::function`, which a store never holds), `NotSet` (steps into an
+unset value), `NoStep { ty, step }` (a field the record lacks, or a step of
+the wrong kind: `Int has no field "max"`, `List<..> has no key 0`),
+`NoneOnPath`, `KeyMistyped` (`expected an Int key, found String`), and the
+run's `NoSuchKey` and `IndexOutOfRange` for a missing key or index.
+Inserting is Globals 4.
 
 The limit counts the heap, freed blocks included, and not the slots. It
 is kept inside 2^32 minus the slot area, so every store address fits a
@@ -983,7 +1031,8 @@ approved the direction and reviews the decisions here. Globals 1 is built
 (section 7): environment-owned slots, the fingerprint, and the read
 compatibility check. Globals 2 is built (sections 6.1 and 7): the store,
 `set`/`get`, set flags, the store limit, runs reading the store in place,
-and `Run::bind` removed. The rest is not built yet. Breaking changes are
+and `Run::bind` removed. Globals 3 is built (section 7): `set_at`/`get_at`
+by path. The rest is not built yet. Breaking changes are
 allowed (board rule, 2026-11-27).
 
 ### 10.1 Why
@@ -1025,7 +1074,7 @@ the sheet's values persistent:
   stack) only in the machine's own scratch memory. There is no bind per run,
   and `Run::bind` is removed. Reading an unset global is a run error naming
   it.
-- **In-place updates by path.**
+- **In-place updates by path** (`set`, `set_at`, `get`, `get_at` built).
   - Setting: `set(name, &Value)`, `set_at(path, &Value)`, `get`, `get_at`.
   - Maps: `insert`/`remove`.
   - Lists: `push`/`insert`/`remove`.
@@ -1075,7 +1124,7 @@ Store memory:
 |---|---|---|
 | da3c369c | Globals 1 (built) | Environment-owned slots, layout fingerprint, stored `FORMAT` bump recording the fingerprint and read slots. Transitional: `Run::bind` remains and writes into the slot layout. The verifier checks every global read against the recorded (slot, type). |
 | 5885897e | Globals 2 (built) | `Globals` store with `set`/`get`, set flags, a word limit, runs reading the store read-only, `Run::bind` removed. Updates cli, compare, sockel, playground, benches (a one-store, many-formulas bench modelled on characterize) and docs. |
-| 8823970e | Globals 3 | `set_at`/`get_at` by path, reusing the references path type. Literal steps only, existing keys and indexes only. O(path + new value), plus O(log n) per map step. |
+| 8823970e | Globals 3 (built) | `set_at`/`get_at` by path, reusing the references path type. Literal steps only, existing keys and indexes only. O(path + new value), plus O(log n) per map step. |
 | e5e312bd | Globals 4 | Capacity, growth and shrink. Map `insert`/`remove` (binary search plus a `copy_within` shift). List `push`/`insert`/`remove`. Bench: 1 000 single-entry updates on a 100 000-entry map versus a whole-map set. |
 | ae875cb2 | Globals 5 | Size-class free lists, compaction at more than half free, `stats()` (live, free, capacity). |
 | fbaa6f18 | Globals 6 | `to_bytes`/`from_bytes` of values, `migrate` between layouts. |
@@ -1117,6 +1166,18 @@ decisions):
 | What the store limit counts | The heap, freed blocks included; not the slots, which the environment bounds | Slots too: the limit would depend on how many values are declared. |
 | `Memory::globals` | Removed, `FORMAT` 7 | Kept: it counted the slots as machine memory, which they no longer are. |
 | The fingerprint fast path | Only for programs compiled here; a decoded program is checked read by read | For every program: stored bytes may keep the fingerprint and tamper the types, which reads a slot as another type (a fault). |
+
+**Taken while building Globals 3** (worker, 2026-11-27, within the card's
+decisions):
+
+| Question | Picked | Alternatives and why not |
+|---|---|---|
+| Options along a path | Stepped through when present, as references continue through `!` (9.3); an absent one is `NoneOnPath` | Refusing any path through an option: `Path` has no unwrap step, so a field of an `Option<record>` could not be set but by replacing the whole option. |
+| A path without steps | `set`/`get` of the value, unset or not | An error: a host building paths would special-case the root. |
+| Steps into an unset value | `NotSet`, an error | Treating it as a missing part: the cause is the value, not the step. |
+| Cost | O(path + old part + new part), plus a binary search per key | O(path + new part) as the card sketched: freeing the old part's blocks needs its blocks, found by walking it. Replacing an `Int` in a 100 000-entry map is still O(log n). |
+| How the error names the path | `while setting <path>` from `Path`'s `Display`, plus `at <prefix>` for a step error and `at <full path>` for a mismatch inside the value | Only `Seg`s: a failing step (a field the record lacks) has no `Seg`. |
+| Key lookup | `memory::find_key` over `Words`, comparing a string's words with the key's bytes | Writing the key into the store to reuse the machine's `find_key`: it charges fuel and needs scratch memory. |
 
 ### 10.5 Questions raised while writing this
 
