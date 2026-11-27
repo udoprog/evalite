@@ -1081,11 +1081,11 @@ fn long_string_keys_spend_fuel() {
         (Value::string(long('b')), int(2)),
     ]);
     let extra = [
-        ("m", Type::map(Type::string(), Type::int()), map),
+        ("q", Type::map(Type::string(), Type::int()), map),
         ("k", Type::string(), Value::string(long('a'))),
     ];
 
-    let source = vec!["m[k]"; 9_000].join(" + ");
+    let source = vec!["q[k]"; 9_000].join(" + ");
     let limits = Limits::new().memory(1 << 20).fuel(1 << 20);
 
     let start = std::time::Instant::now();
@@ -1099,7 +1099,7 @@ fn long_string_keys_spend_fuel() {
 
     // One lookup fits.
     let limits = Limits::new().memory(1 << 20).fuel(1 << 20);
-    assert_eq!(eval_in("m[k]", &extra, limits).unwrap().value, int(1));
+    assert_eq!(eval_in("q[k]", &extra, limits).unwrap().value, int(1));
 }
 
 #[test]
@@ -1140,6 +1140,7 @@ fn faulty_programs() {
     let int = types.add(TypeNode::Int).unwrap();
 
     let faulty = |code: Vec<Instr>, stack: u32| Program {
+        layout: 0,
         types: types.clone(),
         constants: Vec::new(),
         globals: Vec::new(),
@@ -1153,7 +1154,6 @@ fn faulty_programs() {
             globals: 0,
         },
         global_types: Vec::new(),
-        global_at: Vec::new(),
         constant_at: Vec::new(),
     };
 
@@ -1550,7 +1550,7 @@ fn list_of_optional_ints() {
             stack: 6,
             heap: 6,
             constants: 0,
-            globals: 2,
+            globals: 3,
         }
     );
 }
@@ -1567,11 +1567,12 @@ fn word_budget() {
     env.function("many", [Type::int()], Type::list(Type::option(Type::int())))
         .unwrap();
 
-    // A program's own memory: `[o, o, o]` is 6 stack, 6 heap and 2 for `o`.
+    // A program's own memory: `[o, o, o]` is 6 stack, 6 heap and 3 for the
+    // slots up to the end of `o`'s, which is held after `l`'s.
     let program = compile("[o, o, o]", &env).unwrap();
-    assert_eq!(program.memory().total(), 14);
+    assert_eq!(program.memory().total(), 15);
 
-    let mut machine = Machine::new(Limits::new().memory(14));
+    let mut machine = Machine::new(Limits::new().memory(15));
     let mut run = machine.load(&program).unwrap();
     run.bind("o", &Value::some(int(i64::MIN))).unwrap();
     let outcome = run.run().unwrap();
@@ -1579,14 +1580,14 @@ fn word_budget() {
         outcome.value.to_string(),
         "[some(-9223372036854775808), some(-9223372036854775808), some(-9223372036854775808)]"
     );
-    assert_eq!(outcome.memory, 14);
+    assert_eq!(outcome.memory, 15);
 
     assert_eq!(
-        Machine::new(Limits::new().memory(13))
+        Machine::new(Limits::new().memory(14))
             .load(&program)
             .unwrap_err()
             .to_string(),
-        "the program needs 14 words of memory, more than the 13 the machine allows"
+        "the program needs 15 words of memory, more than the 14 the machine allows"
     );
 
     // A bound list of k `Option<Int>`s takes 2k words beside `l.len()`'s 2.
@@ -1839,6 +1840,7 @@ fn tamper(rng: &mut Rng, stored: &mut Stored) {
     // changes it is caught there; recount it as a forger would, so the
     // code itself is what gets checked.
     if let Ok(program) = Program::verify(
+        stored.layout,
         Types::from_stored(stored.types.clone()).unwrap_or_default(),
         stored.constants.clone(),
         stored.globals.clone(),
@@ -1955,7 +1957,8 @@ fn nested_options() {
         let mut env = env();
         env.value("x", ty.clone()).unwrap();
         let program = compile("x", &env).unwrap();
-        assert_eq!(program.memory().globals(), words as u32, "{ty}");
+        let slot = env.slot("x").unwrap().at;
+        assert_eq!(program.memory().globals() - slot, words as u32, "{ty}");
 
         // Every value of the type: none, and each inner value wrapped in as
         // many `some`s as it can take, and every depth of `none` between.

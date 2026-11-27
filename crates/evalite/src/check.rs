@@ -250,8 +250,9 @@ struct Compiler<'a> {
     constants: Vec<Constant>,
     strings: HashMap<String, u32>,
     globals: Vec<Global>,
-    /// Where each global used so far is held, in words, and its type.
-    global_ids: HashMap<String, (u32, TypeId)>,
+    /// The type of each global used so far, by its slot, so each is
+    /// interned once.
+    global_types: HashMap<u32, TypeId>,
     functions: Vec<HostFunction>,
     function_ids: HashMap<(String, Vec<TypeId>), u32>,
     code: Vec<Instr>,
@@ -259,8 +260,6 @@ struct Compiler<'a> {
     spans: Vec<Span<u32>>,
     /// The span of the expression whose code is being emitted.
     span: Span<u32>,
-    /// The words the globals so far take.
-    global_words: usize,
     /// What the globals and host functions so far hold.
     held: Held,
     values: Vec<Value>,
@@ -292,13 +291,12 @@ impl<'a> Compiler<'a> {
             constants: Vec::new(),
             strings: HashMap::new(),
             globals: Vec::new(),
-            global_ids: HashMap::new(),
+            global_types: HashMap::new(),
             functions: Vec::new(),
             function_ids: HashMap::new(),
             code: Vec::new(),
             spans: Vec::new(),
             span: Span::point(0),
-            global_words: 0,
             held: Held::default(),
             values: Vec::new(),
             jumps: Vec::new(),
@@ -643,36 +641,35 @@ impl<'a> Compiler<'a> {
         Ok(c)
     }
 
-    /// Where the global `name` is held, in words, and its type. A global
-    /// is interned the first time it is used.
+    /// The slot the environment holds the global `name` in, and its
+    /// type, which is interned the first time it is used.
     fn global(&mut self, name: &str, at: Span<u32>) -> Result<(u32, TypeId), Diagnostic> {
-        if let Some(found) = self.global_ids.get(name) {
-            return Ok(*found);
-        }
-
-        let Some(ty) = self.env.values.get(name) else {
+        let Some(slot) = self.env.slot(name) else {
             let kind = if self.env.functions.contains_key(name) {
                 ErrorKind::FunctionAsValue(name.to_owned())
             } else {
                 ErrorKind::UnknownName {
                     name: name.to_owned(),
-                    suggestion: suggest(name, self.env.values.keys()),
+                    suggestion: suggest(name, self.env.names.keys()),
                 }
             };
 
             return Err(Diagnostic::new(at, kind));
         };
 
-        let ty = self.intern(ty, at)?;
+        if let Some(ty) = self.global_types.get(&slot.at) {
+            return Ok((slot.at, *ty));
+        }
+
+        let ty = self.intern(&slot.ty, at)?;
         self.hold(ty, at)?;
-        let g = count(self.global_words)?;
-        self.global_words = self.global_words.saturating_add(self.types.width(ty));
         self.globals.push(Global {
             name: name.to_owned(),
             ty,
+            slot: slot.at,
         });
-        self.global_ids.insert(name.to_owned(), (g, ty));
-        Ok((g, ty))
+        self.global_types.insert(slot.at, ty);
+        Ok((slot.at, ty))
     }
 
     fn function(&self, name: &str, at: Span<u32>) -> Result<&'a [Overload], Diagnostic> {
@@ -680,7 +677,7 @@ impl<'a> Compiler<'a> {
 
         match env.functions.get(name) {
             Some(overloads) if !overloads.is_empty() => Ok(overloads),
-            _ if env.values.contains_key(name) => Err(Diagnostic::new(
+            _ if env.names.contains_key(name) => Err(Diagnostic::new(
                 at,
                 ErrorKind::NotAFunction(name.to_owned()),
             )),
@@ -1664,6 +1661,7 @@ impl<'a> Compiler<'a> {
         };
 
         let program = Program::verify(
+            self.env.fingerprint(),
             self.types,
             self.constants,
             self.globals,

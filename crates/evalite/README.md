@@ -304,6 +304,15 @@ again by running its code over types instead of values: it must be well
 typed and use exactly the memory it declares. That check is what lets the
 machine run on bare words without looking at them.
 
+An [`Environment`] holds each value in a slot of its own, given in
+declaration order and never moved, so a name is declared once. Every
+program compiled from it reads a value at the same slot, and records the
+environment's [`Environment::fingerprint`], a stable hash of the names and
+types in order. [`Environment::accepts`] tells whether a
+stored program reads its values where an environment holds them: one of
+the same fingerprint does, and so does one that only declares more values
+after the ones it reads.
+
 A program carries no source text. To point run errors at the expression
 that failed, [`compile_debug`] also gives a [`DebugInfo`], which can be
 stored next to the program with [`DebugInfo::to_bytes`].

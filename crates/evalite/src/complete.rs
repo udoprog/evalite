@@ -1039,7 +1039,7 @@ impl Structure {
 
         let mut described = Described::default();
 
-        for (name, ty) in &env.values {
+        for (name, ty) in env.values() {
             paths(&mut out, &mut described, name, ty, want);
         }
 

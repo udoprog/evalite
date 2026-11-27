@@ -7,7 +7,7 @@ use crate::message::{Invalid, Message, StoreError};
 use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 5;
+pub(crate) const FORMAT: u32 = 6;
 
 /// How many nodes the globals' and host functions' types may have
 /// together, each written out in full, as [`Program::globals`] and
@@ -38,8 +38,8 @@ pub(crate) enum Instr {
     Bool(bool),
     /// Push a reference to a constant.
     Const(u32),
-    /// Push the value of type `ty` bound to the global `at` words into the
-    /// globals.
+    /// Push the value of type `ty` held in the slot at word `at` of the
+    /// globals, where the [`Environment`](crate::Environment) holds it.
     Global {
         at: u32,
         ty: TypeId,
@@ -152,11 +152,13 @@ impl Constant {
     }
 }
 
-/// A value the caller binds before a program runs.
+/// A value the program reads, which the caller binds before it runs,
+/// held in the slot at word `slot` of the globals.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub(crate) struct Global {
     pub(crate) name: String,
     pub(crate) ty: TypeId,
+    pub(crate) slot: u32,
 }
 
 /// A function of the caller's that a program calls.
@@ -213,9 +215,11 @@ impl Memory {
         self.constants
     }
 
-    /// The values it reads, as they are held: a word each, two for an
-    /// `Option<Int>`. Their parts, such as a bound list's entries, are the
-    /// bindings' to fit in the memory left.
+    /// The globals' slots, up to the end of the last one it reads: the
+    /// words of every value declared before it too, since each value is
+    /// held where its [`Environment`](crate::Environment) puts it. A value
+    /// is a word, two for an `Option<Int>`. Their parts, such as a bound
+    /// list's entries, are the bindings' to fit in the memory left.
     pub fn globals(&self) -> u32 {
         self.globals
     }
@@ -239,6 +243,8 @@ pub(crate) struct Stored {
     pub(crate) code: Vec<Instr>,
     pub(crate) result: TypeId,
     pub(crate) memory: Memory,
+    /// The fingerprint of the layout it was compiled against.
+    pub(crate) layout: u64,
 }
 
 /// A compiled expression: checked, typed, and ready to store or run.
@@ -249,6 +255,8 @@ pub(crate) struct Stored {
 /// before giving one back.
 #[derive(Debug, Clone)]
 pub struct Program {
+    /// The fingerprint of the layout it was compiled against.
+    pub(crate) layout: u64,
     pub(crate) types: Types,
     pub(crate) constants: Vec<Constant>,
     pub(crate) globals: Vec<Global>,
@@ -258,8 +266,6 @@ pub struct Program {
     pub(crate) memory: Memory,
     /// The type of each global, built once so listing them does not.
     pub(crate) global_types: Vec<Type>,
-    /// Where each global is held, in words from the first.
-    pub(crate) global_at: Vec<u32>,
     /// Where each constant is, in words from the first, and the length
     /// its reference holds.
     pub(crate) constant_at: Vec<(u32, u32)>,
@@ -301,6 +307,13 @@ impl Program {
             .map(|(g, ty)| (g.name.as_str(), ty))
     }
 
+    /// The [`fingerprint`](crate::Environment::fingerprint) of the
+    /// environment it was compiled against, which
+    /// [`Environment::accepts`](crate::Environment::accepts) compares.
+    pub fn fingerprint(&self) -> u64 {
+        self.layout
+    }
+
     /// The caller's functions it calls: each name, parameter types and
     /// return type.
     pub fn functions(&self) -> Vec<(&str, Vec<Type>, Type)> {
@@ -340,6 +353,7 @@ impl Program {
             code: self.code.clone(),
             result: self.result,
             memory: self.memory,
+            layout: self.layout,
         };
 
         musli::storage::to_vec(&stored).map_err(|e| {
@@ -377,6 +391,7 @@ impl Program {
         let types = Types::from_stored(stored.types).map_err(verifying)?;
 
         let program = Self::verify(
+            stored.layout,
             types,
             stored.constants,
             stored.globals,
@@ -402,6 +417,7 @@ impl Program {
     /// Check a program's parts and work out the memory it uses, by running
     /// its code over the types of the values instead of values.
     pub(crate) fn verify(
+        layout: u64,
         types: Types,
         constants: Vec<Constant>,
         globals: Vec<Global>,
@@ -428,8 +444,8 @@ impl Program {
         }
 
         let mut names = HashSet::new();
-        let mut global_at = Vec::with_capacity(globals.len());
-        let mut global_words = 0usize;
+        // Each global's slot, where it ends and which it is.
+        let mut slots = Vec::with_capacity(globals.len());
 
         for (at, global) in globals.iter().enumerate() {
             let at_global = |e: StoreError| e.context(Message::AtGlobal { at: count(at) });
@@ -439,9 +455,27 @@ impl Program {
             }
 
             verifier.known(global.ty).map_err(at_global)?;
-            global_at.push(words(global_words)?);
-            global_words = global_words.saturating_add(types.width(global.ty));
+            let end = usize::try_from(global.slot)
+                .ok()
+                .and_then(|slot| slot.checked_add(types.width(global.ty)));
+            let end = end.ok_or_else(|| at_global(Invalid::TooMuchToCount.into()))?;
+            slots.push((global.slot, words(end).map_err(at_global)?, at));
         }
+
+        // No two globals may share a word, or writing one would change
+        // what another reads.
+        slots.sort_unstable();
+
+        for pair in slots.windows(2) {
+            if let [(_, end, _), (slot, _, at)] = *pair
+                && slot < end
+            {
+                return Err(StoreError::from(Invalid::GlobalsOverlap)
+                    .context(Message::AtGlobal { at: count(at) }));
+            }
+        }
+
+        let global_words = slots.iter().map(|(_, end, _)| *end).max().unwrap_or(0);
 
         let mut signatures = HashSet::new();
 
@@ -461,10 +495,9 @@ impl Program {
 
         verifier.known(result)?;
 
-        let global_ids = global_at
+        let global_ids = globals
             .iter()
-            .copied()
-            .zip(globals.iter().map(|g| g.ty))
+            .map(|g| (g.slot, g.ty))
             .collect::<HashMap<_, _>>();
 
         let memory = verifier.code(&code, &global_ids, &functions, result)?;
@@ -497,9 +530,10 @@ impl Program {
         Ok(Self {
             memory: Memory {
                 constants: words(constant_words)?,
-                globals: words(global_words)?,
+                globals: global_words,
                 ..memory
             },
+            layout,
             types,
             constants,
             globals,
@@ -507,7 +541,6 @@ impl Program {
             code,
             result,
             global_types,
-            global_at,
             constant_at,
         })
     }

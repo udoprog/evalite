@@ -391,9 +391,9 @@ impl<'a> Run<'a> {
         }
 
         let at = program
-            .global_at
+            .globals
             .get(n)
-            .copied()
+            .map(|g| g.slot)
             .ok_or_else(|| fault(Fault::OutsideMemory))?;
         self.write(value, ty, size(at)?)?;
 

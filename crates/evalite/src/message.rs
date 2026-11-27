@@ -168,6 +168,7 @@ pub(crate) enum Invalid {
     WrongOperand,
     NoSuchConstant,
     NoSuchGlobal,
+    GlobalsOverlap,
     MixedCompare,
     JumpPastEnd,
     JumpsDisagree,
@@ -224,6 +225,7 @@ impl fmt::Display for Invalid {
             Self::WrongOperand => "the instruction finds an operand of the wrong type",
             Self::NoSuchConstant => "the instruction names a constant there is not",
             Self::NoSuchGlobal => "the instruction names a value there is not",
+            Self::GlobalsOverlap => "the value is held in words another value is held in",
             Self::MixedCompare => "the instruction compares other than two Ints or two Bools",
             Self::JumpPastEnd => "the instruction jumps past the end",
             Self::JumpsDisagree => {

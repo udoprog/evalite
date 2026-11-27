@@ -906,8 +906,8 @@ fn declarations() {
 
     assert_eq!(env.value("ok", deep.clone()), Ok(()));
     assert_eq!(
-        env.value("x", Type::list(deep)),
-        Err(DeclareError::new(DeclareKind::TypeTooDeep, "x"))
+        env.value("z", Type::list(deep)),
+        Err(DeclareError::new(DeclareKind::TypeTooDeep, "z"))
     );
 
     let messages = [
@@ -1065,9 +1065,19 @@ fn functions_count_to_the_total_too() {
 fn redeclaring() {
     let mut env = Environment::new();
     env.value("a", Type::int()).unwrap();
-    env.value("a", Type::bool()).unwrap();
-    assert_eq!(env.value_type("a"), Some(&Type::bool()));
-    assert_eq!(compile("a", &env).unwrap().result_type(), Type::bool());
+
+    // A value's slot never moves, so its name is declared once, whatever
+    // the type, and the first declaration stands.
+    for ty in [Type::bool(), Type::int()] {
+        assert_eq!(
+            env.value("a", ty),
+            Err(DeclareError::new(DeclareKind::Redeclared, "a"))
+        );
+    }
+
+    assert_eq!(env.value_type("a"), Some(&Type::int()));
+    assert_eq!(compile("a", &env).unwrap().result_type(), Type::int());
+    assert_eq!(env.slots.len(), 1);
 
     env.function("f", [Type::int()], Type::int()).unwrap();
     env.function("f", [Type::int()], Type::bool()).unwrap();
@@ -1173,14 +1183,16 @@ fn memory_bounds() {
         assert_eq!(memory(source), expected, "{source:?}");
     }
 
-    // The values a program reads are counted as they are held.
+    // The values a program reads are counted where the environment holds
+    // them: up to the end of the last slot it reads, `bonus`'s two words
+    // from word 8.
     assert_eq!(compile("[wits, 2]", &env()).unwrap().memory().total(), 5);
     assert_eq!(
         compile("bonus.unwrap_or(wits)", &env())
             .unwrap()
             .memory()
             .globals,
-        3
+        10
     );
 }
 
@@ -1248,12 +1260,12 @@ fn code() {
         code("flag && wits > 1"),
         [
             Global {
-                at: 0,
+                at: 7,
                 ty: TypeId(1)
             },
             And(3),
             Global {
-                at: 1,
+                at: 0,
                 ty: TypeId(0)
             },
             Int(1),
@@ -1264,17 +1276,17 @@ fn code() {
         code("flag || flag && flag"),
         [
             Global {
-                at: 0,
+                at: 7,
                 ty: TypeId(1)
             },
             Or(3),
             Global {
-                at: 0,
+                at: 7,
                 ty: TypeId(1)
             },
             And(1),
             Global {
-                at: 0,
+                at: 7,
                 ty: TypeId(1)
             }
         ]
@@ -1299,7 +1311,7 @@ fn code() {
         code("bonus.unwrap_or(3)"),
         [
             Global {
-                at: 0,
+                at: 8,
                 ty: TypeId(2)
             },
             Int(3),
@@ -1310,7 +1322,7 @@ fn code() {
         code("specialties.brawl"),
         [
             Global {
-                at: 0,
+                at: 16,
                 ty: TypeId(3)
             },
             Field {
@@ -1323,7 +1335,7 @@ fn code() {
         code(r#"m["inner"].deep"#),
         [
             Global {
-                at: 0,
+                at: 17,
                 ty: TypeId(5)
             },
             Field {
@@ -1340,7 +1352,7 @@ fn code() {
         code("levels[1]"),
         [
             Global {
-                at: 0,
+                at: 11,
                 ty: TypeId(2)
             },
             Int(1),
@@ -1351,7 +1363,7 @@ fn code() {
         code("count(health, 1)"),
         [
             Global {
-                at: 0,
+                at: 14,
                 ty: TypeId(3)
             },
             Int(1),
@@ -1424,22 +1436,22 @@ fn tampered_programs() {
         (
             source,
             Box::new(|s| s.memory.stack -= 1),
-            "it declares 7 words of memory but uses 8: while verifying the program",
+            "it declares 20 words of memory but uses 21: while verifying the program",
         ),
         (
             source,
             Box::new(|s| s.memory.stack += 1),
-            "it declares 9 words of memory but uses 8: while verifying the program",
+            "it declares 22 words of memory but uses 21: while verifying the program",
         ),
         (
             source,
             Box::new(|s| s.memory.constants = 0),
-            "it declares 6 words of memory but uses 8: while verifying the program",
+            "it declares 19 words of memory but uses 21: while verifying the program",
         ),
         (
             "bonus",
             Box::new(|s| s.memory.globals = 1),
-            "it declares 3 words of memory but uses 4: while verifying the program",
+            "it declares 3 words of memory but uses 12: while verifying the program",
         ),
         (
             "[wits]",
@@ -1485,6 +1497,59 @@ fn tampered_programs() {
                 }
             }),
             "the instruction names a value there is not: at instruction 0: while verifying the program",
+        ),
+        (
+            // A global moved to another slot, which the code still reads at
+            // the old one.
+            "wits",
+            Box::new(|s| s.globals[0].slot = 3),
+            "the instruction names a value there is not: at instruction 0: while verifying the program",
+        ),
+        (
+            // `bonus` is two words from 8, and `dexterity` moved into its
+            // second, so binding one would change what the other reads.
+            "bonus.unwrap_or(dexterity)",
+            Box::new(|s| {
+                let at = s
+                    .globals
+                    .iter()
+                    .position(|g| g.name == "dexterity")
+                    .unwrap();
+                s.globals[at].slot = 9;
+
+                for instr in &mut s.code {
+                    if let Instr::Global { at: 1, ty } = *instr {
+                        *instr = Instr::Global { at: 9, ty };
+                    }
+                }
+            }),
+            "the value is held in words another value is held in: at value 1: while verifying the program",
+        ),
+        (
+            "bonus.unwrap_or(dexterity)",
+            Box::new(|s| {
+                let at = s.globals.iter().position(|g| g.name == "bonus").unwrap();
+                s.globals[at].slot = 0;
+                let at = s
+                    .globals
+                    .iter()
+                    .position(|g| g.name == "dexterity")
+                    .unwrap();
+                s.globals[at].slot = 0;
+            }),
+            "the value is held in words another value is held in: at value 0: while verifying the program",
+        ),
+        (
+            // A slot ending past the last word.
+            "bonus",
+            Box::new(|s| {
+                s.globals[0].slot = u32::MAX;
+                s.code[0] = Instr::Global {
+                    at: u32::MAX,
+                    ty: s.globals[0].ty,
+                };
+            }),
+            "it uses too much memory to count: at value 0: while verifying the program",
         ),
         (
             "[1]",
@@ -1686,6 +1751,7 @@ fn tampered_programs() {
                 s.globals[0] = Global {
                     name: "wits".into(),
                     ty: TypeId(5),
+                    slot: 0,
                 }
             }),
             "a type is not in the type table: at value 0: while verifying the program",
@@ -1772,6 +1838,7 @@ fn tampered_programs() {
                     s.globals.push(Global {
                         name: format!("g{n}"),
                         ty: TypeId(16),
+                        slot: n,
                     });
                 }
             }),
@@ -1815,6 +1882,7 @@ fn tampered_programs() {
                     s.globals.push(Global {
                         name: format!("g{chain}"),
                         ty: part,
+                        slot: chain,
                     });
                 }
             }),
@@ -2056,7 +2124,10 @@ fn stored_bytes_errors() {
 
     assert_eq!(
         format!("{:#}", load(&stored).unwrap_err()),
-        "it was stored in format 6, this evalite reads format 5: while reading a stored program"
+        format!(
+            "it was stored in format {}, this evalite reads format {FORMAT}: while reading a stored program",
+            FORMAT + 1
+        )
     );
 
     let error = Program::from_bytes(&[]).unwrap_err();
@@ -3163,4 +3234,248 @@ fn map_entry_syntax_errors_are_reported_once() {
         ("{-: 1}", "expected an expression, found `:`", ":"),
         ("{(1 +): 1}", "expected an expression, found `)`", ")"),
     ]);
+}
+
+/// Each value is given the next slot as it is declared, whatever its name,
+/// and every program compiled from one environment reads it there.
+#[test]
+fn slots_are_the_environments() {
+    let env = env();
+    let at = |name: &str| env.slot(name).unwrap().at;
+
+    // Declaration order, a word each but for `bonus`'s two.
+    assert_eq!(at("wits"), 0);
+    assert_eq!(at("min"), 6);
+    assert_eq!(at("flag"), 7);
+    assert_eq!(at("bonus"), 8);
+    assert_eq!(at("maybe"), 10);
+    assert_eq!(at("maybe_track"), 18);
+
+    let reads = |source: &str| {
+        let program = compile(source, &env).unwrap();
+        let globals = program
+            .globals
+            .iter()
+            .map(|g| (g.name.clone(), g.slot))
+            .collect::<Vec<_>>();
+        let code = program
+            .code
+            .iter()
+            .filter_map(|i| match i {
+                Instr::Global { at, .. } => Some(*at),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        (globals, code)
+    };
+
+    // In whichever order and with whatever else a program reads them, the
+    // slots are the same.
+    assert_eq!(
+        reads("bonus.unwrap_or(wits)"),
+        (vec![("bonus".into(), 8), ("wits".into(), 0)], vec![8, 0])
+    );
+    assert_eq!(
+        reads("wits + maybe_track.unwrap_or(health).boxes + bonus.unwrap_or(0)").0,
+        [
+            ("wits".into(), 0),
+            ("maybe_track".into(), 18),
+            ("health".into(), 14),
+            ("bonus".into(), 8)
+        ]
+    );
+    assert_eq!(
+        reads("wits + wits + bonus.unwrap_or(wits)"),
+        (
+            vec![("wits".into(), 0), ("bonus".into(), 8)],
+            vec![0, 0, 8, 0]
+        )
+    );
+
+    // Stored and read back, it keeps its slots and fingerprint.
+    let program = compile("bonus.unwrap_or(wits)", &env).unwrap();
+    let loaded = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(loaded.globals, program.globals);
+    assert_eq!(loaded.fingerprint(), env.fingerprint());
+    assert_eq!(loaded.memory(), program.memory());
+}
+
+/// The fingerprint is a fixed function of the names and types in
+/// declaration order, the same in every process.
+#[test]
+fn fingerprints() {
+    let fingerprint = |values: &[(&str, Type)]| {
+        let mut env = Environment::new();
+
+        for (name, ty) in values {
+            env.value(name, ty.clone()).unwrap();
+        }
+
+        env.fingerprint()
+    };
+
+    let record = Type::record([
+        ("x", Type::int()),
+        (
+            "y",
+            Type::option(Type::map(Type::string(), Type::list(Type::bool()))),
+        ),
+    ]);
+
+    // FNV-1a over each name's length and bytes, then its type in
+    // pre-order. Worked out apart from evalite, so a change to the
+    // algorithm, which would orphan every stored program, fails here.
+    assert_eq!(fingerprint(&[]), 0xcbf2_9ce4_8422_2325);
+    assert_eq!(fingerprint(&[("a", Type::int())]), 0x519e_0cc8_9e06_158d);
+    assert_eq!(
+        fingerprint(&[("a", Type::int()), ("rec", record.clone())]),
+        0x0e0b_ec65_28e6_d8c8
+    );
+
+    // Functions are not part of the layout.
+    let mut env = Environment::new();
+    env.value("a", Type::int()).unwrap();
+    env.function("f", [Type::int()], Type::int()).unwrap();
+    assert_eq!(env.fingerprint(), 0x519e_0cc8_9e06_158d);
+
+    // A change of name, type, order or field changes it.
+    let layouts = [
+        vec![("a", Type::int())],
+        vec![("b", Type::int())],
+        vec![("a", Type::bool())],
+        vec![("a", Type::option(Type::int()))],
+        vec![("a", Type::list(Type::int()))],
+        vec![("a", Type::int()), ("b", Type::int())],
+        vec![("b", Type::int()), ("a", Type::int())],
+        vec![("a", Type::int()), ("b", Type::bool())],
+        vec![("ab", Type::int())],
+        vec![("a", Type::record([("b", Type::int())]))],
+        vec![("a", Type::record([("c", Type::int())]))],
+        vec![("a", Type::record([("b", Type::bool())]))],
+        vec![("a", Type::record([("b", Type::int()), ("c", Type::int())]))],
+        vec![(
+            "a",
+            Type::record([("b", Type::record([("c", Type::int())]))]),
+        )],
+        vec![("a", Type::map(Type::int(), Type::int()))],
+        vec![("a", Type::map(Type::string(), Type::int()))],
+        vec![("a", Type::map(Type::int(), Type::bool()))],
+        vec![("a", record.clone())],
+    ];
+
+    let mut seen = std::collections::HashMap::new();
+
+    for layout in &layouts {
+        if let Some(before) = seen.insert(fingerprint(layout), layout) {
+            panic!("{before:?} and {layout:?} share a fingerprint");
+        }
+    }
+}
+
+/// A program is accepted by an environment of its layout, or by one that
+/// holds each value it reads in the same slot with the same type.
+#[test]
+fn accepted_layouts() {
+    let mut env = Environment::new();
+    env.value("wits", Type::int()).unwrap();
+    env.value("bonus", Type::option(Type::int())).unwrap();
+    let program = compile("bonus.unwrap_or(wits)", &env).unwrap();
+    assert!(env.accepts(&program));
+
+    // Values declared after the ones it reads move nothing.
+    let mut more = env.clone();
+    more.value("flag", Type::bool()).unwrap();
+    assert_ne!(more.fingerprint(), program.fingerprint());
+    assert!(more.accepts(&program));
+
+    // So does a value it does not read, of another type, before them.
+    let mut other = Environment::new();
+    other.value("wits", Type::int()).unwrap();
+    other.value("bonus", Type::option(Type::int())).unwrap();
+    let only_wits = compile("wits", &other).unwrap();
+    let mut changed = Environment::new();
+    changed.value("wits", Type::int()).unwrap();
+    changed.value("bonus", Type::bool()).unwrap();
+    assert!(changed.accepts(&only_wits));
+    assert!(!changed.accepts(&program));
+
+    // A value it reads in another slot, of another type, or not declared.
+    let mut swapped = Environment::new();
+    swapped.value("bonus", Type::option(Type::int())).unwrap();
+    swapped.value("wits", Type::int()).unwrap();
+    assert!(!swapped.accepts(&program));
+
+    let mut retyped = Environment::new();
+    retyped.value("wits", Type::bool()).unwrap();
+    retyped.value("bonus", Type::option(Type::int())).unwrap();
+    assert!(!retyped.accepts(&program));
+
+    let mut missing = Environment::new();
+    missing.value("wits", Type::int()).unwrap();
+    assert!(!missing.accepts(&program));
+    assert!(!Environment::new().accepts(&program));
+
+    // A program reading nothing fits anywhere.
+    assert!(Environment::new().accepts(&compile("1", &env).unwrap()));
+}
+
+/// The environment works out a slot's width from the type as the type
+/// table does from its id.
+#[test]
+fn slot_widths() {
+    let o = Type::option;
+    let types = [
+        Type::int(),
+        Type::bool(),
+        Type::string(),
+        Type::list(Type::int()),
+        track(),
+        Type::map(Type::int(), Type::int()),
+        o(Type::int()),
+        o(Type::bool()),
+        o(Type::string()),
+        o(track()),
+        o(Type::list(o(Type::int()))),
+        o(o(Type::int())),
+        o(o(o(Type::int()))),
+        o(o(Type::bool())),
+        o(o(o(Type::string()))),
+    ];
+
+    for ty in types {
+        let mut table = crate::types::Types::new();
+        let id = table.intern(&ty).unwrap();
+        assert_eq!(crate::env::width(&ty), table.width(id), "{ty}");
+    }
+
+    let mut env = Environment::new();
+    env.value("a", o(o(Type::int()))).unwrap();
+    env.value("b", Type::int()).unwrap();
+    assert_eq!(env.slot("b").unwrap().at, 3);
+}
+
+/// A run binds each value into its slot, and reads it from there, with
+/// slots it does not read left between.
+#[test]
+fn binding_into_slots() {
+    let mut env = Environment::new();
+    env.value("a", Type::option(Type::int())).unwrap();
+    env.value("b", Type::list(Type::int())).unwrap();
+    env.value("c", Type::int()).unwrap();
+
+    let program = compile("c + b.len()", &env).unwrap();
+    assert_eq!(program.memory().globals(), 4);
+
+    let mut machine = Machine::default();
+    let mut run = machine.load(&program).unwrap();
+    run.bind("b", &Value::list([Value::int(1), Value::int(2)]))
+        .unwrap();
+    run.bind("c", &Value::int(40)).unwrap();
+    assert_eq!(run.run().unwrap().value(), &Value::int(42));
+
+    let mut run = machine.load(&program).unwrap();
+    assert_eq!(
+        run.bind("a", &Value::none()).unwrap_err().to_string(),
+        "the program reads no value of that name"
+    );
 }

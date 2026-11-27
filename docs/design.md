@@ -19,7 +19,7 @@ Source files are named relative to `crates/evalite/src/`.
 4. [The type table](#4-the-type-table)
 5. [Memory layout](#5-memory-layout)
 6. [The machine](#6-the-machine)
-7. [Binding today](#7-binding-today)
+7. [Slots and binding](#7-slots-and-binding)
 8. [Stored formats and verification](#8-stored-formats-and-verification)
 9. [Structures, completions and references](#9-structures-completions-and-references)
 10. [Planned: the globals store](#10-planned-the-globals-store)
@@ -133,6 +133,11 @@ written once as `sig::Shape` with one type variable `T`:
   parameter types equal the argument types exactly.
 - Redeclaring the same parameters replaces the return type.
 
+**Values:**
+
+- Declared with `Environment::value(name, ty)`, each once: redeclaring a
+  name is `DeclareKind::Redeclared`, since its slot never moves (section 7).
+
 **Names:**
 
 - Value and function names are lowercase (`is_value_name`): a lowercase
@@ -170,7 +175,7 @@ written once as `sig::Shape` with one type variable `T`:
 - **Values are evaluated in key order, not source order.** This is observable
   only through which run error or host call comes first. The alternative,
   checking key order at run time, would let a tampered but verified program
-  fault. The stored program `FORMAT` is 5.
+  fault. Map literals took the stored program `FORMAT` to 5 (now 6, section 8).
 - An all-constant map literal is not folded into one constant (lists are);
   it is built at run time.
 - Structures get a map node (with a structure `FORMAT` bump), and completion
@@ -256,10 +261,13 @@ two have one checker and identical errors (section 9).
     any Levenshtein work, so the cost is bounded by the declared names, not by
     the input.
 - Globals:
-  - today each program interns its globals on first use (`global_ids`);
-  - each global gets the next word offset in the program's own globals area
-    (`global_words`);
-  - section 7 describes this, and section 10 replaces it.
+  - a name is looked up in the environment (`Environment::slot`), which
+    gives its slot and declared type;
+  - its type is interned the first time the program uses it (cached by slot
+    in `global_types`), and the program records it once as a `Global`
+    (name, type, slot) in first-use order;
+  - `Instr::Global { at }` takes the environment's slot, so a name has the
+    same offset in every program compiled from one environment (section 7).
 - Host calls are deduplicated by (name, argument types) into the program's
   `functions` table.
 - Constants:
@@ -287,14 +295,15 @@ A `Program` holds:
 
 - `types`: its own `Types` table;
 - `constants`;
-- `globals`: a (name, type) list in first-use order;
+- `globals`: a (name, type, slot) list in first-use order;
 - `functions`: (name, params, ret);
 - `code`: a `Vec<Instr>`;
 - `result`: the result type;
-- `memory`: `Memory { stack, heap, constants, globals }` in words.
+- `memory`: `Memory { stack, heap, constants, globals }` in words;
+- `layout`: the environment's fingerprint (section 7).
 
-It also caches `global_types` (the globals' types, built once),
-`global_at` (each global's word offset) and `constant_at`.
+It also caches `global_types` (the globals' types, built once) and
+`constant_at`.
 
 It carries no source text. `DebugInfo` (a span per instruction) is optional,
 from `compile_debug`, and stored separately.
@@ -309,8 +318,11 @@ it, in constant time however deep the stack is. It checks:
 
 - every constant is well typed, and a constant list's `Scalar::Const` entries
   refer only to earlier constants;
-- globals: valid, unique names and known types, with offsets assigned from
-  their widths;
+- globals: valid, unique names and known types, and slots that fit in
+  `u32` words and share no word (sorted by slot, each must start at or
+  after the previous one's end, `GlobalsOverlap`). `Instr::Global` must
+  name a recorded (slot, type). `Memory::globals` is the end of the last
+  slot read;
 - host functions: valid names, a unique (name, params), known types;
 - each instruction's operands match its type operands (`Field` at an existing
   offset with that type, `Index`/`Get` on that list type, `MapIndex`/`MapGet`
@@ -378,8 +390,8 @@ last, which keeps the stored encoding of the older variants.
     Each table therefore starts from a random seed
     (`RandomState::new().hash_one(0u8)`), which the writer cannot know.
   - The seed makes hashes differ between tables and processes. They are never
-    stored and never used for identity outside one table, and the planned
-    layout fingerprint (section 10) must not reuse them.
+    stored and never used for identity outside one table. The layout
+    fingerprint (section 7) is a separate, fixed FNV-1a hash.
 - **Per-node facts**, computed once when a node is added:
   - `depths`: nesting, refused past `MAX_TYPE_DEPTH`;
   - `sizes`: nodes with shared parts written out, saturating, refused past
@@ -469,8 +481,9 @@ and runs one program at a time. `Machine::load` refuses a program whose
                    minus the heap still reserved         load        sp deep
 ```
 
-- The **globals area** holds each read global's words at its `global_at`
-  offset.
+- The **globals area** is the environment's slots up to the end of the last
+  one the program reads. Each read global's words are at its slot. Slots it
+  doesn't read are never written or read.
 - The **heap reservation** (`heap`) is the verifier's count of list words the
   code may build. Bound and returned values may use only
   `limit - len - heap` (`left()`), so the program's own lists always fit.
@@ -557,19 +570,58 @@ supplies.
   field, index, map key or key-of-entry). The first walk keeps no path. Only
   on a mismatch is it re-run with a `Nodes` trail to name where.
 
-## 7. Binding today
+## 7. Slots and binding
 
-Today every program has its own globals area, laid out at compile time:
+Globals 1 (da3c369c) gave the `Environment` the layout. Globals 2 replaces
+the binding below with a store (section 10).
 
-- The compiler gives each global the next word offset on first use
-  (`global_ids`, `global_words`), so the same name has different offsets in
-  different programs.
-- `Program::globals` lists them in that order, and the verifier recomputes
-  the offsets (`global_at`) from the widths.
-- `Memory::globals` is the area's size in words. It counts only the slots,
-  not the parts.
+**Slots.** `Environment` keeps `slots: Vec<Slot { name, ty, at }>` in
+declaration order, plus a name-ordered index (`names`) for lookup and for
+`values()`:
 
-A run binds each global before it runs:
+- `Environment::value` gives each value the next slot: word `at` is the sum
+  of the widths of every value declared before it. The width is `width(ty)`,
+  computed from the `Type` the same way `Types::width` computes it from the
+  id: one word, or a word more than its value for a tagged option.
+- Slots never move. Redeclaring a name is `DeclareKind::Redeclared`, and the
+  first declaration stands. Environments are append-only (decision D,
+  section 10.5). Slot words past `u32::MAX` are `DeclareKind::TooManySlots`.
+- A record is one reference word, so its fields are not slots.
+
+**Fingerprint.** `Environment::fingerprint()` is a 64-bit FNV-1a hash of the
+layout, kept up to date as each value is declared (O(type size), bounded by
+`MAX_TYPE_NODES`). It covers, for each value in declaration order, the name's
+length (u64 LE) and bytes, then its type in pre-order, as one tag byte per node:
+
+- `Int` 0, `Bool` 1, `String` 2;
+- `List` 3 and `Option` 4, then the inner type;
+- `Record` 5, then the field count, then each field's name and type in
+  name order;
+- `Map` 6, then key and value.
+
+It never uses the table's random seed, so it is the same in every process
+and on every platform. A test pins its values. Functions are not part of it.
+
+**Programs.** The compiler emits `Instr::Global { at: slot, ty }` and
+records each read global as (name, type, slot), with the fingerprint as
+`Program::fingerprint()`. `Environment::accepts(&program)` (decision C):
+
+- the fingerprints match (the fast path); or
+- each global the program reads is declared with an equal type at the same
+  slot.
+
+Appending values keeps stored programs accepted. Checking every read costs
+the program's global types, which are bounded by `MAX_GLOBAL_TYPE_NODES`.
+Globals 2 makes loading refuse a program that is not accepted.
+
+**Binding (transitional).** A run still binds each global before it runs,
+into its slot:
+
+- `Memory::globals` is the end of the last slot the program reads, so the
+  machine's globals area is the environment's slots up to there, including
+  ones it doesn't read. Those words are reserved but never touched.
+
+The steps are:
 
 1. `run.bind(name, &value)` finds the global by name with a linear scan of
    the program's globals. It refuses an unknown name (`UnknownValue`) and a
@@ -577,8 +629,8 @@ A run binds each global before it runs:
 2. `measure` walks the value against its type without recursion, giving the
    words its parts need, or a path-named mismatch.
 3. It checks those words against `left()` (`TooLarge`).
-4. `write` writes the slot words, and allocates and fills the parts from
-   `len` upward.
+4. `write` writes the slot's words at the global's slot, and allocates and
+   fills the parts from `len` upward.
 5. `run_with` refuses to start while any global is unbound (`Unbound`).
 
 The cost per run is proportional to the size of every value bound, even when
@@ -591,9 +643,12 @@ sheet re-binds the sheet's values. That cost is what the globals store
 All stored forms are encoded with musli `storage` and start with a
 `format: u32`.
 
-**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 4 (4 added `Map`).
-The stored form is
-`Stored { format, types, constants, globals, functions, code, result, memory }`.
+**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 6 (4 added `Map`,
+5 map literals, 6 each global's slot and the layout fingerprint). The stored
+form is
+`Stored { format, types, constants, globals, functions, code, result, memory, layout }`,
+where each global is (name, type, slot). `layout` is last, so a length
+prefix's offset doesn't depend on its varint width.
 `from_bytes`:
 
 1. decodes the bytes (`NotDecoded` on failure);
@@ -610,7 +665,8 @@ What a verified program guarantees:
 - jumps are forward and consistent;
 - one result of the declared type is left;
 - the memory it declares is exactly what it uses;
-- names are valid and unique;
+- names are valid and unique, and no two globals' slots share a word, so
+  binding one never changes what another reads;
 - all types are in bounds.
 
 So the machine may run it on bare words, and any remaining fault is a bug in
@@ -647,9 +703,9 @@ These checks are linear.
 **What is not stored:**
 
 - source text;
-- environments;
+- environments (only the layout's fingerprint and the read slots);
 - bound values;
-- hashes.
+- type table hashes.
 
 `Type`/`Value` text forms (section 2) round-trip through `Display`.
 
@@ -850,8 +906,10 @@ Decisions (lead, 2026-11-27, recommended options):
 ## 10. Planned: the globals store
 
 Decided by the lead on 2026-11-27 with its recommended options. The user
-approved the direction and reviews the decisions here. Nothing in this
-section is built yet. Breaking changes are allowed (board rule, 2026-11-27).
+approved the direction and reviews the decisions here. Globals 1 is built
+(section 7): environment-owned slots, the fingerprint, and the read
+compatibility check. The rest is not built yet. Breaking changes are allowed
+(board rule, 2026-11-27).
 
 ### 10.1 Why
 
@@ -871,19 +929,20 @@ makes the sheet's values persistent:
   `Environment` (`Globals::new(&env)`). It holds its own word memory: a slot
   area, plus a heap for the parts of strings, lists, records and maps. It
   records the environment's layout fingerprint.
-- **Fixed slots.** The `Environment` gives each global a slot when it is
+- **Fixed slots** (built). The `Environment` gives each global a slot when it is
   declared, in declaration order: a word offset with width `width(ty)` (one
   word, or more for a tagged option). Slots never move. A record is one
   reference word, so its fields aren't flattened into slots.
-- **The compiler maps names to slots.** `Compiler::global` looks up the
+- **The compiler maps names to slots** (built). `Compiler::global` looks up the
   environment's slot instead of allocating per program, so
   `Instr::Global { at: slot, ty }` means the same thing in every program
   compiled from one environment. Programs keep the names, slots and types they
   read, for messages, references and verification.
-- **Layout fingerprint.** A stable 64-bit hash of the ordered (name, type)
-  list. It uses a fixed algorithm, never the per-table random seed of
-  section 4, so it is identical across processes. Programs carry it, and
-  loading a program against a store of another layout is refused.
+- **Layout fingerprint** (built, section 7). A stable 64-bit hash of the
+  ordered (name, type) list. It uses a fixed algorithm (FNV-1a), never the
+  per-table random seed of section 4, so it is identical across processes.
+  Programs carry it. Loading a program the store's environment doesn't
+  `accepts` (the same fingerprint, or every read slot matching) is refused.
 - **Runs read the store, read-only.** `machine.load(&program)` plus
   `run.run_with(&globals, host)` (or the simplest equivalent). A run reads
   globals in place and allocates temporaries (built lists, host results, the
@@ -938,15 +997,15 @@ Store memory:
 
 | Card | Phase | Changes |
 |---|---|---|
-| da3c369c | Globals 1 | Environment-owned slots, layout fingerprint, stored `FORMAT` bump recording the fingerprint and read slots. Transitional: `Run::bind` remains and writes into the slot layout. The verifier checks every global read against the recorded (slot, type). |
+| da3c369c | Globals 1 (built) | Environment-owned slots, layout fingerprint, stored `FORMAT` bump recording the fingerprint and read slots. Transitional: `Run::bind` remains and writes into the slot layout. The verifier checks every global read against the recorded (slot, type). |
 | 5885897e | Globals 2 | `Globals` store with `set`/`get`, set flags, a word limit, runs reading the store read-only, `Run::bind` removed. Updates cli, compare, sockel, playground, benches (a one-store, many-formulas bench modelled on characterize) and docs. |
 | 8823970e | Globals 3 | `set_at`/`get_at` by path, reusing the references path type. Literal steps only, existing keys and indexes only. O(path + new value), plus O(log n) per map step. |
 | e5e312bd | Globals 4 | Capacity, growth and shrink. Map `insert`/`remove` (binary search plus a `copy_within` shift). List `push`/`insert`/`remove`. Bench: 1 000 single-entry updates on a 100 000-entry map versus a whole-map set. |
 | ae875cb2 | Globals 5 | Size-class free lists, compaction at more than half free, `stats()` (live, free, capacity). |
 | fbaa6f18 | Globals 6 | `to_bytes`/`from_bytes` of values, `migrate` between layouts. |
 
-They wait on each other in order. Globals 1 also waits on this document,
-map literals (f3b53baf) and references (b128c319, landed), which all touch
+They wait on each other in order. Globals 1 waited on this document, map
+literals (f3b53baf) and references (b128c319), which all touch
 `check.rs`/`program.rs`.
 
 ### 10.4 Decisions (lead, 2026-11-27)
@@ -979,7 +1038,8 @@ The lead decided each of these on 2026-11-27, taking the recommended option
   refuse redeclaring, with an ordered slot list in `Environment` (Globals 1).
   C, accept on a fingerprint match, or else when every read (name, slot,
   type) matches (Globals 1). D, append-only environments, with removal as a
-  new layout plus `migrate` (Globals 1/6).
+  new layout plus `migrate` (Globals 1/6). B and C are built (section 7):
+  `DeclareKind::Redeclared`, and `Environment::accepts`.
 
 - **A. Two memories in one run (Globals 2).** Today `Instr::Global` and every
   reference address one `words` slice. With a separate read-only store and
