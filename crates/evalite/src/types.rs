@@ -1,7 +1,8 @@
 use crate::message::{Invalid, Message, StoreError};
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
 
 use musli::{Decode, Encode};
 
@@ -406,7 +407,7 @@ pub(crate) enum TypeNode {
 }
 
 /// The types a program uses, each once, every part before what holds it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct Types {
     nodes: Vec<TypeNode>,
     /// The latest type of each hash of its node, with the earlier ones of
@@ -423,6 +424,23 @@ pub(crate) struct Types {
     widths: Vec<usize>,
     /// The ids of `Int`, `Bool` and `String`, found without hashing.
     leaves: [Option<TypeId>; 3],
+    /// Where each node's hash starts, random for each table.
+    seed: u64,
+}
+
+impl Default for Types {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            heads: HashMap::default(),
+            next: Vec::new(),
+            depths: Vec::new(),
+            sizes: Vec::new(),
+            widths: Vec::new(),
+            leaves: [None; 3],
+            seed: RandomState::new().hash_one(0u8),
+        }
+    }
 }
 
 /// Hashes that are already hashes.
@@ -446,9 +464,9 @@ impl Hasher for Passthrough {
 }
 
 /// A small, fast, non-cryptographic hasher (the FxHash scheme) for the type
-/// table. Its keys are types the host declared or a program's own types, never
-/// attacker-chosen hash-flooding input, so resistance to collision attacks is
-/// not needed; a collision only lengthens a chain.
+/// table. Stored tables are untrusted bytes, so record names may be chosen to
+/// collide; each table therefore starts its hashes from its own random seed,
+/// which the writer of those bytes cannot know, keeping chains short.
 #[derive(Debug, Clone, Copy, Default)]
 struct FxHasher(u64);
 
@@ -529,8 +547,8 @@ impl Types {
 
     /// The hash of a node with these parts, which are named for a record's
     /// fields. Equal nodes have equal hashes, without building the node.
-    fn hash_parts<'a>(tag: u8, parts: impl Iterator<Item = (&'a str, TypeId)>) -> u64 {
-        let mut hasher = FxHasher::default();
+    fn hash_parts<'a>(&self, tag: u8, parts: impl Iterator<Item = (&'a str, TypeId)>) -> u64 {
+        let mut hasher = FxHasher(self.seed);
         tag.hash(&mut hasher);
 
         for (name, ty) in parts {
@@ -544,10 +562,10 @@ impl Types {
     fn hash_node(&self, node: &TypeNode) -> u64 {
         match node {
             TypeNode::Int | TypeNode::Bool | TypeNode::String => 0,
-            TypeNode::List(t) => Self::hash_parts(1, std::iter::once(("", *t))),
-            TypeNode::Option(t) => Self::hash_parts(2, std::iter::once(("", *t))),
+            TypeNode::List(t) => self.hash_parts(1, std::iter::once(("", *t))),
+            TypeNode::Option(t) => self.hash_parts(2, std::iter::once(("", *t))),
             TypeNode::Record(fields) => {
-                Self::hash_parts(3, fields.iter().map(|f| (f.name.as_str(), f.ty)))
+                self.hash_parts(3, fields.iter().map(|f| (f.name.as_str(), f.ty)))
             }
         }
     }
@@ -747,7 +765,7 @@ impl Types {
                             let ids = done.get(at..)?;
                             let names =
                                 || fields.keys().map(String::as_str).zip(ids.iter().copied());
-                            let hash = Self::hash_parts(3, names());
+                            let hash = self.hash_parts(3, names());
 
                             // An existing record is found without cloning
                             // the names.
