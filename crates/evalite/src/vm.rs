@@ -1,14 +1,19 @@
-//! The machine that runs a [`Program`]: a fixed amount of memory reserved
-//! when it is made, values bound and type-checked before it runs, and a
-//! step limit on how long it runs.
+//! The machine that runs a [`Program`]: a fixed amount of scratch memory
+//! reserved when it is made, the values of a [`Globals`] store read in
+//! place, and a step limit on how long it runs.
+//!
+//! A run addresses one space of words: the store's words from 0, then the
+//! machine's after them. Reads go to whichever holds the address, and
+//! writes only ever to the machine's.
 
-use crate::Type;
 use std::cmp::Ordering;
 
-use crate::message::{Context, Fault, Found, Key, Location, Message, Op, Root, RunError, Seg};
+use crate::globals::Globals;
+use crate::memory::{self, Words, WordsMut, count, fault};
+use crate::message::{Context, Fault, Key, Location, Message, Op, Root, RunError};
 use crate::program::{Constant, HostFunction, Instr, Program, Scalar};
-use crate::types::{TypeId, TypeNode};
-use crate::value::{Repr, Value, key_order};
+use crate::types::TypeNode;
+use crate::value::Value;
 use crate::word::Word;
 
 /// The memory a [`Machine`] has unless [`Limits::memory`] says otherwise,
@@ -34,9 +39,10 @@ impl Limits {
         }
     }
 
-    /// Allow `words` words of memory: a program's stack, lists, constants
-    /// and the values it reads, and the parts of the values bound to it
-    /// and returned by the caller's functions.
+    /// Allow `words` words of memory: a program's stack, lists and
+    /// constants, and the parts of the values returned by the caller's
+    /// functions. The values it reads are in the [`Globals`] store it runs
+    /// with, not the machine.
     pub const fn memory(mut self, words: u32) -> Self {
         self.memory = words;
         self
@@ -65,12 +71,6 @@ impl Default for Limits {
     }
 }
 
-#[cold]
-#[inline(never)]
-fn fault(fault: Fault) -> RunError {
-    RunError::from(fault)
-}
-
 /// The caller's functions, which a program calls by the names and types
 /// its environment declared. Each call gets its arguments in order and
 /// gives a value of the declared return type, or an error message.
@@ -92,7 +92,7 @@ pub trait Host {
     /// ```
     /// use std::error::Error;
     ///
-    /// use evalite::{Environment, Host, Machine, Type, Value};
+    /// use evalite::{Environment, Globals, Host, Machine, Type, Value};
     ///
     /// struct Ratings;
     ///
@@ -107,14 +107,15 @@ pub trait Host {
     ///
     /// let mut env = Environment::new();
     /// env.function("rating", [Type::string()], Type::int())?;
+    /// let globals = Globals::new(&env);
     /// let mut machine = Machine::default();
     ///
     /// let program = evalite::compile("rating(\"brawl\") + 1", &env)?;
-    /// let outcome = machine.load(&program)?.run_with(&mut Ratings)?;
+    /// let outcome = machine.load(&program, &globals)?.run_with(&mut Ratings)?;
     /// assert_eq!(outcome.value().as_int(), Some(4));
     ///
     /// let program = evalite::compile("rating(\"melee\")", &env)?;
-    /// let error = machine.load(&program)?.run_with(&mut Ratings).unwrap_err();
+    /// let error = machine.load(&program, &globals)?.run_with(&mut Ratings).unwrap_err();
     /// assert!(error.source().is_some_and(|e| e.to_string().starts_with("no rating")));
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
@@ -143,17 +144,16 @@ impl Host for NoHost {
 /// most memory it used.
 ///
 /// ```
-/// use evalite::{Environment, Limits, Machine, Type, Value};
+/// use evalite::{Environment, Globals, Limits, Machine, Type, Value};
 ///
 /// let mut env = Environment::new();
 /// env.value("a", Type::int())?;
+/// let mut globals = Globals::new(&env);
+/// globals.set("a", &Value::int(20))?;
 ///
 /// let program = evalite::compile("a * 2 + 1", &env)?;
 /// let mut machine = Machine::new(Limits::new());
-/// let mut run = machine.load(&program)?;
-/// run.bind("a", &Value::int(20))?;
-///
-/// let outcome = run.run()?;
+/// let outcome = machine.load(&program, &globals)?.run()?;
 /// assert_eq!(outcome.value(), &Value::int(41));
 /// assert_eq!(outcome.steps(), 5);
 /// assert!(outcome.memory() <= u64::from(machine.limits().memory_words()));
@@ -183,22 +183,24 @@ impl Outcome {
         self.steps
     }
 
-    /// The most memory it used at once, in words, bindings included; at
-    /// most the machine's [`Limits::memory`].
+    /// The most of the machine's memory it used at once, in words; at most
+    /// its [`Limits::memory`]. The values it read in the store are not
+    /// counted.
     pub fn memory(&self) -> u64 {
         self.memory
     }
 }
 
-/// A machine with a fixed memory of 64-bit words, reserved when it is
-/// made, which runs programs one at a time.
+/// A machine with a fixed scratch memory of 64-bit words, reserved when it
+/// is made, which runs programs one at a time over the values of a
+/// [`Globals`] store.
 ///
 /// Memory is untyped: the verifier has proved what every word is, so the
 /// machine checks only that each access is inside memory and that each
 /// word decodes as the kind it reads (the layout is in the `word` module).
 ///
 /// ```
-/// use evalite::{Environment, Limits, Machine, Type, Value};
+/// use evalite::{Environment, Globals, Limits, Machine, Type, Value};
 ///
 /// let mut env = Environment::new();
 /// env.value("strength", Type::int())?;
@@ -206,24 +208,22 @@ impl Outcome {
 ///
 /// let program = evalite::compile("strength + bonus.unwrap_or(0)", &env)?;
 ///
+/// let mut globals = Globals::new(&env);
 /// let mut machine = Machine::new(Limits::new());
-/// let mut run = machine.load(&program)?;
-/// run.bind("strength", &Value::int(3))?;
-/// run.bind("bonus", &Value::some(Value::int(2)))?;
-/// assert_eq!(run.run()?.value(), &Value::int(5));
+/// globals.set("strength", &Value::int(3))?;
 ///
-/// let mut run = machine.load(&program)?;
-/// let error = run.bind("strength", &Value::bool(true)).unwrap_err();
+/// let error = machine.load(&program, &globals)?.run().unwrap_err();
 /// let labels: Vec<String> = error.labels(&program, None).map(|l| l.message().to_string()).collect();
-/// assert_eq!(labels, ["expected Int, found Bool", "while binding `strength`"]);
+/// assert_eq!(labels[0], "`bonus` is not set, set it to an Option<Int> before running");
+///
+/// globals.set("bonus", &Value::some(Value::int(2)))?;
+/// assert_eq!(machine.load(&program, &globals)?.run()?.value(), &Value::int(5));
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug)]
 pub struct Machine {
     limits: Limits,
     words: Box<[Word]>,
-    /// Which of a loaded program's globals are bound.
-    bound: Vec<bool>,
 }
 
 impl Machine {
@@ -234,7 +234,6 @@ impl Machine {
         Self {
             limits,
             words: vec![Word::int(0); len].into_boxed_slice(),
-            bound: Vec::new(),
         }
     }
 
@@ -243,15 +242,47 @@ impl Machine {
         self.limits
     }
 
-    /// Get ready to run `program`, refusing it when its memory, the words
-    /// of the values it reads included, is more than the machine has, and
-    /// copying its constants into memory.
+    /// Get ready to run `program` over the values of `globals`, copying
+    /// its constants into memory. Its values are read where the store
+    /// holds them, so loading copies none of them, however large.
     ///
     /// # Errors
     ///
-    /// Returns a [`RunError`] when the program needs more memory, the values it
-    /// reads included, than the machine's [`Limits`] allow.
-    pub fn load<'a>(&'a mut self, program: &'a Program) -> Result<Run<'a>, RunError> {
+    /// Returns a [`RunError`] when `globals` does not
+    /// [`accept`](Globals::accepts) the program (it was compiled against
+    /// another layout of values), the program needs more memory than the
+    /// machine's [`Limits`] allow, or the store and the machine together
+    /// are more words than a run can address (2^32).
+    ///
+    /// ```
+    /// use evalite::{Environment, Globals, Machine, Type};
+    ///
+    /// let mut env = Environment::new();
+    /// env.value("wits", Type::int())?;
+    /// let program = evalite::compile("wits + 1", &env)?;
+    ///
+    /// let mut other = Environment::new();
+    /// other.value("wits", Type::bool())?;
+    ///
+    /// let error = Machine::default().load(&program, &Globals::new(&other)).unwrap_err();
+    /// let labels: Vec<String> = error.labels(&program, None).map(|l| l.message().to_string()).collect();
+    /// assert_eq!(labels, [
+    ///     "the store does not hold `wits` where the program reads it, of its type",
+    ///     "while loading the program",
+    /// ]);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn load<'a>(
+        &'a mut self,
+        program: &'a Program,
+        globals: &'a Globals,
+    ) -> Result<Run<'a>, RunError> {
+        if let Some(n) = globals.refused(program) {
+            let global = u32::try_from(n).ok();
+            return Err(RunError::new(Message::OtherLayout { global }))
+                .context(Message::LoadingProgram);
+        }
+
         let memory = program.memory();
         let needed = memory.total();
 
@@ -263,40 +294,58 @@ impl Machine {
             .context(Message::LoadingProgram);
         }
 
-        self.load_checked(program).context(Message::LoadingProgram)
+        let base = globals.words().len();
+        let end = base
+            .checked_add(self.words.len())
+            .filter(|end| u32::try_from(*end).is_ok());
+
+        let Some(end) = end else {
+            return Err(RunError::new(Message::PastAddressSpace {
+                store: count(base),
+                machine: self.limits.memory,
+            }))
+            .context(Message::LoadingProgram);
+        };
+
+        self.load_checked(program, globals, end)
+            .context(Message::LoadingProgram)
     }
 
-    fn load_checked<'a>(&'a mut self, program: &'a Program) -> Result<Run<'a>, RunError> {
+    fn load_checked<'a>(
+        &'a mut self,
+        program: &'a Program,
+        globals: &'a Globals,
+        end: usize,
+    ) -> Result<Run<'a>, RunError> {
         let memory = program.memory();
+        let store = globals.words();
+        let base = store.len();
 
         let stack_cap = size(memory.stack)?;
-        let stack_base = self
-            .words
-            .len()
+        let stack_base = end
             .checked_sub(stack_cap)
+            .filter(|at| *at >= base)
             .ok_or_else(|| fault(Fault::StackLargerThanMachine))?;
         let limit = stack_base
             .checked_sub(size(memory.constants)?)
+            .filter(|at| *at >= base)
             .ok_or_else(|| fault(Fault::ConstantsLargerThanMachine))?;
 
-        self.bound.clear();
-        self.bound.resize(program.globals.len(), false);
-
-        let globals = size(memory.globals)?;
-
         let mut run = Run {
+            store,
+            set: globals.set_flags(),
+            base,
             words: &mut self.words,
-            bound: &mut self.bound,
             program,
             fuel: self.limits.fuel,
             left: self.limits.fuel,
-            len: globals,
+            len: base,
             limit,
             heap: size(memory.heap)?,
             stack_base,
             stack_cap,
             sp: 0,
-            peak_len: globals,
+            peak_len: base,
             peak_sp: 0,
         };
 
@@ -311,20 +360,27 @@ impl Default for Machine {
     }
 }
 
-/// A program loaded on a [`Machine`], taking its bindings.
+/// A program loaded on a [`Machine`] over a [`Globals`] store, ready to
+/// run.
 #[derive(Debug)]
 pub struct Run<'a> {
+    /// The store's words, addresses `..base`.
+    store: &'a [Word],
+    /// Whether the value whose slot starts at each word is set.
+    set: &'a [bool],
+    base: usize,
+    /// The machine's words, addresses `base..`.
     words: &'a mut [Word],
-    bound: &'a mut [bool],
     program: &'a Program,
     fuel: u64,
     left: u64,
-    /// Words `..len` hold the values read, then the parts of bound values,
-    /// lists and returned values, up to `limit`, where the constants are.
+    /// Words `base..len` hold lists and the parts of returned values, up
+    /// to `limit`, where the constants are. Every position is an address,
+    /// counted from the store's first word.
     len: usize,
     limit: usize,
     /// The words kept for the lists the program has yet to build, which
-    /// bound and returned values may not take.
+    /// returned values may not take.
     heap: usize,
     /// The stack is the `stack_cap` words from `stack_base`, `sp` deep.
     stack_base: usize,
@@ -334,82 +390,13 @@ pub struct Run<'a> {
     peak_sp: usize,
 }
 
-enum Read {
-    Visit(usize, TypeId),
-    List(usize),
-    /// A map of this many entries.
-    Map(usize),
-    Record(TypeId),
-    Some,
-}
-
 impl<'a> Run<'a> {
-    /// The values the program reads, with their types, each to be bound.
-    pub fn globals(&self) -> impl ExactSizeIterator<Item = (&'a str, &'a Type)> + Clone + use<'a> {
-        self.program.globals()
-    }
-
-    /// Bind `value` to the value `name` the program reads, checking it is
-    /// of its declared type and fits in the memory left.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`RunError`] when the program reads no value `name`, it is
-    /// already bound, `value` is not of its declared type (the error's labels
-    /// give the path into `value`), or `value` does not fit in the memory left.
-    pub fn bind(&mut self, name: &str, value: &Value) -> Result<(), RunError> {
-        let program = self.program;
-
-        let (n, global) = program
-            .globals
-            .iter()
-            .enumerate()
-            .find(|(_, g)| g.name == name)
-            .ok_or_else(|| RunError::new(Message::UnknownValue))?;
-
-        let id = u32::try_from(n).map_err(|_| fault(Fault::PastAddressSpace))?;
-        self.bind_global(n, global.ty, value)
-            .context(Message::Binding { global: id })
-    }
-
-    fn bind_global(&mut self, n: usize, ty: TypeId, value: &Value) -> Result<(), RunError> {
-        let program = self.program;
-        let id = u32::try_from(n).map_err(|_| fault(Fault::PastAddressSpace))?;
-
-        if self.bound.get(n).copied().unwrap_or(true) {
-            return Err(RunError::new(Message::AlreadyBound { global: id }));
-        }
-
-        let needed = self.measure(value, ty, Root::Global(id))?;
-        let left = self.left();
-
-        if needed > left {
-            return Err(RunError::new(Message::TooLarge {
-                needed: count(needed),
-                left: count(left),
-            }));
-        }
-
-        let at = program
-            .globals
-            .get(n)
-            .map(|g| g.slot)
-            .ok_or_else(|| fault(Fault::OutsideMemory))?;
-        self.write(value, ty, size(at)?)?;
-
-        if let Some(bound) = self.bound.get_mut(n) {
-            *bound = true;
-        }
-
-        Ok(())
-    }
-
     /// Run the program, which calls none of the caller's functions.
     ///
     /// # Errors
     ///
-    /// Returns a [`RunError`] when a value the program reads is unbound, the
-    /// program runs out of fuel, an operation overflows or divides by zero, or
+    /// Returns a [`RunError`] when a value the program reads is not set in
+    /// the store, the program runs out of fuel, an operation overflows or divides by zero, or
     /// an index is out of range.
     pub fn run(self) -> Result<Outcome, RunError> {
         self.run_with(&mut NoHost)
@@ -424,13 +411,6 @@ impl<'a> Run<'a> {
     /// [`source`](std::error::Error::source).
     pub fn run_with(mut self, host: &mut dyn Host) -> Result<Outcome, RunError> {
         let program = self.program;
-
-        if let Some(n) = self.bound.iter().position(|bound| !bound) {
-            let global = u32::try_from(n).map_err(|_| fault(Fault::PastAddressSpace));
-            return Err(RunError::new(Message::Unbound { global: global? }))
-                .context(Message::Running);
-        }
-
         let code = program.code.as_slice();
         let mut pc = 0usize;
 
@@ -450,7 +430,7 @@ impl<'a> Run<'a> {
         Ok(Outcome {
             value,
             steps: self.fuel.saturating_sub(self.left),
-            memory: count(self.peak_len)
+            memory: count(self.peak_len.saturating_sub(self.base))
                 .saturating_add(count(self.peak_sp))
                 .saturating_add(u64::from(program.memory().constants)),
         })
@@ -464,7 +444,7 @@ impl<'a> Run<'a> {
             return Err(fault(Fault::NotOneResult));
         }
 
-        self.read(self.stack_base, program.result)
+        memory::read(self, &program.types, self.stack_base, program.result)
     }
 
     /// Copy the program's constants into memory from `limit`.
@@ -476,7 +456,7 @@ impl<'a> Run<'a> {
             let at = at.ok_or_else(|| fault(Fault::ConstantOutsideMemory))?;
 
             match constant {
-                Constant::String(s) => self.put_bytes(at, s.as_bytes())?,
+                Constant::String(s) => memory::put_bytes(self, at, s.as_bytes())?,
                 Constant::List { items, .. } => {
                     for (n, item) in items.iter().enumerate() {
                         let word = match *item {
@@ -516,7 +496,13 @@ impl<'a> Run<'a> {
             Instr::Bool(b) => Word::bool(b),
             Instr::Const(c) => self.constant(c)?,
             Instr::Global { at, ty } => {
-                self.push_from(size(at)?, types.width(ty))?;
+                let at = size(at)?;
+
+                if !self.set.get(at).copied().unwrap_or(false) {
+                    return Err(self.unset(at));
+                }
+
+                self.push_from(at, types.width(ty))?;
                 return Ok(next);
             }
             Instr::Neg => {
@@ -635,17 +621,13 @@ impl<'a> Run<'a> {
                     .stack_base
                     .checked_add(top)
                     .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
-                let end = from
-                    .checked_add(words)
-                    .filter(|end| *end <= self.words.len())
-                    .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
                 self.heap = self
                     .heap
                     .checked_sub(words)
                     .ok_or_else(|| fault(Fault::UndeclaredHeap))?;
                 let at = self.alloc(words)?;
 
-                self.words.copy_within(from..end, at);
+                self.copy(from, words, at)?;
                 self.sp = top;
                 Word::reference(at, n)?
             }
@@ -810,7 +792,7 @@ impl<'a> Run<'a> {
                     (Instr::MapIndex(..), None) => {
                         let key = if strings {
                             let (at, len) = needle.as_reference()?;
-                            Key::string(&self.string(at, len)?)
+                            Key::string(&memory::string(self, at, len)?)
                         } else {
                             Key::Int(needle.as_int())
                         };
@@ -844,7 +826,7 @@ impl<'a> Run<'a> {
         let stride = width
             .checked_add(1)
             .ok_or_else(|| fault(Fault::OutsideMemory))?;
-        self.inside(start, len.checked_mul(stride))?;
+        memory::inside(self, start, len.checked_mul(stride))?;
 
         let mut low = 0usize;
         let mut high = len;
@@ -931,7 +913,7 @@ impl<'a> Run<'a> {
             .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
 
         for ty in &function.params {
-            args.push(self.read(at, *ty)?);
+            args.push(memory::read(self, &program.types, at, *ty)?);
             at = at.saturating_add(program.types.width(*ty));
         }
 
@@ -943,7 +925,8 @@ impl<'a> Run<'a> {
 
     /// Check and push what `function`, the program's `f`, returned.
     fn returned(&mut self, f: u32, function: &HostFunction, value: &Value) -> Result<(), RunError> {
-        let needed = self.measure(value, function.ret, Root::Returned(f))?;
+        let types = &self.program.types;
+        let needed = memory::measure(types, value, function.ret, Root::Returned(f))?;
 
         self.spend(needed)?;
         let left = self.left();
@@ -955,12 +938,30 @@ impl<'a> Run<'a> {
             }));
         }
 
-        let width = self.program.types.width(function.ret);
+        let width = types.width(function.ret);
         let dest = self.reserve(width)?;
-        self.write(value, function.ret, dest)
+        memory::write(self, types, value, function.ret, dest)
     }
 
-    /// The words left for bound and returned values.
+    /// The error of reading the value whose slot starts at word `at`,
+    /// which is not set.
+    #[cold]
+    #[inline(never)]
+    fn unset(&self, at: usize) -> RunError {
+        let global = self
+            .program
+            .globals
+            .iter()
+            .position(|g| usize::try_from(g.slot).is_ok_and(|slot| slot == at))
+            .and_then(|n| u32::try_from(n).ok());
+
+        match global {
+            Some(global) => RunError::new(Message::Unset { global }),
+            None => fault(Fault::OutsideMemory),
+        }
+    }
+
+    /// The words left for returned values.
     fn left(&self) -> usize {
         self.limit
             .saturating_sub(self.len)
@@ -1011,11 +1012,11 @@ impl<'a> Run<'a> {
     /// Move the `n` words at `from` down to `to`, below them on the stack,
     /// and make them its top.
     fn move_down(&mut self, from: usize, to: usize, n: usize) -> Result<(), RunError> {
-        let end = from
-            .checked_add(n)
-            .filter(|end| *end <= self.words.len() && to <= from)
-            .ok_or_else(|| fault(Fault::OutsideMemory))?;
-        self.words.copy_within(from..end, to);
+        if to > from {
+            return Err(fault(Fault::OutsideMemory));
+        }
+
+        self.copy(from, n, to)?;
         self.sp = to
             .checked_add(n)
             .and_then(|top| top.checked_sub(self.stack_base))
@@ -1042,12 +1043,36 @@ impl<'a> Run<'a> {
 
     /// Push the `n` words from `from`.
     fn push_from(&mut self, from: usize, n: usize) -> Result<(), RunError> {
-        let end = from
-            .checked_add(n)
-            .filter(|end| *end <= self.words.len())
-            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+        memory::inside(self, from, Some(n))?;
         let at = self.reserve(n)?;
-        self.words.copy_within(from..end, at);
+        self.copy(from, n, at)
+    }
+
+    /// Copy the `n` words from `from`, all in the store or all in the
+    /// machine, to `to` in the machine.
+    fn copy(&mut self, from: usize, n: usize, to: usize) -> Result<(), RunError> {
+        let outside = || fault(Fault::OutsideMemory);
+        let to = to
+            .checked_sub(self.base)
+            .ok_or_else(|| fault(Fault::WriteToStore))?;
+        let to_end = to.checked_add(n).ok_or_else(outside)?;
+
+        match from.checked_sub(self.base) {
+            Some(from) => {
+                let end = from
+                    .checked_add(n)
+                    .filter(|end| *end <= self.words.len() && to_end <= self.words.len())
+                    .ok_or_else(outside)?;
+                self.words.copy_within(from..end, to);
+            }
+            None => {
+                let end = from.checked_add(n).ok_or_else(outside)?;
+                let source = self.store.get(from..end).ok_or_else(outside)?;
+                let dest = self.words.get_mut(to..to_end).ok_or_else(outside)?;
+                dest.copy_from_slice(source);
+            }
+        }
+
         Ok(())
     }
 
@@ -1080,31 +1105,14 @@ impl<'a> Run<'a> {
     }
 
     /// The word at `at`.
+    #[inline]
     fn get(&self, at: Option<usize>) -> Result<Word, RunError> {
-        at.and_then(|at| self.words.get(at))
-            .copied()
-            .ok_or_else(|| fault(Fault::OutsideMemory))
+        memory::get(self, at)
     }
 
+    #[inline]
     fn put(&mut self, at: Option<usize>, word: Word) -> Result<(), RunError> {
-        *at.and_then(|at| self.words.get_mut(at))
-            .ok_or_else(|| fault(Fault::OutsideMemory))? = word;
-        Ok(())
-    }
-
-    /// Pack `bytes` 8 to a word from `at`.
-    fn put_bytes(&mut self, at: usize, bytes: &[u8]) -> Result<(), RunError> {
-        for (n, chunk) in bytes.chunks(8).enumerate() {
-            let mut word = [0u8; 8];
-
-            for (b, c) in word.iter_mut().zip(chunk) {
-                *b = *c;
-            }
-
-            self.put(at.checked_add(n), Word::bytes(word))?;
-        }
-
-        Ok(())
+        memory::put(self, at, word)
     }
 
     /// Take `n` words of memory.
@@ -1118,434 +1126,31 @@ impl<'a> Run<'a> {
         self.peak_len = self.peak_len.max(len);
         Ok(at)
     }
+}
 
-    /// Check `value` is of type `ty`, giving the words its parts take;
-    /// a mismatch names its path from `root`.
-    ///
-    /// The walk keeps no path, as most values are of their type; a mismatch
-    /// is found again with one, to name where it is.
-    fn measure(&self, value: &Value, ty: TypeId, root: Root) -> Result<usize, RunError> {
-        match self.walk(value, ty, &mut NoPaths) {
-            Ok(total) => Ok(total),
-            Err(Stop::Fault(error)) => Err(error),
-            Err(Stop::Mismatch(_)) => {
-                let mut nodes = Nodes::default();
-
-                match self.walk(value, ty, &mut nodes) {
-                    Err(Stop::Mismatch(mismatch)) => Err(mistyped(mismatch, root, &nodes.0)),
-                    Err(Stop::Fault(error)) => Err(error),
-                    // The same walk, so the same mismatch.
-                    Ok(_) => Err(fault(Fault::ValueChangedType)),
-                }
-            }
+impl Words for Run<'_> {
+    #[inline]
+    fn word(&self, at: usize) -> Option<Word> {
+        match at.checked_sub(self.base) {
+            Some(at) => self.words.get(at).copied(),
+            None => self.store.get(at).copied(),
         }
     }
 
-    /// Walk `value` of type `ty`, giving the words its parts take, with
-    /// `trail` keeping the path to each part.
-    fn walk<T: Trail>(&self, value: &Value, ty: TypeId, trail: &mut T) -> Result<usize, Stop> {
-        let program = self.program;
-        let types = &program.types;
-        let mut work = Vec::new();
-        let mut next = Some((value, ty, 0usize, None));
-        let mut total = 0usize;
+    fn end(&self) -> usize {
+        self.base.saturating_add(self.words.len())
+    }
+}
 
-        while let Some((value, ty, node, option)) = next.take().or_else(|| work.pop()) {
-            let ty_node = types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))?;
-
-            let found = match (ty_node, &value.0) {
-                (TypeNode::Option(_), Repr::None)
-                | (TypeNode::Int, Repr::Int(_))
-                | (TypeNode::Bool, Repr::Bool(_)) => continue,
-                (TypeNode::Option(inner), Repr::Some(value)) => {
-                    next = Some((value, *inner, node, Some(ty)));
-                    continue;
-                }
-                (TypeNode::String, Repr::String(s)) => {
-                    total = total.saturating_add(s.len().div_ceil(8));
-                    continue;
-                }
-                (TypeNode::List(entry), Repr::List(items)) => {
-                    let width = types.width(*entry);
-                    total = total.saturating_add(items.len().saturating_mul(width));
-                    work.reserve(items.len());
-                    trail.reserve(items.len());
-
-                    for (i, item) in items.iter().enumerate() {
-                        let child = trail.child(node, || Seg::Index(count(i)));
-                        work.push((item, *entry, child, None));
-                    }
-
-                    continue;
-                }
-                (TypeNode::Map { key, value }, Repr::Map(entries)) => {
-                    let width = types.width(*value).saturating_add(1);
-                    total = total.saturating_add(entries.len().saturating_mul(width));
-                    let parts = entries.len().saturating_mul(2);
-                    work.reserve(parts);
-                    trail.reserve(parts);
-
-                    for (i, (k, v)) in entries.iter().enumerate() {
-                        let key_node = trail.child(node, || Seg::KeyOf(count(i)));
-                        let value_node = trail.child(node, || match &k.0 {
-                            Repr::Int(n) => Seg::Key(Key::Int(*n)),
-                            Repr::String(s) => Seg::Key(Key::string(s)),
-                            _ => Seg::KeyOf(count(i)),
-                        });
-
-                        // The key is checked first.
-                        work.push((v, *value, value_node, None));
-                        work.push((k, *key, key_node, None));
-                    }
-
-                    continue;
-                }
-                // Both are sorted by name, so equal names pairwise is an
-                // exact match, found without a lookup.
-                (TypeNode::Record(fields), Repr::Record(map))
-                    if fields.len() == map.len()
-                        && fields.iter().zip(map.keys()).all(|(f, k)| f.name == *k) =>
-                {
-                    total = total.saturating_add(types.record_words(fields));
-                    work.reserve(fields.len());
-                    trail.reserve(fields.len());
-
-                    for (n, (field, value)) in fields.iter().zip(map.values()).enumerate() {
-                        let child = trail.child(node, || Seg::Field {
-                            record: ty,
-                            field: u32::try_from(n).unwrap_or(u32::MAX),
-                        });
-                        work.push((value, field.ty, child, None));
-                    }
-
-                    continue;
-                }
-                (TypeNode::Record(fields), Repr::Record(map)) => {
-                    let missing = fields.iter().position(|f| !map.contains_key(&f.name));
-                    let extra = map.keys().any(|k| !fields.iter().any(|f| f.name == **k));
-
-                    match (missing, extra) {
-                        (Some(field), _) => Found::RecordWithout {
-                            record: ty,
-                            field: u32::try_from(field).unwrap_or(u32::MAX),
-                        },
-                        (None, true) => Found::RecordWithExtra,
-                        (None, false) => {
-                            total = total.saturating_add(types.record_words(fields));
-                            work.reserve(fields.len());
-                            trail.reserve(fields.len());
-
-                            for (n, field) in fields.iter().enumerate() {
-                                if let Some(value) = map.get(&field.name) {
-                                    let child = trail.child(node, || Seg::Field {
-                                        record: ty,
-                                        field: u32::try_from(n).unwrap_or(u32::MAX),
-                                    });
-                                    work.push((value, field.ty, child, None));
-                                }
-                            }
-
-                            continue;
-                        }
-                    }
-                }
-                _ => value.describe(),
-            };
-
-            return Err(Stop::Mismatch(Mismatch {
-                expected: option.unwrap_or(ty),
-                found,
-                in_some: option.is_some(),
-                node,
-            }));
-        }
-
-        Ok(total)
+impl WordsMut for Run<'_> {
+    #[inline]
+    fn set_word(&mut self, at: usize, word: Word) -> Option<()> {
+        *self.words.get_mut(at.checked_sub(self.base)?)? = word;
+        Some(())
     }
 
-    /// Write `value`, already measured against `ty`, at `dest`, taking
-    /// memory for its parts.
-    fn write(&mut self, value: &Value, ty: TypeId, dest: usize) -> Result<(), RunError> {
-        let program = self.program;
-        let types = &program.types;
-        let mut work = Vec::new();
-        let mut next = Some((value, ty, dest));
-
-        while let Some((value, ty, dest)) = next.take().or_else(|| work.pop()) {
-            let ty_node = types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))?;
-
-            let word = match (ty_node, &value.0) {
-                (TypeNode::Option(_), Repr::None) => match types.tagged(ty) {
-                    Some(width) => {
-                        self.put(Some(dest), Word::present(false))?;
-
-                        for n in 1..=width {
-                            self.put(dest.checked_add(n), Word::int(0))?;
-                        }
-
-                        continue;
-                    }
-                    None => Word::NONE,
-                },
-                (TypeNode::Option(inner), Repr::Some(value)) => {
-                    let dest = if types.tagged(ty).is_some() {
-                        self.put(Some(dest), Word::present(true))?;
-                        dest.checked_add(1)
-                            .ok_or_else(|| fault(Fault::OutsideMemory))?
-                    } else {
-                        dest
-                    };
-
-                    next = Some((value, *inner, dest));
-                    continue;
-                }
-                (TypeNode::Int, Repr::Int(n)) => Word::int(*n),
-                (TypeNode::Bool, Repr::Bool(b)) => Word::bool(*b),
-                (TypeNode::String, Repr::String(s)) => {
-                    let at = self.alloc(s.len().div_ceil(8))?;
-                    self.put_bytes(at, s.as_bytes())?;
-                    Word::reference(at, s.len())?
-                }
-                (TypeNode::List(entry), Repr::List(items)) => {
-                    let width = types.width(*entry);
-                    let words = items
-                        .len()
-                        .checked_mul(width)
-                        .ok_or_else(|| fault(Fault::ListTooLarge))?;
-                    let at = self.alloc(words)?;
-                    work.reserve(items.len());
-
-                    for (n, item) in items.iter().enumerate() {
-                        let dest = n
-                            .checked_mul(width)
-                            .and_then(|n| n.checked_add(at))
-                            .ok_or_else(|| fault(Fault::OutsideMemory))?;
-                        work.push((item, *entry, dest));
-                    }
-
-                    Word::reference(at, items.len())?
-                }
-                (TypeNode::Map { key, value }, Repr::Map(entries)) => {
-                    // A map's entries are in key order, each key once, as
-                    // `Value::map` keeps them, for the lookup to find them.
-                    let sorted = entries.windows(2).all(|pair| match pair {
-                        [(a, _), (b, _)] => key_order(a, b) == Ordering::Less,
-                        _ => true,
-                    });
-
-                    if !sorted {
-                        return Err(fault(Fault::MapUnsorted));
-                    }
-
-                    let width = types.width(*value);
-                    let stride = width
-                        .checked_add(1)
-                        .ok_or_else(|| fault(Fault::ListTooLarge))?;
-                    let words = entries
-                        .len()
-                        .checked_mul(stride)
-                        .ok_or_else(|| fault(Fault::ListTooLarge))?;
-                    let at = self.alloc(words)?;
-                    work.reserve(entries.len().saturating_mul(2));
-
-                    for (n, (k, v)) in entries.iter().enumerate() {
-                        let dest = n
-                            .checked_mul(stride)
-                            .and_then(|n| n.checked_add(at))
-                            .ok_or_else(|| fault(Fault::OutsideMemory))?;
-                        let value_dest = dest
-                            .checked_add(1)
-                            .ok_or_else(|| fault(Fault::OutsideMemory))?;
-                        work.push((k, *key, dest));
-                        work.push((v, *value, value_dest));
-                    }
-
-                    Word::reference(at, entries.len())?
-                }
-                (TypeNode::Record(fields), Repr::Record(map)) => {
-                    let words = types.record_words(fields);
-                    let at = self.alloc(words)?;
-
-                    let mut entries = map.iter();
-                    work.reserve(fields.len());
-
-                    for (offset, field) in types.field_offsets(fields) {
-                        // In step with the fields, as `measure` found them.
-                        let value = match entries.next() {
-                            Some((name, value)) if *name == field.name => value,
-                            _ => map
-                                .get(&field.name)
-                                .ok_or_else(|| fault(Fault::RecordLostField))?,
-                        };
-                        let dest = at
-                            .checked_add(offset)
-                            .ok_or_else(|| fault(Fault::OutsideMemory))?;
-                        work.push((value, field.ty, dest));
-                    }
-
-                    Word::reference(at, words)?
-                }
-                _ => return Err(fault(Fault::ValueChangedType)),
-            };
-
-            self.put(Some(dest), word)?;
-        }
-
-        Ok(())
-    }
-
-    /// The value of type `ty` held at `at`.
-    fn read(&self, at: usize, ty: TypeId) -> Result<Value, RunError> {
-        let program = self.program;
-        let types = &program.types;
-        let mut steps = vec![Read::Visit(at, ty)];
-        let mut out = Vec::<Value>::new();
-
-        while let Some(step) = steps.pop() {
-            match step {
-                Read::Visit(at, ty) => {
-                    let word = self.get(Some(at))?;
-
-                    match types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))? {
-                        TypeNode::Option(inner) => {
-                            let at = if types.tagged(ty).is_some() {
-                                if !word.as_bool()? {
-                                    out.push(Value::none());
-                                    continue;
-                                }
-
-                                at.checked_add(1)
-                                    .ok_or_else(|| fault(Fault::OutsideMemory))?
-                            } else if word.is_none() {
-                                out.push(Value::none());
-                                continue;
-                            } else {
-                                at
-                            };
-
-                            steps.push(Read::Some);
-                            steps.push(Read::Visit(at, *inner));
-                        }
-                        TypeNode::Int => out.push(Value::int(word.as_int())),
-                        TypeNode::Bool => out.push(Value::bool(word.as_bool()?)),
-                        TypeNode::String => {
-                            let (at, len) = word.as_reference()?;
-                            out.push(Value::string(self.string(at, len)?));
-                        }
-                        TypeNode::List(entry) => {
-                            let (start, len) = word.as_reference()?;
-                            let width = types.width(*entry);
-                            self.inside(start, len.checked_mul(width))?;
-                            steps.push(Read::List(len));
-
-                            for n in (0..len).rev() {
-                                let at = n.saturating_mul(width).saturating_add(start);
-                                steps.push(Read::Visit(at, *entry));
-                            }
-                        }
-                        TypeNode::Map { key, value } => {
-                            let (start, len) = word.as_reference()?;
-                            let stride = types.width(*value).saturating_add(1);
-                            self.inside(start, len.checked_mul(stride))?;
-                            steps.push(Read::Map(len));
-
-                            for n in (0..len).rev() {
-                                let at = n.saturating_mul(stride).saturating_add(start);
-                                steps.push(Read::Visit(at.saturating_add(1), *value));
-                                steps.push(Read::Visit(at, *key));
-                            }
-                        }
-                        TypeNode::Record(fields) => {
-                            let (start, len) = word.as_reference()?;
-
-                            if len != types.record_words(fields) {
-                                return Err(fault(Fault::RecordWrongSize));
-                            }
-
-                            self.inside(start, Some(len))?;
-                            steps.push(Read::Record(ty));
-
-                            for (offset, field) in types
-                                .field_offsets(fields)
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                            {
-                                steps.push(Read::Visit(start.saturating_add(offset), field.ty));
-                            }
-                        }
-                    }
-                }
-                Read::List(n) => {
-                    let at = out
-                        .len()
-                        .checked_sub(n)
-                        .ok_or_else(|| fault(Fault::ListLostEntries))?;
-                    let items = out.split_off(at);
-                    out.push(Value(Repr::List(items)));
-                }
-                Read::Map(n) => {
-                    let at = n
-                        .checked_mul(2)
-                        .and_then(|parts| out.len().checked_sub(parts))
-                        .ok_or_else(|| fault(Fault::MapLostEntries))?;
-                    let mut parts = out.split_off(at).into_iter();
-                    let mut entries = Vec::with_capacity(n);
-
-                    while let (Some(key), Some(value)) = (parts.next(), parts.next()) {
-                        entries.push((key, value));
-                    }
-
-                    // Written in key order, so read back in it.
-                    out.push(Value(Repr::Map(entries)));
-                }
-                Read::Record(ty) => {
-                    let Some(TypeNode::Record(fields)) = types.get(ty) else {
-                        return Err(fault(Fault::RecordNotRecordType));
-                    };
-
-                    let at = out
-                        .len()
-                        .checked_sub(fields.len())
-                        .ok_or_else(|| fault(Fault::RecordLostFields))?;
-                    let values = out.split_off(at);
-
-                    out.push(Value(Repr::Record(
-                        fields.iter().map(|f| f.name.clone()).zip(values).collect(),
-                    )));
-                }
-                Read::Some => {
-                    let value = out.pop().ok_or_else(|| fault(Fault::OptionLostValue))?;
-                    out.push(Value::some(value));
-                }
-            }
-        }
-
-        match (out.pop(), out.is_empty()) {
-            (Some(value), true) => Ok(value),
-            _ => Err(fault(Fault::ReadAsSeveral)),
-        }
-    }
-
-    /// Check the `len` words from `at` are inside memory.
-    fn inside(&self, at: usize, len: Option<usize>) -> Result<(), RunError> {
-        len.and_then(|len| at.checked_add(len))
-            .filter(|end| *end <= self.words.len())
-            .map(|_| ())
-            .ok_or_else(|| fault(Fault::OutsideMemory))
-    }
-
-    /// The string of `len` bytes packed from `at`.
-    fn string(&self, at: usize, len: usize) -> Result<String, RunError> {
-        self.inside(at, Some(len.div_ceil(8)))?;
-        let mut bytes = Vec::with_capacity(len);
-
-        for n in 0..len.div_ceil(8) {
-            bytes.extend_from_slice(&self.get(at.checked_add(n))?.as_bytes());
-        }
-
-        bytes.truncate(len);
-        String::from_utf8(bytes).map_err(|_| fault(Fault::NotUtf8))
+    fn alloc(&mut self, n: usize) -> Result<usize, RunError> {
+        Run::alloc(self, n)
     }
 }
 
@@ -1573,114 +1178,10 @@ fn overflow(op: Op, a: i64, b: i64) -> RunError {
     RunError::new(Message::Overflow { op, a, b })
 }
 
-/// Where a walk found a value not of its type: the type `expected`, what
-/// was `found` instead, and the `node` of its path.
-struct Mismatch {
-    expected: TypeId,
-    found: Found,
-    in_some: bool,
-    node: usize,
-}
-
-/// Why a walk stopped.
-enum Stop {
-    Mismatch(Mismatch),
-    Fault(RunError),
-}
-
-impl From<RunError> for Stop {
-    fn from(error: RunError) -> Self {
-        Self::Fault(error)
-    }
-}
-
-/// The paths into a value a walk keeps, one node to each part it queues.
-trait Trail {
-    /// Make room for `n` more nodes.
-    fn reserve(&mut self, n: usize);
-
-    /// The node of the part reached from `parent` by the step `seg` gives.
-    fn child(&mut self, parent: usize, seg: impl FnOnce() -> Seg) -> usize;
-}
-
-/// Keeps none, as a walk that finds no mismatch needs none.
-struct NoPaths;
-
-impl Trail for NoPaths {
-    fn reserve(&mut self, _: usize) {}
-
-    fn child(&mut self, _: usize, _: impl FnOnce() -> Seg) -> usize {
-        0
-    }
-}
-
-/// Each node's parent and the step to it; the root, which has none, is
-/// added with the first part.
-#[derive(Default)]
-struct Nodes(Vec<(usize, Option<Seg>)>);
-
-impl Trail for Nodes {
-    fn reserve(&mut self, n: usize) {
-        self.0.reserve(n.saturating_add(1));
-    }
-
-    fn child(&mut self, parent: usize, seg: impl FnOnce() -> Seg) -> usize {
-        if self.0.is_empty() {
-            self.0.push((0, None));
-        }
-
-        let node = self.0.len();
-        self.0.push((parent, Some(seg())));
-        node
-    }
-}
-
-/// The error of a value found not to be of its type, at its node of the
-/// path from `root`.
-#[cold]
-#[inline(never)]
-fn mistyped(mismatch: Mismatch, root: Root, nodes: &[(usize, Option<Seg>)]) -> RunError {
-    let Mismatch {
-        expected,
-        found,
-        in_some,
-        node,
-    } = mismatch;
-    let mut node = node;
-    let mut path = Vec::new();
-
-    while let Some((parent, Some(seg))) = nodes.get(node) {
-        path.push(seg.clone());
-        node = *parent;
-    }
-
-    path.reverse();
-
-    let error = RunError::new(Message::Mistyped {
-        expected,
-        found,
-        in_some,
-    });
-
-    // A whole value is named by the binding's or the function's context.
-    if path.is_empty() {
-        return error;
-    }
-
-    error.context(Message::AtPath {
-        root,
-        path: path.into_boxed_slice(),
-    })
-}
-
 fn index<T>(items: &[T], at: u32) -> Option<&T> {
     items.get(usize::try_from(at).ok()?)
 }
 
 fn size(n: u32) -> Result<usize, RunError> {
     usize::try_from(n).map_err(|_| fault(Fault::PastAddressSpace))
-}
-
-fn count(n: usize) -> u64 {
-    u64::try_from(n).unwrap_or(u64::MAX)
 }

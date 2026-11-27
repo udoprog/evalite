@@ -14,7 +14,9 @@ use std::fmt::Write;
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use evalite::{DEFAULT_FUEL, Environment, Limits, Machine, Program, Structure, Type, Value};
+use evalite::{
+    DEFAULT_FUEL, Environment, Globals, Limits, Machine, Program, Structure, Type, Value,
+};
 
 const ATTRIBUTES: [&str; 9] = [
     "intelligence",
@@ -319,51 +321,50 @@ fn sheet() -> Vec<String> {
     out
 }
 
-/// A program and what it reads.
+/// A program, compiled and stored.
 struct Prepared {
     program: Program,
     bytes: Vec<u8>,
-    bindings: Vec<(String, Value)>,
 }
 
-fn prepare(source: &str, env: &Environment, values: &BTreeMap<String, Value>) -> Prepared {
+fn prepare(source: &str, env: &Environment, globals: &Globals) -> Prepared {
     let program = evalite::compile(source, env).unwrap_or_else(|e| panic!("{source}: {e}"));
     let bytes = program.to_bytes().unwrap();
-    let bindings = program
-        .globals()
-        .map(|(name, _)| (name.to_owned(), values[name].clone()))
-        .collect();
-
-    let prepared = Prepared {
-        program,
-        bytes,
-        bindings,
-    };
+    let prepared = Prepared { program, bytes };
 
     // Every benchmark must run within the default limits.
     let mut machine = Machine::new(Limits::new());
-    let outcome = evaluate(&mut machine, &prepared);
+    let outcome = evaluate(&mut machine, globals, &prepared);
     assert!(outcome.steps() <= DEFAULT_FUEL, "{source}");
     prepared
 }
 
-/// Load, bind and run one program, as a caller holding its values does.
-fn evaluate(machine: &mut Machine, prepared: &Prepared) -> evalite::Outcome {
-    let mut run = machine.load(&prepared.program).unwrap();
+/// A store of `env` with each of `values` set, as a sheet's are once.
+fn store(env: &Environment, values: &BTreeMap<String, Value>) -> Globals {
+    let mut globals = Globals::new(env);
 
-    for (name, value) in &prepared.bindings {
-        run.bind(name, value).unwrap();
+    for (name, value) in values {
+        globals.set(name, value).unwrap();
     }
 
-    run.run_with(&mut host).unwrap()
+    globals
+}
+
+/// Load and run one program over the sheet's store.
+fn evaluate(machine: &mut Machine, globals: &Globals, prepared: &Prepared) -> evalite::Outcome {
+    machine
+        .load(&prepared.program, globals)
+        .unwrap()
+        .run_with(&mut host)
+        .unwrap()
 }
 
 fn stages(c: &mut Criterion) {
     let env = env();
-    let values = values();
+    let globals = store(&env, &values());
 
     for (name, source) in cases() {
-        let prepared = prepare(&source, &env, &values);
+        let prepared = prepare(&source, &env, &globals);
         let mut group = c.benchmark_group(format!("stage/{name}"));
 
         group.bench_function("compile", |b| {
@@ -378,33 +379,20 @@ fn stages(c: &mut Criterion) {
 
         group.bench_function("load", |b| {
             b.iter(|| {
-                machine.load(black_box(&prepared.program)).unwrap();
+                machine
+                    .load(black_box(&prepared.program), &globals)
+                    .unwrap();
             })
         });
 
-        group.bench_function("load_bind", |b| {
-            b.iter(|| {
-                let mut run = machine.load(black_box(&prepared.program)).unwrap();
-
-                for (name, value) in &prepared.bindings {
-                    run.bind(name, value).unwrap();
-                }
-            })
-        });
-
-        group.bench_function("load_bind_run", |b| {
-            b.iter(|| evaluate(&mut machine, black_box(&prepared)))
+        group.bench_function("load_run", |b| {
+            b.iter(|| evaluate(&mut machine, &globals, black_box(&prepared)))
         });
 
         group.bench_function("end_to_end", |b| {
             b.iter(|| {
                 let program = evalite::compile(black_box(&source), &env).unwrap();
-                let mut run = machine.load(&program).unwrap();
-
-                for (name, _) in program.globals() {
-                    run.bind(name, &values[name]).unwrap();
-                }
-
+                let run = machine.load(&program, &globals).unwrap();
                 run.run_with(&mut host).unwrap()
             })
         });
@@ -417,7 +405,7 @@ fn stages(c: &mut Criterion) {
 /// against the same value reduced to one `Int` by one more instruction.
 fn read(c: &mut Criterion) {
     let env = env();
-    let values = values();
+    let globals = store(&env, &values());
     let mut group = c.benchmark_group("read");
     let mut machine = Machine::new(Limits::new());
 
@@ -429,10 +417,10 @@ fn read(c: &mut Criterion) {
         "merits",
         "merits.len()",
     ] {
-        let prepared = prepare(source, &env, &values);
+        let prepared = prepare(source, &env, &globals);
 
         group.bench_with_input(BenchmarkId::from_parameter(source), &prepared, |b, p| {
-            b.iter(|| evaluate(&mut machine, black_box(p)))
+            b.iter(|| evaluate(&mut machine, &globals, black_box(p)))
         });
     }
 
@@ -444,10 +432,11 @@ fn read(c: &mut Criterion) {
 fn whole_sheet(c: &mut Criterion) {
     let env = env();
     let values = values();
+    let globals = store(&env, &values);
     let sources = sheet();
     let prepared = sources
         .iter()
-        .map(|s| prepare(s, &env, &values))
+        .map(|s| prepare(s, &env, &globals))
         .collect::<Vec<_>>();
 
     let mut group = c.benchmark_group("sheet");
@@ -474,23 +463,84 @@ fn whole_sheet(c: &mut Criterion) {
     group.bench_function("evaluate", |b| {
         b.iter(|| {
             for p in &prepared {
-                black_box(evaluate(&mut machine, black_box(p)));
+                black_box(evaluate(&mut machine, &globals, black_box(p)));
             }
         })
     });
 
-    // The bindings looked up by name and cloned out of the sheet's values
-    // for each program, as a caller would.
-    group.bench_function("evaluate_lookup", |b| {
+    // Setting every value of the sheet in a new store, which a sheet does
+    // once rather than once a formula.
+    group.bench_function("set", |b| {
+        b.iter(|| black_box(store(&env, black_box(&values))))
+    });
+
+    group.finish();
+}
+
+/// How many entries the characterize sheet's `catalog` map has.
+const CATALOG: i64 = 10_000;
+
+/// How many formulas the characterize sheet computes.
+const FORMULAS: usize = 400;
+
+/// The characterize sheet: the sheet's declarations and a large `catalog`
+/// of entries by id.
+fn characterize_env() -> Environment {
+    let mut env = env();
+    let entry = Type::record([("dice", Type::int()), ("rank", Type::int())]);
+    env.value("catalog", Type::map(Type::int(), entry)).unwrap();
+    env
+}
+
+/// The characterize sheet's values: the sheet's and the catalog.
+fn characterize_values() -> BTreeMap<String, Value> {
+    let mut values = values();
+    let entry = |n: i64| Value::record([("dice", Value::int(n % 5)), ("rank", Value::int(n % 3))]);
+
+    values.insert(
+        "catalog".to_owned(),
+        Value::map((0..CATALOG).map(|n| (Value::int(n), entry(n)))),
+    );
+    values
+}
+
+/// Many small formulas, each reading a few of the sheet's values, a
+/// quarter of them one entry of the catalog.
+fn characterize_formulas() -> Vec<String> {
+    (0..FORMULAS)
+        .map(|n| {
+            let attribute = ATTRIBUTES[n % ATTRIBUTES.len()];
+            let skill = SKILLS[n % SKILLS.len()];
+
+            match n % 4 {
+                0 => format!("{attribute} + {skill}"),
+                1 => format!("{attribute} + {skill} + specialties.{skill}.unwrap_or(0)"),
+                2 => format!("catalog[{}].dice + {attribute}", (n as i64 * 37) % CATALOG),
+                _ => format!("bonus_{}.unwrap_or(0) + {skill} * 2", n % BONUSES),
+            }
+        })
+        .collect()
+}
+
+/// A sheet as characterize computes one: one store, set once, and many
+/// small formulas over it, each loaded and run.
+fn characterize(c: &mut Criterion) {
+    let env = characterize_env();
+    let values = characterize_values();
+    let globals = store(&env, &values);
+    let prepared = characterize_formulas()
+        .iter()
+        .map(|s| prepare(s, &env, &globals))
+        .collect::<Vec<_>>();
+
+    let mut group = c.benchmark_group("characterize");
+    group.throughput(Throughput::Elements(prepared.len() as u64));
+    let mut machine = Machine::new(Limits::new());
+
+    group.bench_function("evaluate", |b| {
         b.iter(|| {
             for p in &prepared {
-                let mut run = machine.load(&p.program).unwrap();
-
-                for (name, _) in p.program.globals() {
-                    run.bind(name, &values[name]).unwrap();
-                }
-
-                black_box(run.run_with(&mut host).unwrap());
+                black_box(evaluate(&mut machine, &globals, black_box(p)));
             }
         })
     });
@@ -538,5 +588,5 @@ fn editing(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, stages, read, whole_sheet, editing);
+criterion_group!(benches, stages, read, whole_sheet, characterize, editing);
 criterion_main!(benches);

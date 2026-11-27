@@ -328,7 +328,8 @@ impl Environment {
     /// [`fingerprint`](Self::fingerprint)), or else each value it reads is
     /// declared here with the same type, in the same slot. Slots never
     /// move, so a program stays accepted as values are declared after the
-    /// ones it reads.
+    /// ones it reads. A program read with [`Program::from_bytes`] is always
+    /// checked value by value, as stored bytes may claim any fingerprint.
     ///
     /// ```
     /// use evalite::{Environment, Type};
@@ -347,18 +348,15 @@ impl Environment {
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn accepts(&self, program: &Program) -> bool {
-        if program.layout == self.fingerprint() {
-            return true;
-        }
+        refused(self.fingerprint(), program, |name| {
+            self.slot(name).map(|slot| (slot.at, &slot.ty))
+        })
+        .is_none()
+    }
 
-        program
-            .globals
-            .iter()
-            .zip(program.globals())
-            .all(|(global, (name, ty))| {
-                self.slot(name)
-                    .is_some_and(|slot| slot.at == global.slot && slot.ty == *ty)
-            })
+    /// The words every slot takes together.
+    pub(crate) fn slot_words(&self) -> u32 {
+        self.words
     }
 
     /// The value `name`'s slot.
@@ -370,6 +368,32 @@ impl Environment {
     pub(crate) fn named(&self) -> impl Iterator<Item = &Slot> {
         self.names.values().filter_map(|n| self.slots.get(*n))
     }
+}
+
+/// The first of the values `program` reads that a layout of fingerprint
+/// `fingerprint`, whose slot (word and type) of a name `slot` gives, does
+/// not hold where and as the program reads it, by its index among the
+/// program's globals; `None` when it holds them all.
+///
+/// A program compiled against the same layout is taken on its
+/// fingerprint. One read from bytes is checked value by value however its
+/// fingerprint reads, as the bytes may claim any.
+pub(crate) fn refused<'a>(
+    fingerprint: u64,
+    program: &Program,
+    slot: impl Fn(&str) -> Option<(u32, &'a Type)>,
+) -> Option<usize> {
+    if program.compiled && program.layout == fingerprint {
+        return None;
+    }
+
+    program
+        .globals
+        .iter()
+        .zip(program.globals())
+        .position(|(global, (name, ty))| {
+            !slot(name).is_some_and(|(at, held)| at == global.slot && held == ty)
+        })
 }
 
 /// The words a value of type `ty` is held in, as

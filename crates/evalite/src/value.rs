@@ -1,4 +1,4 @@
-//! Values bound to a program and given back by one.
+//! Values set in a store for programs to read, and given back by them.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -9,8 +9,8 @@ use std::iter::FusedIterator;
 use crate::message::Found;
 use crate::types::is_field_name;
 
-/// A value bound to a program or given back by one: an `Int`, a `Bool`, a
-/// `String`, a list, a record, a map, or an option.
+/// A value set in a store for programs to read, or given back by one: an
+/// `Int`, a `Bool`, a `String`, a list, a record, a map, or an option.
 ///
 /// It is opaque. Build one with [`Value::int`], [`Value::bool`],
 /// [`Value::string`], [`Value::list`], [`Value::record`], [`Value::map`],
@@ -56,7 +56,7 @@ pub(crate) enum Repr {
     /// A present `Option<T>`.
     Some(Box<Value>),
     /// A map's entries, sorted by key with each key once: `Int`s, then
-    /// `String`s, then any other keys, which bind to no map, as given.
+    /// `String`s, then any other keys, which fit no map, as given.
     Map(Vec<(Value, Value)>),
 }
 
@@ -121,7 +121,7 @@ impl Value {
     }
 
     /// A list of these entries, which should all be of one type for it to
-    /// bind; binding checks that.
+    /// be set; setting checks that.
     ///
     /// ```
     /// use evalite::Value;
@@ -153,8 +153,8 @@ impl Value {
     }
 
     /// A map of these entries, each a key and its value, which should be
-    /// of the map type's key and value types for it to bind; binding checks
-    /// that. A key given twice keeps its last value, and the entries are
+    /// of the map type's key and value types for it to be set; setting
+    /// checks that. A key given twice keeps its last value, and the entries are
     /// kept in key order, so two maps of the same entries are equal however
     /// they were given.
     ///

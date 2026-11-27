@@ -117,7 +117,8 @@ fn host(name: &str, args: Vec<Value>) -> Result<Value, String> {
     })
 }
 
-fn compile_in(source: &str, extra: &[(&str, Type, Value)]) -> Program {
+/// [`env`] with `extra` and the test functions and maps declared.
+fn env_in(extra: &[(&str, Type, Value)]) -> Environment {
     let mut env = env();
 
     for (name, ty, _) in extra {
@@ -135,8 +136,11 @@ fn compile_in(source: &str, extra: &[(&str, Type, Value)]) -> Program {
     env.value("empty", Type::map(Type::string(), Type::bool()))
         .unwrap();
     env.function("lookup", [], ids_type()).unwrap();
+    env
+}
 
-    compile(source, &env).unwrap_or_else(|e| panic!("{source:?}: {e}"))
+fn compile_in(source: &str, extra: &[(&str, Type, Value)]) -> Program {
+    compile(source, &env_in(extra)).unwrap_or_else(|e| panic!("{source:?}: {e}"))
 }
 
 /// `ids`: records by `Int` key.
@@ -167,18 +171,56 @@ fn test_host(name: &str, args: Vec<Value>) -> Result<Value, String> {
     }
 }
 
-/// Bind every value `program` reads, from `extra` first, then [`binding`].
-fn bind_all(run: &mut Run<'_>, extra: &[(&str, Type, Value)]) -> Result<(), RunError> {
-    for (name, _) in run.globals() {
+/// Set every value `program` reads in `globals`, from `extra` first,
+/// then [`binding`].
+fn set_all(
+    globals: &mut Globals,
+    program: &Program,
+    extra: &[(&str, Type, Value)],
+) -> Result<(), GlobalsError> {
+    for (name, _) in program.globals() {
         let value = match extra.iter().find(|(n, ..)| *n == name) {
             Some((.., value)) => value.clone(),
             None => binding(name).0,
         };
 
-        run.bind(name, &value)?;
+        globals.set(name, &value)?;
     }
 
     Ok(())
+}
+
+/// A store of `env` with every value `program` reads set, from `extra`
+/// first, then [`binding`].
+fn store(env: &Environment, program: &Program, extra: &[(&str, Type, Value)]) -> Globals {
+    let mut globals = Globals::new(env);
+    set_all(&mut globals, program, extra).unwrap();
+    globals
+}
+
+/// A store of [`env_in`] with every value `program` reads set.
+fn store_in(program: &Program, extra: &[(&str, Type, Value)]) -> Globals {
+    store(&env_in(extra), program, extra)
+}
+
+/// A store of `env` with each of `values` set.
+fn store_of(env: &Environment, values: &[(&str, Value)]) -> Globals {
+    let mut globals = Globals::new(env);
+
+    for (name, value) in values {
+        globals.set(name, value).unwrap();
+    }
+
+    globals
+}
+
+/// Every label of a store's `error`, joined by `: `.
+fn set_chain(error: &GlobalsError) -> String {
+    error
+        .labels()
+        .map(|l| l.message().to_string())
+        .collect::<Vec<_>>()
+        .join(": ")
 }
 
 fn eval_in(
@@ -187,10 +229,9 @@ fn eval_in(
     limits: Limits,
 ) -> Result<Outcome, RunError> {
     let program = compile_in(source, extra);
+    let globals = store_in(&program, extra);
     let mut machine = Machine::new(limits);
-    let mut run = machine.load(&program)?;
-    bind_all(&mut run, extra)?;
-    run.run_with(&mut test_host)
+    machine.load(&program, &globals)?.run_with(&mut test_host)
 }
 
 fn eval(source: &str) -> Value {
@@ -221,19 +262,19 @@ pub(crate) fn primary(error: &RunError, program: &Program) -> String {
 /// The whole chain of how `source` fails.
 fn fails_chain(source: &str) -> String {
     let program = compile_in(source, &[]);
+    let globals = store_in(&program, &[]);
     let mut machine = Machine::new(Limits::new());
-    let mut run = machine.load(&program).unwrap();
-    bind_all(&mut run, &[]).unwrap();
+    let run = machine.load(&program, &globals).unwrap();
     chain(&run.run_with(&mut test_host).unwrap_err(), &program)
 }
 
 fn fails_in(source: &str, extra: &[(&str, Type, Value)]) -> String {
     let program = compile_in(source, extra);
+    let globals = store_in(&program, extra);
     let mut machine = Machine::new(Limits::new());
-    let result = machine.load(&program).and_then(|mut run| {
-        bind_all(&mut run, extra)?;
-        run.run_with(&mut test_host)
-    });
+    let result = machine
+        .load(&program, &globals)
+        .and_then(|run| run.run_with(&mut test_host));
 
     match result {
         Ok(outcome) => panic!("{source:?} gave {}", outcome.value),
@@ -742,10 +783,9 @@ fn host_errors() {
 
     // Without a host, any call fails.
     let program = compile_in("count(health)", &[]);
+    let globals = store_in(&program, &[]);
     let mut machine = Machine::default();
-    let mut run = machine.load(&program).unwrap();
-    bind_all(&mut run, &[]).unwrap();
-    let error = run.run().unwrap_err();
+    let error = machine.load(&program, &globals).unwrap().run().unwrap_err();
     assert_eq!(primary(&error, &program), "the function failed");
     assert_eq!(
         std::error::Error::source(&error).unwrap().to_string(),
@@ -759,10 +799,14 @@ fn host_result_memory() {
     // and nothing else, so a machine of 1 + k words takes a list of k.
     let program = compile_in("many(3).len()", &[]);
     assert_eq!(program.memory().total(), 1);
+    let globals = store_in(&program, &[]);
 
     let run = |memory: u32| {
         let mut machine = Machine::new(Limits::new().memory(memory));
-        machine.load(&program).unwrap().run_with(&mut test_host)
+        machine
+            .load(&program, &globals)
+            .unwrap()
+            .run_with(&mut test_host)
     };
 
     assert_eq!(run(4).unwrap().value, int(3));
@@ -774,7 +818,8 @@ fn host_result_memory() {
 }
 
 #[test]
-fn binding_errors() {
+fn setting_errors() {
+    let env = env_in(&[]);
     let program = compile_in(
         r#"wits + bonus.unwrap_or(0) + levels[0] + grid[0][0] + m["Brawl (bar)"] + count(health) + count(maybe_track.unwrap_or(health))"#,
         &[],
@@ -785,47 +830,47 @@ fn binding_errors() {
         (
             "wits",
             Value::bool(true),
-            "expected Int, found Bool: while binding `wits`",
+            "expected Int, found Bool: while setting `wits`",
         ),
         (
             "wits",
             Value::some(int(1)),
-            "expected Int, found some(..): while binding `wits`",
+            "expected Int, found some(..): while setting `wits`",
         ),
         (
             "wits",
             Value::none(),
-            "expected Int, found none: while binding `wits`",
+            "expected Int, found none: while setting `wits`",
         ),
         (
             "bonus",
             int(1),
-            "expected Option<Int>, found Int: while binding `bonus`",
+            "expected Option<Int>, found Int: while setting `bonus`",
         ),
         (
             "bonus",
             Value::some(Value::bool(true)),
-            "expected Option<Int>, found some(Bool): while binding `bonus`",
+            "expected Option<Int>, found some(Bool): while setting `bonus`",
         ),
         (
             "levels",
             Value::list(vec![int(1), Value::bool(false)]),
-            "expected Int, found Bool: at `levels[1]`: while binding `levels`",
+            "expected Int, found Bool: at `levels[1]`: while setting `levels`",
         ),
         (
             "levels",
             int(1),
-            "expected List<Int>, found Int: while binding `levels`",
+            "expected List<Int>, found Int: while setting `levels`",
         ),
         (
             "grid",
             Value::list(vec![ints(&[1]), int(2)]),
-            "expected List<Int>, found Int: at `grid[1]`: while binding `grid`",
+            "expected List<Int>, found Int: at `grid[1]`: while setting `grid`",
         ),
         (
             "m",
             Value::record([("Brawl (bar)", int(1)), ("a b", track(1))]),
-            r#"expected {"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}, found a record without `inner`: while binding `m`"#,
+            r#"expected {"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}, found a record without `inner`: while setting `m`"#,
         ),
         (
             "m",
@@ -835,7 +880,7 @@ fn binding_errors() {
                 ("inner", Value::record([("deep", Value::bool(true))])),
                 ("zzz", int(0)),
             ]),
-            r#"expected {"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}, found a record with an extra field: while binding `m`"#,
+            r#"expected {"Brawl (bar)": Int, "a b": {boxes: Int, count: List<Int>}, inner: {deep: Bool}}, found a record with an extra field: while setting `m`"#,
         ),
         (
             "m",
@@ -844,7 +889,7 @@ fn binding_errors() {
                 ("a b", track(1)),
                 ("inner", Value::record([("deep", Value::bool(true))])),
             ]),
-            r#"expected Int, found Bool: at `m["Brawl (bar)"]`: while binding `m`"#,
+            r#"expected Int, found Bool: at `m["Brawl (bar)"]`: while setting `m`"#,
         ),
         (
             "m",
@@ -853,12 +898,12 @@ fn binding_errors() {
                 ("a b", track(1)),
                 ("inner", Value::record([("deep", int(0))])),
             ]),
-            "expected Bool, found Int: at `m.inner.deep`: while binding `m`",
+            "expected Bool, found Int: at `m.inner.deep`: while setting `m`",
         ),
         (
             "health",
             Value::record([("boxes", int(1))]),
-            "expected {boxes: Int, count: List<Int>}, found a record without `count`: while binding `health`",
+            "expected {boxes: Int, count: List<Int>}, found a record without `count`: while setting `health`",
         ),
         (
             "health",
@@ -866,46 +911,69 @@ fn binding_errors() {
                 ("boxes", int(1)),
                 ("count", Value::list(vec![Value::none()])),
             ]),
-            "expected Int, found none: at `health.count[0]`: while binding `health`",
+            "expected Int, found none: at `health.count[0]`: while setting `health`",
         ),
         (
             "maybe_track",
             track(1),
-            "expected Option<{boxes: Int, count: List<Int>}>, found a record: while binding `maybe_track`",
+            "expected Option<{boxes: Int, count: List<Int>}>, found a record: while setting `maybe_track`",
         ),
-        (
-            "strength",
-            int(1),
-            "the program reads no value of that name",
-        ),
-        ("nothing", int(1), "the program reads no value of that name"),
+        ("nothing", int(1), "no value `nothing` is declared"),
     ];
 
     for (name, value, message) in cases {
-        let mut run = machine.load(&program).unwrap();
-        let error = run.bind(name, value).unwrap_err();
-        assert_eq!(chain(&error, &program), *message, "{name} = {value}");
+        let mut globals = Globals::new(&env);
+        let error = globals.set(name, value).unwrap_err();
+        assert_eq!(set_chain(&error), *message, "{name} = {value}");
+        assert_eq!(format!("{error:#}"), *message, "{name} = {value}");
+        assert_eq!(globals.get(name), None, "{name} = {value}");
     }
 
-    // Binding twice is an error, and so is not binding at all.
-    let mut run = machine.load(&program).unwrap();
-    run.bind("wits", &int(1)).unwrap();
+    // Setting again replaces, and reading an unset value is an error of
+    // the instruction that reads it.
+    let mut globals = Globals::new(&env);
+    globals.set("wits", &int(1)).unwrap();
+    globals.set("wits", &int(2)).unwrap();
+    assert_eq!(globals.get("wits"), Some(int(2)));
+
+    let error = machine
+        .load(&program, &globals)
+        .unwrap()
+        .run_with(&mut test_host)
+        .unwrap_err();
     assert_eq!(
-        chain(&run.bind("wits", &int(1)).unwrap_err(), &program),
-        "`wits` is already bound: while binding `wits`"
+        chain(&error, &program),
+        "`bonus` is not set, set it to an Option<Int> before running: while running instruction 1: while running the program"
     );
 
-    let mut run = machine.load(&program).unwrap();
-    run.bind("wits", &int(1)).unwrap();
-    assert_eq!(
-        chain(&run.run_with(&mut test_host).unwrap_err(), &program),
-        "`bonus` is not bound, bind an Option<Int> before running: while running the program"
-    );
+    // A failed set leaves the value as it was.
+    globals.set("wits", &Value::bool(true)).unwrap_err();
+    assert_eq!(globals.get("wits"), Some(int(2)));
+    globals
+        .set("levels", &Value::list(vec![int(1), Value::bool(false)]))
+        .unwrap_err();
+    assert_eq!(globals.get("levels"), None);
+}
 
-    // A failed binding leaves the value unbound, and a good one binds.
-    let mut run = machine.load(&program).unwrap();
-    run.bind("wits", &Value::bool(true)).unwrap_err();
-    run.bind("wits", &int(1)).unwrap();
+/// A value read only on a branch not taken need not be set.
+#[test]
+fn unset_values_not_read() {
+    let mut env = Environment::new();
+    env.value("ready", Type::bool()).unwrap();
+    env.value("rank", Type::int()).unwrap();
+    let program = compile("ready && rank > 2", &env).unwrap();
+
+    let mut machine = Machine::default();
+    let globals = store_of(&env, &[("ready", Value::bool(false))]);
+    let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
+    assert_eq!(outcome.value, Value::bool(false));
+
+    let globals = store_of(&env, &[("ready", Value::bool(true))]);
+    let error = machine.load(&program, &globals).unwrap().run().unwrap_err();
+    assert_eq!(
+        primary(&error, &program),
+        "`rank` is not set, set it to an Int before running"
+    );
 }
 
 #[test]
@@ -921,92 +989,220 @@ fn memory_budget() {
             stack: 2,
             heap: 0,
             constants: 4,
-            globals: 1,
         }
     );
 
-    let mut machine = Machine::new(Limits::new().memory(7));
-    let mut run = machine.load(&program).unwrap();
-    run.bind("i", &int(2)).unwrap();
-    let outcome = run.run().unwrap();
-    assert_eq!(outcome.value, Value::some(int(12)));
-    assert_eq!(outcome.memory, 7);
-
+    let globals = store_of(&env, &[("i", int(2))]);
     let mut machine = Machine::new(Limits::new().memory(6));
+    let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
+    assert_eq!(outcome.value, Value::some(int(12)));
+    assert_eq!(outcome.memory, 6);
+
+    let mut machine = Machine::new(Limits::new().memory(5));
     assert_eq!(
-        machine.load(&program).unwrap_err().to_string(),
-        "the program needs 7 words of memory, more than the 6 the machine allows"
+        machine.load(&program, &globals).unwrap_err().to_string(),
+        "the program needs 6 words of memory, more than the 5 the machine allows"
     );
 
-    // Lists built as the program runs take heap: `[i, i, i]` is 3 stack, 3
-    // heap and 1 for `i`.
+    // Lists built as the program runs take heap: `[i, i, i]` is 3 stack
+    // and 3 heap.
     let program = compile("[i, i, i]", &env).unwrap();
-    assert_eq!(program.memory().total(), 7);
-    assert!(Machine::new(Limits::new().memory(7)).load(&program).is_ok());
-    assert!(
-        Machine::new(Limits::new().memory(6))
-            .load(&program)
-            .is_err()
-    );
+    assert_eq!(program.memory().total(), 6);
+    let mut machine = Machine::new(Limits::new().memory(6));
+    assert!(machine.load(&program, &globals).is_ok());
+    let mut small = Machine::new(Limits::new().memory(5));
+    assert!(small.load(&program, &globals).is_err());
 
-    let mut machine = Machine::new(Limits::new().memory(7));
-    let mut run = machine.load(&program).unwrap();
-    run.bind("i", &int(1)).unwrap();
-    let outcome = run.run().unwrap();
+    let globals = store_of(&env, &[("i", int(1))]);
+    let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
     assert_eq!(outcome.value, ints(&[1, 1, 1]));
-    assert!(outcome.memory <= 7, "{outcome:?}");
+    assert!(outcome.memory <= 6, "{outcome:?}");
 
     // The default machine refuses a program past its memory.
     let source = format!("[{}]", vec!["i"; 600].join(", "));
     let program = compile_with(&source, &env, &Options::new()).unwrap();
     assert_eq!(
-        Machine::default().load(&program).unwrap_err().message(),
+        Machine::default()
+            .load(&program, &globals)
+            .unwrap_err()
+            .message(),
         &Message::TooMuchMemory {
-            needed: 1201,
+            needed: 1200,
             allowed: DEFAULT_MEMORY
         }
     );
 }
 
 #[test]
-fn binding_memory() {
-    // `l.len()` takes 1 stack word and 1 for `l`, so a machine of 2 + k
-    // words takes a bound list of k entries, and no more.
+fn store_memory() {
+    // `l.len()` takes 1 stack word; `l`'s entries are in the store, which
+    // a store of 3 words takes 3 of, and no more.
     let mut env = Environment::new();
     env.value("l", Type::list(Type::int())).unwrap();
     env.value("s", Type::string()).unwrap();
     let program = compile("l.len()", &env).unwrap();
-    assert_eq!(program.memory().total(), 2);
+    assert_eq!(program.memory().total(), 1);
 
-    let mut machine = Machine::new(Limits::new().memory(5));
-    let mut run = machine.load(&program).unwrap();
-    run.bind("l", &ints(&[1, 2, 3])).unwrap();
-    let outcome = run.run().unwrap();
+    let mut globals = Globals::with_limit(&env, 3);
+    assert_eq!(globals.limit(), 3);
+    globals.set("l", &ints(&[1, 2, 3])).unwrap();
+    let mut machine = Machine::new(Limits::new().memory(1));
+    let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
     assert_eq!(outcome.value, int(3));
-    assert_eq!(outcome.memory, 5);
+    assert_eq!(outcome.memory, 1);
 
-    let mut run = machine.load(&program).unwrap();
+    let mut globals = Globals::with_limit(&env, 3);
     assert_eq!(
-        chain(&run.bind("l", &ints(&[1, 2, 3, 4])).unwrap_err(), &program),
-        "the value needs 4 words of memory, 3 are left: while binding `l`"
+        set_chain(&globals.set("l", &ints(&[1, 2, 3, 4])).unwrap_err()),
+        "the value needs 4 words of memory, 3 are left: while setting `l`"
     );
 
     // A string takes a word per 8 bytes.
+    let mut globals = Globals::with_limit(&env, 2);
+    globals.set("s", &Value::from("0123456789abcdef")).unwrap();
     let program = compile(r#"[s, s].len()"#, &env).unwrap();
-    let needed = program.memory().total();
-    let mut machine = Machine::new(Limits::new().memory(needed as u32 + 2));
-    let mut run = machine.load(&program).unwrap();
-    run.bind("s", &Value::from("0123456789abcdef")).unwrap();
-    assert_eq!(run.run().unwrap().value, int(2));
+    let mut machine = Machine::new(Limits::new().memory(program.memory().total() as u32));
+    let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
+    assert_eq!(outcome.value, int(2));
 
-    let mut run = machine.load(&program).unwrap();
+    // Replacing it with a longer one would take 3 words beside the 2
+    // freed, which do not fit a block of 3.
     assert_eq!(
-        chain(
-            &run.bind("s", &Value::from("0123456789abcdef!"))
-                .unwrap_err(),
-            &program
+        set_chain(
+            &globals
+                .set("s", &Value::from("0123456789abcdef!"))
+                .unwrap_err()
         ),
-        "the value needs 3 words of memory, 2 are left: while binding `s`"
+        "the value needs 3 words of memory, 0 are left: while setting `s`"
+    );
+    assert_eq!(globals.get("s"), Some(Value::from("0123456789abcdef")));
+}
+
+/// Replacing a value frees its parts, and a part of the same size takes
+/// the words freed, so a store replacing values of the same sizes does
+/// not grow.
+#[test]
+fn replacing_frees() {
+    let mut env = Environment::new();
+    env.value(
+        "tracks",
+        Type::list(Type::record([
+            ("boxes", Type::int()),
+            ("name", Type::string()),
+        ])),
+    )
+    .unwrap();
+    env.value("n", Type::int()).unwrap();
+
+    let tracks = |n: i64| {
+        Value::list((0..3).map(|i| {
+            Value::record([
+                ("boxes", int(n + i)),
+                ("name", Value::from(format!("track {n:04} #{i}"))),
+            ])
+        }))
+    };
+
+    // Three entries of a word, three records of two words, three strings
+    // of two words.
+    let mut globals = Globals::with_limit(&env, 15);
+    globals.set("tracks", &tracks(0)).unwrap();
+    assert_eq!(globals.heap_words(), 15);
+
+    for n in 1..20 {
+        globals.set("tracks", &tracks(n)).unwrap();
+        globals.set("n", &int(n)).unwrap();
+        assert_eq!(globals.heap_words(), 15);
+        assert_eq!(globals.get("tracks"), Some(tracks(n)));
+    }
+
+    let program = compile("tracks[2].boxes + n", &env).unwrap();
+    let outcome = Machine::default()
+        .load(&program, &globals)
+        .unwrap()
+        .run()
+        .unwrap();
+    assert_eq!(outcome.value, int(19 + 2 + 19));
+
+    // A smaller value leaves blocks free, which a larger one takes back.
+    globals.set("tracks", &Value::list([])).unwrap();
+    assert_eq!(globals.heap_words(), 15);
+    globals.set("tracks", &tracks(7)).unwrap();
+    assert_eq!(globals.heap_words(), 15);
+    assert_eq!(globals.get("tracks"), Some(tracks(7)));
+
+    // A value takes the blocks of the one it replaces and those freed
+    // before together: three strings of a word, from two of the old
+    // list's and one of `b`'s, beside a new block of three entries.
+    let mut env = Environment::new();
+    env.value("a", Type::list(Type::string())).unwrap();
+    env.value("b", Type::string()).unwrap();
+    let word = || Value::from("12345678");
+
+    let mut globals = Globals::with_limit(&env, 6);
+    globals.set("b", &word()).unwrap();
+    globals.set("a", &Value::list([word()])).unwrap();
+    globals.set("b", &Value::from("")).unwrap();
+    assert_eq!(globals.heap_words(), 3);
+
+    let three = Value::list([word(), word(), word()]);
+    globals.set("a", &three).unwrap();
+    assert_eq!(globals.heap_words(), 6);
+    assert_eq!(globals.get("a"), Some(three));
+    assert_eq!(globals.get("b"), Some(Value::from("")));
+}
+
+/// A store refuses programs that read its values elsewhere or as other
+/// types, and takes ones compiled before values were added.
+#[test]
+fn stores_check_layouts() {
+    let mut env = Environment::new();
+    env.value("wits", Type::int()).unwrap();
+    let program = compile("wits + 1", &env).unwrap();
+
+    env.value("name", Type::string()).unwrap();
+    let globals = store_of(&env, &[("wits", int(2)), ("name", Value::from("Ada"))]);
+    assert!(globals.accepts(&program));
+    assert_eq!(globals.fingerprint(), env.fingerprint());
+
+    let mut machine = Machine::default();
+    let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
+    assert_eq!(outcome.value, int(3));
+
+    // A value declared after the store was made is not in it.
+    let later = compile("name", &env).unwrap();
+    env.value("rank", Type::int()).unwrap();
+    let rank = compile("rank", &env).unwrap();
+    assert!(globals.accepts(&later));
+    assert!(!globals.accepts(&rank));
+    assert_eq!(
+        chain(&machine.load(&rank, &globals).unwrap_err(), &rank),
+        "the store does not hold `rank` where the program reads it, of its type: while loading the program"
+    );
+
+    let mut other = Environment::new();
+    other.value("name", Type::string()).unwrap();
+    other.value("wits", Type::int()).unwrap();
+    let globals = Globals::new(&other);
+    assert!(!globals.accepts(&program));
+    assert!(machine.load(&program, &globals).is_err());
+}
+
+/// A store and a machine together are at most what a reference can
+/// address.
+#[test]
+fn address_space() {
+    let mut env = Environment::new();
+    env.value("l", Type::list(Type::int())).unwrap();
+    let mut globals = Globals::new(&env);
+    globals.set("l", &ints(&[1, 2, 3])).unwrap();
+
+    let program = compile("l[1]", &env).unwrap();
+    let mut machine = Machine::new(Limits::new().memory(u32::MAX));
+    let error = machine.load(&program, &globals).unwrap_err();
+    assert_eq!(
+        chain(&error, &program),
+        "the store's 4 words and the machine's 4294967295 words are more than a run can address: while loading the program"
     );
 }
 
@@ -1107,9 +1303,9 @@ fn stored_programs_run() {
     for (source, expected) in CASES {
         let program = compile_in(source, &[]);
         let loaded = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+        let globals = store_in(&loaded, &[]);
         let mut machine = Machine::default();
-        let mut run = machine.load(&loaded).unwrap();
-        bind_all(&mut run, &[]).unwrap();
+        let run = machine.load(&loaded, &globals).unwrap();
         let outcome = run.run_with(&mut test_host).unwrap();
 
         if !expected.is_empty() {
@@ -1121,12 +1317,13 @@ fn stored_programs_run() {
 #[test]
 fn machines_are_reused() {
     let program = compile_in("[wits, dexterity]", &[]);
-    let mut machine = Machine::new(Limits::new().memory(6));
+    let mut globals = Globals::new(&env_in(&[]));
+    let mut machine = Machine::new(Limits::new().memory(4));
 
     for n in 0..10 {
-        let mut run = machine.load(&program).unwrap();
-        run.bind("wits", &int(n)).unwrap();
-        run.bind("dexterity", &int(-n)).unwrap();
+        globals.set("wits", &int(n)).unwrap();
+        globals.set("dexterity", &int(-n)).unwrap();
+        let run = machine.load(&program, &globals).unwrap();
         assert_eq!(run.run().unwrap().value, ints(&[n, -n]));
     }
 }
@@ -1141,6 +1338,7 @@ fn faulty_programs() {
 
     let faulty = |code: Vec<Instr>, stack: u32| Program {
         layout: 0,
+        compiled: false,
         types: types.clone(),
         constants: Vec::new(),
         globals: Vec::new(),
@@ -1151,7 +1349,6 @@ fn faulty_programs() {
             stack,
             heap: 0,
             constants: 0,
-            globals: 0,
         },
         global_types: Vec::new(),
         constant_at: Vec::new(),
@@ -1178,12 +1375,28 @@ fn faulty_programs() {
         ),
     ];
 
+    // A store with an `Int` set at word 0, which the faulty programs
+    // read without saying so.
+    let mut env = Environment::new();
+    env.value("x", Type::int()).unwrap();
+    let globals = store_of(&env, &[("x", Value::int(0))]);
+    let empty = Globals::new(&Environment::new());
+
     for (code, stack) in faults {
         let program = faulty(code.clone(), stack);
         let mut machine = Machine::default();
-        let error = machine.load(&program).unwrap().run().unwrap_err();
+        let error = machine.load(&program, &globals).unwrap().run().unwrap_err();
         assert!(error.is_fault(), "{code:?}: {error}");
     }
+
+    // Reading a slot the store does not have.
+    let program = faulty(vec![global], 1);
+    let error = Machine::default()
+        .load(&program, &empty)
+        .unwrap()
+        .run()
+        .unwrap_err();
+    assert!(error.is_fault(), "{error}");
 
     let wrong = [
         (vec![Instr::Bool(true), Instr::Neg], 1, Value::int(-1)),
@@ -1199,14 +1412,13 @@ fn faulty_programs() {
     for (code, stack, value) in wrong {
         let program = faulty(code.clone(), stack);
         let mut machine = Machine::default();
-        let outcome = machine.load(&program).unwrap().run().unwrap();
+        let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
         assert_eq!(outcome.value, value, "{code:?}");
     }
 }
 
 /// Random well-typed programs run without panicking, use no more memory
-/// than they declare plus their bindings, and fail only for the reasons a
-/// program may.
+/// than they declare, and fail only for the reasons a program may.
 #[test]
 fn random_programs() {
     let mut rng = Rng(0x5eed_f00d);
@@ -1220,17 +1432,18 @@ fn random_programs() {
         let source = generate(&mut rng, ty, budget);
         let program = compile_with(&source, &env, &options).unwrap();
 
-        // Exactly the memory it needs: its own, the values it reads and
-        // the parts of those values.
+        // Exactly the memory it needs, its own: the values it reads are
+        // in the store, which takes the words of their parts.
         let parts = program
             .globals()
-            .map(|(name, _)| binding(name).1 as u64)
-            .sum::<u64>();
-        let needed = program.memory().total() + parts;
+            .map(|(name, _)| binding(name).1)
+            .sum::<usize>();
+        let globals = store(&env, &program, &[]);
+        assert_eq!(globals.heap_words(), parts, "{source:?}");
+        let needed = program.memory().total();
 
         let mut machine = Machine::new(Limits::new().memory(needed as u32).fuel(u64::MAX));
-        let mut run = machine.load(&program).unwrap();
-        bind_all(&mut run, &[]).unwrap();
+        let run = machine.load(&program, &globals).unwrap();
 
         match run.run_with(&mut host) {
             Ok(outcome) => {
@@ -1262,8 +1475,7 @@ fn random_programs() {
                 .memory(needed as u32)
                 .fuel(rng.below(20) as u64),
         );
-        let mut run = machine.load(&program).unwrap();
-        bind_all(&mut run, &[]).unwrap();
+        let run = machine.load(&program, &globals).unwrap();
 
         if let Err(error) = run.run_with(&mut host)
             && error.is_fault()
@@ -1271,13 +1483,10 @@ fn random_programs() {
             panic!("{round}: {source:?}: {error:#}");
         }
 
-        // A word less is refused before it runs, or a binding is.
-        {
+        // A word less is refused before it runs.
+        if needed > 0 {
             let mut machine = Machine::new(Limits::new().memory(needed as u32 - 1));
-
-            if let Ok(mut run) = machine.load(&program) {
-                assert!(bind_all(&mut run, &[]).is_err(), "{source:?}");
-            }
+            assert!(machine.load(&program, &globals).is_err(), "{source:?}");
         }
     }
 
@@ -1421,9 +1630,9 @@ fn option_layouts() {
                 for (source, want) in expected {
                     let program = compile(source, &env).unwrap();
                     let mut machine = Machine::default();
-                    let mut run = machine.load(&program).unwrap();
+                    let mut globals = Globals::new(&env);
 
-                    for (name, _) in run.globals() {
+                    for (name, _) in program.globals() {
                         let bound = match name {
                             "o" => o.clone(),
                             "d" => default.clone(),
@@ -1436,8 +1645,10 @@ fn option_layouts() {
                             _ => unreachable!(),
                         };
 
-                        run.bind(name, &bound).unwrap();
+                        globals.set(name, &bound).unwrap();
                     }
+
+                    let run = machine.load(&program, &globals).unwrap();
 
                     let given = o.clone();
                     let mut host = |name: &str, args: Vec<Value>| match (name, args.as_slice()) {
@@ -1517,14 +1728,8 @@ fn list_of_optional_ints() {
     for (source, expected) in cases {
         let program = compile(source, &env).unwrap();
         let mut machine = Machine::default();
-        let mut run = machine.load(&program).unwrap();
-
-        for (name, _) in run.globals() {
-            match name {
-                "l" => run.bind("l", &l).unwrap(),
-                _ => run.bind("o", &Value::some(int(-1))).unwrap(),
-            }
-        }
+        let globals = store_of(&env, &[("l", l.clone()), ("o", Value::some(int(-1)))]);
+        let run = machine.load(&program, &globals).unwrap();
 
         let mut host = |_: &str, args: Vec<Value>| match args.as_slice() {
             [Value(Repr::Int(n))] => Ok(Value::list((0..*n).map(|i| Value::some(int(i))))),
@@ -1541,7 +1746,6 @@ fn list_of_optional_ints() {
             stack: 2,
             heap: 0,
             constants: 0,
-            globals: 1,
         }
     );
     assert_eq!(
@@ -1550,13 +1754,12 @@ fn list_of_optional_ints() {
             stack: 6,
             heap: 6,
             constants: 0,
-            globals: 3,
         }
     );
 }
 
 /// Memory is counted in words at the budget's boundary: a program's own,
-/// what it binds and what the caller's functions return.
+/// and what the caller's functions return; a store's parts at its limit.
 #[test]
 fn word_budget() {
     let mut env = Environment::new();
@@ -1567,50 +1770,48 @@ fn word_budget() {
     env.function("many", [Type::int()], Type::list(Type::option(Type::int())))
         .unwrap();
 
-    // A program's own memory: `[o, o, o]` is 6 stack, 6 heap and 3 for the
-    // slots up to the end of `o`'s, which is held after `l`'s.
+    // A program's own memory: `[o, o, o]` is 6 stack and 6 heap; `o` is
+    // in the store.
     let program = compile("[o, o, o]", &env).unwrap();
-    assert_eq!(program.memory().total(), 15);
+    assert_eq!(program.memory().total(), 12);
+    let globals = store_of(&env, &[("o", Value::some(int(i64::MIN)))]);
 
-    let mut machine = Machine::new(Limits::new().memory(15));
-    let mut run = machine.load(&program).unwrap();
-    run.bind("o", &Value::some(int(i64::MIN))).unwrap();
-    let outcome = run.run().unwrap();
+    let mut machine = Machine::new(Limits::new().memory(12));
+    let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
     assert_eq!(
         outcome.value.to_string(),
         "[some(-9223372036854775808), some(-9223372036854775808), some(-9223372036854775808)]"
     );
-    assert_eq!(outcome.memory, 15);
+    assert_eq!(outcome.memory, 12);
 
     assert_eq!(
-        Machine::new(Limits::new().memory(14))
-            .load(&program)
+        Machine::new(Limits::new().memory(11))
+            .load(&program, &globals)
             .unwrap_err()
             .to_string(),
-        "the program needs 15 words of memory, more than the 14 the machine allows"
+        "the program needs 12 words of memory, more than the 11 the machine allows"
     );
 
-    // A bound list of k `Option<Int>`s takes 2k words beside `l.len()`'s 2.
+    // A list of k `Option<Int>`s takes 2k words of the store.
     let program = compile("l.len()", &env).unwrap();
-    assert_eq!(program.memory().total(), 2);
+    assert_eq!(program.memory().total(), 1);
 
     for k in [1usize, 2, 7] {
         let list = Value::list(vec![Value::some(int(-1)); k]);
-        let words = 2 + 2 * k as u32;
+        let words = 2 * k as u32;
 
-        let mut machine = Machine::new(Limits::new().memory(words));
-        let mut run = machine.load(&program).unwrap();
-        run.bind("l", &list).unwrap();
-        let outcome = run.run().unwrap();
+        let mut globals = Globals::with_limit(&env, words);
+        globals.set("l", &list).unwrap();
+        let mut machine = Machine::new(Limits::new().memory(1));
+        let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
         assert_eq!(outcome.value, int(k as i64));
-        assert_eq!(outcome.memory, u64::from(words));
+        assert_eq!(outcome.memory, 1);
 
-        let mut machine = Machine::new(Limits::new().memory(words - 1));
-        let mut run = machine.load(&program).unwrap();
+        let mut globals = Globals::with_limit(&env, words - 1);
         assert_eq!(
-            chain(&run.bind("l", &list).unwrap_err(), &program),
+            set_chain(&globals.set("l", &list).unwrap_err()),
             format!(
-                "the value needs {} words of memory, {} are left: while binding `l`",
+                "the value needs {} words of memory, {} are left: while setting `l`",
                 2 * k,
                 2 * k - 1
             )
@@ -1618,22 +1819,14 @@ fn word_budget() {
     }
 
     // A string takes a word per 8 bytes, the empty string none.
-    let program = compile("[s].get(0)", &env).unwrap();
-    let base = program.memory().total() as u32;
-
     for (s, words) in [("", 0), ("12345678", 1), ("123456789", 2)] {
-        let mut machine = Machine::new(Limits::new().memory(base + words));
-        let mut run = machine.load(&program).unwrap();
-        run.bind("s", &Value::from(s)).unwrap();
-        assert_eq!(run.run().unwrap().value, Value::some(Value::from(s)));
+        let mut globals = Globals::with_limit(&env, words);
+        globals.set("s", &Value::from(s)).unwrap();
+        assert_eq!(globals.get("s"), Some(Value::from(s)));
 
         if words > 0 {
-            let mut machine = Machine::new(Limits::new().memory(base + words - 1));
-            let mut run = machine.load(&program).unwrap();
-            assert!(matches!(
-                run.bind("s", &Value::from(s)).unwrap_err().message(),
-                Message::TooLarge { .. }
-            ));
+            let mut globals = Globals::with_limit(&env, words - 1);
+            assert!(globals.set("s", &Value::from(s)).is_err());
         }
     }
 
@@ -1648,7 +1841,11 @@ fn word_budget() {
             [Value(Repr::Int(n))] => Ok(Value::list(vec![Value::none(); *n as usize])),
             _ => Err("unexpected".to_owned()),
         };
-        machine.load(&program).unwrap().run_with(&mut host)
+        let globals = Globals::new(&env);
+        machine
+            .load(&program, &globals)
+            .unwrap()
+            .run_with(&mut host)
     };
 
     let outcome = run(7).unwrap();
@@ -1659,6 +1856,49 @@ fn word_budget() {
         run(6).unwrap_err().to_string(),
         "the value needs 6 words of memory, 5 are left"
     );
+}
+
+/// A store holding the values `program` reads where and as it reads
+/// them, each set to a random value of its type; `None` when no
+/// environment does, as its slots were tampered with.
+fn store_for(rng: &mut Rng, program: &Program) -> Option<Globals> {
+    let mut globals = program
+        .globals
+        .iter()
+        .zip(program.globals())
+        .map(|(g, (name, ty))| (g.slot, name, ty))
+        .collect::<Vec<_>>();
+    globals.sort_by_key(|(slot, ..)| *slot);
+
+    // Each value in its slot, with values the program does not read
+    // filling the words between.
+    let mut env = Environment::new();
+    let mut words = 0;
+
+    for (n, (slot, name, ty)) in globals.iter().enumerate() {
+        if slot.checked_sub(words)? > 4096 {
+            return None;
+        }
+
+        for fill in words..*slot {
+            env.value(&format!("fill_{n}_{fill}"), Type::int()).ok()?;
+        }
+
+        env.value(name, (*ty).clone()).ok()?;
+        words = slot + crate::env::width(ty) as u32;
+    }
+
+    if !env.accepts(program) {
+        return None;
+    }
+
+    let mut store = Globals::new(&env);
+
+    for (_, name, ty) in &globals {
+        store.set(name, &value_of(rng, ty)).unwrap();
+    }
+
+    Some(store)
 }
 
 /// An instruction of any kind, with operands near the ones programs use.
@@ -1886,12 +2126,13 @@ fn tampered_programs_never_fault() {
 
             let limit = u32::try_from(program.memory().total()).unwrap() + 4096;
             let mut machine = Machine::new(Limits::new().memory(limit).fuel(100_000));
-            let mut run = machine.load(&program).unwrap();
 
-            for (name, ty) in run.globals() {
-                let value = value_of(&mut rng, ty);
-                run.bind(name, &value).unwrap();
-            }
+            let Some(globals) = store_for(&mut rng, &program) else {
+                refused += 1;
+                continue;
+            };
+
+            let run = machine.load(&program, &globals).unwrap();
 
             let functions = program.functions();
             let mut host_rng = Rng(rng.next());
@@ -1935,7 +2176,7 @@ fn tampered_programs_never_fault() {
     assert!(ran > 1_000, "only {ran} tampered programs ran");
 }
 
-/// Options of options, of every kind of value, bind, read back, and work
+/// Options of options, of every kind of value, are set, read back, and work
 /// with every option operation; a tagged option takes a word more than its
 /// value, an option of a value with a niche one word.
 #[test]
@@ -1956,9 +2197,8 @@ fn nested_options() {
     for (ty, inner, words) in cases {
         let mut env = env();
         env.value("x", ty.clone()).unwrap();
-        let program = compile("x", &env).unwrap();
-        let slot = env.slot("x").unwrap().at;
-        assert_eq!(program.memory().globals() - slot, words as u32, "{ty}");
+        compile("x", &env).unwrap();
+        assert_eq!(crate::env::width(&ty), words, "{ty}");
 
         // Every value of the type: none, and each inner value wrapped in as
         // many `some`s as it can take, and every depth of `none` between.
@@ -2077,11 +2317,12 @@ fn map_lookup_errors() {
     );
 }
 
-/// A bound map is checked entry by entry, keys first, naming where a value
+/// A map set in a store is checked entry by entry, keys first, naming where a value
 /// is mistyped by its key.
 #[test]
-fn map_binding_errors() {
+fn map_setting_errors() {
     let program = compile_in("ids.len() + tags.len()", &[]);
+    let env = env_in(&[]);
     let mut machine = Machine::default();
     let dice = |n| Value::record([("dice", int(n))]);
 
@@ -2089,57 +2330,59 @@ fn map_binding_errors() {
         (
             "ids",
             Value::list([]),
-            "expected Map<Int, {dice: Int}>, found a list: while binding `ids`",
+            "expected Map<Int, {dice: Int}>, found a list: while setting `ids`",
         ),
         (
             "ids",
             Value::record([("dice", int(1))]),
-            "expected Map<Int, {dice: Int}>, found a record: while binding `ids`",
+            "expected Map<Int, {dice: Int}>, found a record: while setting `ids`",
         ),
         (
             "ids",
             Value::map([(int(1), dice(1)), (int(5), int(5))]),
-            "expected {dice: Int}, found Int: at `ids[5]`: while binding `ids`",
+            "expected {dice: Int}, found Int: at `ids[5]`: while setting `ids`",
         ),
         (
             "ids",
             Value::map([(int(1), dice(1)), (Value::from("x"), dice(2))]),
-            "expected Int, found String: at `ids[key #1]`: while binding `ids`",
+            "expected Int, found String: at `ids[key #1]`: while setting `ids`",
         ),
         (
             "tags",
             Value::map([(Value::from("a b"), Value::some(Value::bool(true)))]),
-            r#"expected Option<Int>, found some(Bool): at `tags["a b"]`: while binding `tags`"#,
+            r#"expected Option<Int>, found some(Bool): at `tags["a b"]`: while setting `tags`"#,
         ),
         (
             "tags",
             Value::map([(int(1), Value::none())]),
-            "expected String, found Int: at `tags[key #0]`: while binding `tags`",
+            "expected String, found Int: at `tags[key #0]`: while setting `tags`",
         ),
     ];
 
     for (name, value, expected) in cases {
-        let mut run = machine.load(&program).unwrap();
-        let error = run.bind(name, value).unwrap_err();
-        assert!(!error.is_fault(), "{name}: {error:#}");
-        assert_eq!(chain(&error, &program), *expected, "{name} = {value}");
+        let mut globals = Globals::new(&env);
+        let error = globals.set(name, value).unwrap_err();
+        assert!(!error.to_string().contains("faulty"), "{name}: {error:#}");
+        assert_eq!(set_chain(&error), *expected, "{name} = {value}");
     }
 
     // The entries' words: three entries of a key and a one-word record,
     // and each record's field.
-    let mut run = machine.load(&program).unwrap();
+    let mut globals = Globals::new(&env);
     let (ids, words) = binding("ids");
     assert_eq!(words, 9);
-    run.bind("ids", &ids).unwrap();
-    run.bind("tags", &binding("tags").0).unwrap();
-    assert_eq!(run.run().unwrap().value, int(7));
+    globals.set("ids", &ids).unwrap();
+    assert_eq!(globals.heap_words(), 9);
+    globals.set("tags", &binding("tags").0).unwrap();
+    let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
+    assert_eq!(outcome.value, int(7));
 }
 
-/// A map binds and reads back in key order however its entries were
+/// A map is set and reads back in key order however its entries were
 /// given, a key given twice keeping its last value, and the lookup finds
 /// every key of a large map and none between them.
 #[test]
-fn maps_bind_in_key_order() {
+fn maps_set_in_key_order() {
     let ty = Type::map(Type::int(), Type::int());
     let keys: Vec<i64> = (0..200).map(|n| n * 3 - 300).collect();
     let map = Value::map(keys.iter().rev().map(|k| (int(*k), int(k * 2))));
@@ -2246,11 +2489,13 @@ fn tampered_map_programs_never_fault() {
 
         let limit = u32::try_from(program.memory().total()).unwrap() + 4096;
         let mut machine = Machine::new(Limits::new().memory(limit).fuel(100_000));
-        let mut run = machine.load(&program).unwrap();
 
-        for (name, ty) in run.globals() {
-            run.bind(name, &value_of(&mut rng, ty)).unwrap();
-        }
+        let Some(globals) = store_for(&mut rng, &program) else {
+            refused += 1;
+            continue;
+        };
+
+        let run = machine.load(&program, &globals).unwrap();
 
         let functions = program.functions();
         let mut host_rng = Rng(rng.next());

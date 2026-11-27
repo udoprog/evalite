@@ -152,7 +152,7 @@
 //! ```
 //! use std::rc::Rc;
 //!
-//! use evalite::{Environment, Limits, Machine, Type};
+//! use evalite::{Environment, Globals, Limits, Machine, Type};
 //! use evalite_sockel::{Compiled, ExpressionField, Ran, ResultView};
 //! use yew::prelude::*;
 //!
@@ -169,10 +169,12 @@
 //!
 //!     let on_compile = {
 //!         let ran = ran.clone();
+//!         let environment = environment.clone();
 //!         Callback::from(move |compiled: Compiled| {
 //!             let shown = compiled.ok().and_then(|program| {
+//!                 let globals = Globals::new(&environment);
 //!                 let mut machine = Machine::new(Limits::new());
-//!                 let outcome = machine.load(&program).ok()?.run().ok()?;
+//!                 let outcome = machine.load(&program, &globals).ok()?.run().ok()?;
 //!                 Some(Rc::new(Ran::of(&outcome, &program)))
 //!             });
 //!

@@ -1427,14 +1427,14 @@ impl Structure {
     /// # Examples
     ///
     /// ```
-    /// use evalite::{Environment, Machine, Options, Structure};
+    /// use evalite::{Environment, Globals, Machine, Options, Structure};
     ///
     /// let env = Environment::new();
     /// let structure = Structure::from_text("(1 + 2) * [3][4]")?;
     /// let (program, debug) = structure.compile_debug(&env, &Options::new())?;
     ///
     /// let text = structure.to_text();
-    /// let error = Machine::default().load(&program)?.run().unwrap_err();
+    /// let error = Machine::default().load(&program, &Globals::new(&env))?.run().unwrap_err();
     /// let span = error.labels(&program, Some(&debug)).next().and_then(|l| l.span());
     /// assert_eq!(span.map(|s| &text[s.range()]), Some("[3][4]"));
     ///

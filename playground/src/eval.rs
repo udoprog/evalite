@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use evalite::{
     DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, DEFAULT_MEMORY, Diagnostics, Environment,
-    Limits, Machine, Options, RunError, Type, Value,
+    Globals, Limits, Machine, Options, RunError, Type, Value,
 };
 use evalite_sockel::{Mark, Ran};
 
@@ -61,7 +61,7 @@ impl Bounds {
     }
 }
 
-/// Compile and run `source` with `bindings` declared and bound.
+/// Compile and run `source` with `bindings` declared and set.
 pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Done, Failed> {
     let env = environment(bindings).map_err(|ran| Failed::Run(ran, Rc::from([])))?;
 
@@ -82,16 +82,18 @@ pub fn evaluate(source: &str, bindings: &[Binding], bounds: Bounds) -> Result<Do
         let ran = Ran::failed(error.labels(&program, Some(&debug)));
         Failed::Run(Rc::new(ran), marks)
     };
-    let mut run = machine.load(&program).map_err(failed)?;
-
-    let read = run.globals().map(|(name, _)| name).collect::<Vec<_>>();
+    let read = program.globals().map(|(name, _)| name).collect::<Vec<_>>();
+    let mut globals = Globals::new(&env);
 
     for binding in bindings {
         if read.contains(&binding.name.as_str()) {
-            run.bind(&binding.name, &binding.value).map_err(failed)?;
+            globals
+                .set(&binding.name, &binding.value)
+                .map_err(|error| Failed::Run(Rc::new(Ran::failed(error.labels())), Rc::from([])))?;
         }
     }
 
+    let run = machine.load(&program, &globals).map_err(failed)?;
     let outcome = run.run().map_err(failed)?;
 
     Ok(Done {

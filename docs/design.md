@@ -1,8 +1,9 @@
 # evalite design
 
 This document describes how evalite works, and the decisions behind it, for
-review. Sections 1 to 9 describe `main` as of 5554ba4 (references landed).
-Section 10 is the planned globals store, decided but not built yet.
+review. Sections 1 to 9 describe `main` as of Globals 2 (5885897e, the
+globals store). Section 10 is the globals store's plan: decided, and built
+up to Globals 2.
 
 Every card that changes the design updates this file in the same commit,
 including each decision taken and the alternatives it was weighed against
@@ -19,10 +20,10 @@ Source files are named relative to `crates/evalite/src/`.
 4. [The type table](#4-the-type-table)
 5. [Memory layout](#5-memory-layout)
 6. [The machine](#6-the-machine)
-7. [Slots and binding](#7-slots-and-binding)
+7. [Slots and the store](#7-slots-and-the-store)
 8. [Stored formats and verification](#8-stored-formats-and-verification)
 9. [Structures, completions and references](#9-structures-completions-and-references)
-10. [Planned: the globals store](#10-planned-the-globals-store)
+10. [The globals store](#10-the-globals-store)
 
 ---
 
@@ -192,8 +193,8 @@ source text ──lexer──> tokens ──parser──> syntree Tree (with Err
      │                              Program parts ──> Program::verify ──> Program
      │                                                       ▲              │
 Structure ──render (to_text)──> source text                  │        Machine::load
-                                     stored bytes ──decode───┘              │
-                                                                      Run (bind…)
+                                     stored bytes ──decode───┘              │ ◀── Globals
+                                                                           Run  (set once)
                                                                             │
                                                                      run / run_with
                                                                             ▼
@@ -321,8 +322,7 @@ it, in constant time however deep the stack is. It checks:
 - globals: valid, unique names and known types, and slots that fit in
   `u32` words and share no word (sorted by slot, each must start at or
   after the previous one's end, `GlobalsOverlap`). `Instr::Global` must
-  name a recorded (slot, type). `Memory::globals` is the end of the last
-  slot read;
+  name a recorded (slot, type);
 - host functions: valid names, a unique (name, params), known types;
 - each instruction's operands match its type operands (`Field` at an existing
   offset with that type, `Index`/`Get` on that list type, `MapIndex`/`MapGet`
@@ -360,7 +360,9 @@ Section 6.
 | `MAX_TYPE_DEPTH` | 64 | `Environment`, `Types`, literals, stored tables | type nesting |
 | `MAX_TYPE_NODES` (public) | 65 536 | `Environment`, `Types::add`, stored tables | one type's nodes with shared parts written out; a declared type over it is `DeclareKind::TypeTooLarge`, a value's is `ErrorKind::TypeTooLarge` |
 | `MAX_GLOBAL_TYPE_NODES` | 2^21 | compiler, verifier | a program's globals' and host functions' types written out, together; the compiler reports `ErrorKind::TypesTooLarge` at the global or call that crosses it, the verifier refuses stored bytes |
-| `Limits::memory` | 1024 words default | `Machine` | stack + heap + constants + globals + bound/returned parts |
+| `Limits::memory` | 1024 words default | `Machine` | stack + heap + constants + returned parts |
+| `Globals::with_limit` | 2^20 words default (`DEFAULT_GLOBALS`) | `Globals` | the parts of the store's values, freed blocks included; the slots are not counted |
+| store + machine | 2^32 words | `Machine::load` | one address space, so every address fits a reference (`PastAddressSpace`) |
 | `Limits::fuel` | 1000 default | `Run` | steps per run |
 | `MAX_STEPS` | 4096 | completions | type walks per value when searching paths |
 | `MAX_KEY_SHOWN` | 64 chars | messages | a string key quoted in an error |
@@ -462,33 +464,60 @@ Map<Int, Option<Int>>   ref(start, 3) ──> [k0][tag][v][k1][tag][v][k2][tag][
                                            stride = 1 + width(V) = 3
 ```
 
-Binding refuses unsorted entries (`Fault::MapUnsorted`). `Value::map`
-always sorts, so a host can't produce them through the public API.
+Setting a value refuses unsorted entries (`Fault::MapUnsorted`), and so
+does a host function's result. `Value::map` always sorts, so a host can't
+produce them through the public API.
+
+**Shared value code** (`memory.rs`). Checking a `Value` against a type
+(`measure`, with a path-naming rerun on a mismatch), writing it (`write`),
+reading it back (`read`), the sizes of the blocks a value's parts take
+(`parts`) and the blocks a held value's parts are in (`blocks`) are free
+functions over a `Words`/`WordsMut` trait: a word getter, the end of
+memory, a setter and an allocator. A run's memory and a `Globals` store
+both implement it, so values have one layout and one checker wherever they
+are held. Every walk uses an explicit work list.
 
 ## 6. The machine
 
 ### 6.1 Memory regions
 
 A `Machine` reserves `Limits::memory` words up front (`words: Box<[Word]>`)
-and runs one program at a time. `Machine::load` refuses a program whose
-`memory().total()` exceeds the machine, copies the constants in, and gives a
-`Run`:
+and runs one program at a time over a `Globals` store (section 7).
+`Machine::load(&program, &globals)`:
+
+1. refuses a program the store does not accept (`OtherLayout`, naming the
+   first global it does not hold, section 7);
+2. refuses one whose `memory().total()` exceeds the machine
+   (`TooMuchMemory`);
+3. refuses a store and machine whose words together are past 2^32
+   (`PastAddressSpace`), so every address fits a reference;
+4. copies the constants in, and gives a `Run`.
+
+A run addresses **one space** (decision A, section 10.5): the store's words
+from 0, then the machine's. Reads dispatch on the address (`Words::word`:
+below `base` the store, else the machine); writes go only to the machine
+(`WordsMut::set_word` refuses an address below `base`, and `copy`, the one
+bulk move, refuses a destination there with `Fault::WriteToStore`). A
+range that straddles the boundary is refused. The word layout is
+unchanged, so references into the store and into scratch look alike:
 
 ```text
-0          globals      len ──>                limit       stack_base        end
-| globals area | bound parts, built lists, host results | constants | stack ──> |
-                 ^ grows up (alloc), up to limit         copied at   stack_cap words,
-                   minus the heap still reserved         load        sp deep
+0         store_len = base       len ──>              limit       stack_base      end
+| slots | store parts | built lists, host results | constants | stack ──> |
+  the store, read-only  ^ grows up (alloc), up to     copied at   stack_cap words,
+                          limit minus the heap still  load        sp deep
+                          reserved
 ```
 
-- The **globals area** is the environment's slots up to the end of the last
-  one the program reads. Each read global's words are at its slot. Slots it
-  doesn't read are never written or read.
+- `Instr::Global { at, ty }` reads the store's slot words at `at`, after
+  checking the slot's set flag (section 7). The program's values are never
+  copied: loading costs the constants, however large the values are.
 - The **heap reservation** (`heap`) is the verifier's count of list words the
-  code may build. Bound and returned values may use only
-  `limit - len - heap` (`left()`), so the program's own lists always fit.
-- `Outcome::memory` is the peak of `len`, plus the peak of `sp`, plus the
-  constants.
+  code may build. Returned values may use only `limit - len - heap`
+  (`left()`), so the program's own lists always fit.
+- `Outcome::memory` is the peak of `len - base`, plus the peak of `sp`, plus
+  the constants: the machine's words only.
+- The hot loop pays one comparison per word read for the dispatch.
 
 ### 6.2 Instructions
 
@@ -498,7 +527,7 @@ The `Instr` enum in `program.rs`:
 |---|---|
 | `Int(i64)`, `Bool(bool)` | push a literal |
 | `Const(c)` | push a reference to constant `c` |
-| `Global { at, ty }` | push the `width(ty)` words at offset `at` of the globals area |
+| `Global { at, ty }` | push the `width(ty)` words of the store's slot at word `at`; an unset slot is a run error |
 | `Neg`, `Not`, `Abs` | unary on the top word |
 | `Add` `Sub` `Mul` `Div` `Rem` | checked arithmetic; overflow and division by zero are run errors |
 | `Lt` `Le` `Gt` `Ge`, `Eq` `Ne` | comparisons (`Eq`/`Ne` compare one word) |
@@ -535,8 +564,8 @@ Running out is a run error. There are no backward jumps, so even without
 fuel a run is bounded by its code length. Fuel bounds the work per run that
 the host pays for.
 
-Binding costs no fuel. It is bounded by the value's size, which the host
-supplies.
+Setting a store's values costs no fuel. It is bounded by the value's
+size, which the host supplies, and by the store's limit.
 
 ### 6.4 Host calls
 
@@ -558,22 +587,30 @@ supplies.
   notes such as where an unclosed group needed closing.
 - **Run errors** are `RunError` (`message.rs`): a chain of `Frame`s, one
   `Message` each, with an optional `Location::Instr(pc)`.
-  - The `.context(...)` pattern adds frames, such as "while binding `x`",
-    "while running instruction 2" and "while running the program".
+  - The `.context(...)` pattern adds frames, such as "while running
+    instruction 2" and "while running the program".
   - Messages hold plain ids (globals, functions, `TypeId`s). Names are
-    resolved against the `Program` only when the error is shown.
+    resolved only when the error is shown, through the `Names` trait:
+    a `Program` for run errors.
   - `labels(&program, Some(&debug))` maps each instruction location through
     `DebugInfo` to a source span.
 - **Store errors** are `StoreError`, with context frames such as "at
   instruction 0" and "while verifying the program".
-- **Binding mismatches** name the path into the value (`Root` plus `Seg`s:
-  field, index, map key or key-of-entry). The first walk keeps no path. Only
-  on a mismatch is it re-run with a `Nodes` trail to name where.
+- **Store errors from setting** are `GlobalsError`: the same `Message`
+  frames ("expected Int, found Bool", "at `health.count[1]`", "while
+  setting `health`"), shown against the store's own layout (its `Names`:
+  slot index → name, its type table) when the error is made, since the
+  caller has no program to resolve them with. Its `labels()` have no spans.
+- **Value mismatches** (setting, host results) name the path into the
+  value (`Root` plus `Seg`s: field, index, map key or key-of-entry). The
+  first walk keeps no path. Only on a mismatch is it re-run with a `Nodes`
+  trail to name where.
 
-## 7. Slots and binding
+## 7. Slots and the store
 
-Globals 1 (da3c369c) gave the `Environment` the layout. Globals 2 replaces
-the binding below with a store (section 10).
+Globals 1 (da3c369c) gave the `Environment` the layout. Globals 2
+(5885897e) holds the values in a `Globals` store that runs read in place
+(section 10).
 
 **Slots.** `Environment` keeps `slots: Vec<Slot { name, ty, at }>` in
 declaration order, plus a name-ordered index (`names`) for lookup and for
@@ -604,48 +641,77 @@ and on every platform. A test pins its values. Functions are not part of it.
 
 **Programs.** The compiler emits `Instr::Global { at: slot, ty }` and
 records each read global as (name, type, slot), with the fingerprint as
-`Program::fingerprint()`. `Environment::accepts(&program)` (decision C):
+`Program::fingerprint()`. `Environment::accepts(&program)` and
+`Globals::accepts(&program)` (decision C) share `env::refused`:
 
-- the fingerprints match (the fast path); or
+- the program was compiled here (`Program::compiled`) and the
+  fingerprints match (the fast path); or
 - each global the program reads is declared with an equal type at the same
   slot.
 
 Appending values keeps stored programs accepted. Checking every read costs
 the program's global types, which are bounded by `MAX_GLOBAL_TYPE_NODES`.
-Globals 2 makes loading refuse a program that is not accepted.
+`Machine::load` refuses a program its store does not accept.
 
-**Binding (transitional).** A run still binds each global before it runs,
-into its slot:
+The fast path is only for compiled programs (decided in Globals 2): stored
+bytes may claim any fingerprint, and a program read with
+`Program::from_bytes` whose global types were tampered with, but whose
+fingerprint was kept, would pass the verifier (each `Instr::Global`
+agrees with its tampered record) and read a slot's words as another type.
+The machine bounds-checks every access, so that would be a fault, not
+unsafety, but faults are reserved for evalite's own bugs. So a decoded
+program is always checked read by read. `compiled` is not stored, and is
+set only by the compiler after `Program::verify`.
 
-- `Memory::globals` is the end of the last slot the program reads, so the
-  machine's globals area is the environment's slots up to there, including
-  ones it doesn't read. Those words are reserved but never touched.
+**The store** (`globals.rs`). `Globals::new(&env)` (or `with_limit(&env,
+words)`) copies the environment's slots (name, `Type`, slot word), interns
+each type into a type table of its own, and records the fingerprint. It
+holds the values declared when it is made; one declared later is not in
+it, and a program reading it is refused at load. Its memory:
 
-The steps are:
+- `words`: the slot area (`env.slot_words()` words), then the heap of
+  parts, grown by bump allocation;
+- `set`: a flag per word of the slot area, true at the first word of each
+  set slot. `Instr::Global { at, .. }` checks `set[at]`; unset, it is
+  `Message::Unset`, naming the program's global with that slot, as an
+  error of the instruction (decision 7: only a read fails, so `ready &&
+  rank > 2` runs with `rank` unset when `ready` is false);
+- `free`: freed blocks by exact size (`BTreeMap<usize, Vec<usize>>`).
 
-1. `run.bind(name, &value)` finds the global by name with a linear scan of
-   the program's globals. It refuses an unknown name (`UnknownValue`) and a
-   second binding (`AlreadyBound`).
-2. `measure` walks the value against its type without recursion, giving the
-   words its parts need, or a path-named mismatch.
-3. It checks those words against `left()` (`TooLarge`).
-4. `write` writes the slot's words at the global's slot, and allocates and
-   fills the parts from `len` upward.
-5. `run_with` refuses to start while any global is unbound (`Unbound`).
+`set(name, &value)`:
 
-The cost per run is proportional to the size of every value bound, even when
-the program reads one field of one global. Every run of every formula on a
-sheet re-binds the sheet's values. That cost is what the globals store
-(section 10) removes.
+1. finds the slot by name (`NotDeclared` names the name, which the layout
+   cannot);
+2. `measure`s the value against the slot's type (path-named mismatch);
+3. lists the block sizes the value's parts need (`parts`), and the blocks
+   the old value's parts hold (`blocks`, when set);
+4. works out the words that must be taken past the heap's end: each needed
+   block is matched against free blocks and the old value's of its exact
+   size, and the rest bump. If that is past the limit it is `TooLarge`,
+   before anything changed, so a failed set leaves the old value;
+5. frees the old blocks onto the free lists, then `write`s the new value at
+   the slot, allocating from the free list of a block's size, else by bump;
+6. sets the flag.
 
+So replacing a value with one of the same shape reuses its blocks and the
+store does not grow (`replacing_frees`). The cost is O(old value + new
+value), plus a log per block for the free-list map. Freed blocks are only
+reused at their exact size; size classes and compaction are Globals 5.
+
+`get(name)` reads a set value back (`None` when unset or not declared).
+
+The limit counts the heap, freed blocks included, and not the slots. It
+is kept inside 2^32 minus the slot area, so every store address fits a
+reference.
 ## 8. Stored formats and verification
 
 All stored forms are encoded with musli `storage` and start with a
 `format: u32`.
 
-**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 6 (4 added `Map`,
-5 map literals, 6 each global's slot and the layout fingerprint). The stored
-form is
+**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 7 (4 added `Map`,
+5 map literals, 6 each global's slot and the layout fingerprint, 7 dropped
+`Memory::globals`, as a program's values are in the store, not the
+machine). The stored form is
 `Stored { format, types, constants, globals, functions, code, result, memory, layout }`,
 where each global is (name, type, slot). `layout` is last, so a length
 prefix's offset doesn't depend on its varint width.
@@ -666,7 +732,7 @@ What a verified program guarantees:
 - one result of the declared type is left;
 - the memory it declares is exactly what it uses;
 - names are valid and unique, and no two globals' slots share a word, so
-  binding one never changes what another reads;
+  setting one never changes what another reads;
 - all types are in bounds.
 
 So the machine may run it on bare words, and any remaining fault is a bug in
@@ -703,8 +769,10 @@ These checks are linear.
 **What is not stored:**
 
 - source text;
-- environments (only the layout's fingerprint and the read slots);
-- bound values;
+- environments (only the layout's fingerprint and the read slots), nor
+  whether a program was compiled here, so a decoded program is checked read
+  by read at load (section 7);
+- a store's values (Globals 6 stores them);
 - type table hashes.
 
 `Type`/`Value` text forms (section 2) round-trip through `Display`.
@@ -903,22 +971,24 @@ Decisions (lead, 2026-11-27, recommended options):
 | Count | references that read `from`; 0 when `from == to` | edits made |
 | `i64::MIN` keys | refused by the check, since the literal can't be written; unchecked, it is written and doesn't compile | a special form |
 
-## 10. Planned: the globals store
+## 10. The globals store
 
 Decided by the lead on 2026-11-27 with its recommended options. The user
 approved the direction and reviews the decisions here. Globals 1 is built
 (section 7): environment-owned slots, the fingerprint, and the read
-compatibility check. The rest is not built yet. Breaking changes are allowed
-(board rule, 2026-11-27).
+compatibility check. Globals 2 is built (sections 6.1 and 7): the store,
+`set`/`get`, set flags, the store limit, runs reading the store in place,
+and `Run::bind` removed. The rest is not built yet. Breaking changes are
+allowed (board rule, 2026-11-27).
 
 ### 10.1 Why
 
 A host such as a character sheet has one set of values (the sheet) and many
-formulas over it. Today each run of each formula re-binds every global it
-reads, copying the whole value, including every list, map and record it
-holds, into the run's memory (section 7). A sheet with a 100 000-entry map
-pays for copying that map on every formula that reads one entry. The store
-makes the sheet's values persistent:
+formulas over it. Before Globals 2 each run of each formula re-bound every
+global it read, copying the whole value, including every list, map and
+record it held, into the run's memory. A sheet with a 100 000-entry map paid
+for copying that map on every formula that read one entry. The store makes
+the sheet's values persistent:
 
 - they are written once and updated in place by path;
 - runs read them where they are.
@@ -943,8 +1013,9 @@ makes the sheet's values persistent:
   per-table random seed of section 4, so it is identical across processes.
   Programs carry it. Loading a program the store's environment doesn't
   `accepts` (the same fingerprint, or every read slot matching) is refused.
-- **Runs read the store, read-only.** `machine.load(&program)` plus
-  `run.run_with(&globals, host)` (or the simplest equivalent). A run reads
+- **Runs read the store, read-only** (built). `machine.load(&program,
+  &globals)` then `run.run()`/`run.run_with(host)`: the store is given at
+  load, so load can refuse a program the store does not accept. A run reads
   globals in place and allocates temporaries (built lists, host results, the
   stack) only in the machine's own scratch memory. There is no bind per run,
   and `Run::bind` is removed. Reading an unset global is a run error naming
@@ -954,7 +1025,7 @@ makes the sheet's values persistent:
   - Maps: `insert`/`remove`.
   - Lists: `push`/`insert`/`remove`.
   - Every operation is type-checked against the declared type, with
-    path-named errors as binding has today.
+    path-named errors as `set` gives (built for `set`).
 - **Amortized spare capacity.**
   - Store lists and maps have a capacity, kept in a header word just before
     the entries. The reference word keeps (start, len), so runs see the
@@ -977,7 +1048,7 @@ makes the sheet's values persistent:
   - `to_bytes` writes each set slot's value (not raw words) in the musli
     storage format, versioned.
   - `from_bytes(&env, bytes)` re-checks every value against the environment
-    with binding's bounds, then rebuilds densely.
+    with `set`'s bounds, then rebuilds densely.
   - `migrate(&old, &new_env)` carries over each value whose name still exists
     with an equal type. Record fields carry over by name when only fields
     were added or removed. A new field without a value leaves the global
@@ -998,7 +1069,7 @@ Store memory:
 | Card | Phase | Changes |
 |---|---|---|
 | da3c369c | Globals 1 (built) | Environment-owned slots, layout fingerprint, stored `FORMAT` bump recording the fingerprint and read slots. Transitional: `Run::bind` remains and writes into the slot layout. The verifier checks every global read against the recorded (slot, type). |
-| 5885897e | Globals 2 | `Globals` store with `set`/`get`, set flags, a word limit, runs reading the store read-only, `Run::bind` removed. Updates cli, compare, sockel, playground, benches (a one-store, many-formulas bench modelled on characterize) and docs. |
+| 5885897e | Globals 2 (built) | `Globals` store with `set`/`get`, set flags, a word limit, runs reading the store read-only, `Run::bind` removed. Updates cli, compare, sockel, playground, benches (a one-store, many-formulas bench modelled on characterize) and docs. |
 | 8823970e | Globals 3 | `set_at`/`get_at` by path, reusing the references path type. Literal steps only, existing keys and indexes only. O(path + new value), plus O(log n) per map step. |
 | e5e312bd | Globals 4 | Capacity, growth and shrink. Map `insert`/`remove` (binary search plus a `copy_within` shift). List `push`/`insert`/`remove`. Bench: 1 000 single-entry updates on a 100 000-entry map versus a whole-map set. |
 | ae875cb2 | Globals 5 | Size-class free lists, compaction at more than half free, `stats()` (live, free, capacity). |
@@ -1028,6 +1099,19 @@ literals (f3b53baf) and references (b128c319), which all touch
 | 14 | Reuse | Size-class free lists plus compaction at more than half free | Bump-only with periodic full rebuild (spiky). Free lists alone (fragmentation grows without bound). |
 | 15 | Persistence | Values, re-verified on load, rebuilt densely | Raw words (fast, but it ties bytes to the in-memory layout and needs a word-level verifier). |
 | 16 | Migration | Carry over by name with equal type. Record fields by name. A new field without a value leaves the global unset, reported | Refuse the whole store on any change (hostile to evolving sheets). Implicit defaults. |
+
+**Taken while building Globals 2** (worker, 2026-11-27, within the card's
+decisions):
+
+| Question | Picked | Alternatives and why not |
+|---|---|---|
+| Where the store meets the run | `Machine::load(&program, &globals)`, the run borrowing the store | `run.run_with(&globals, host)` as the card sketched: load could not refuse a program of another layout, and every run entry point would take the store. |
+| When an unset global fails | When `Instr::Global` reads it, as an error of the instruction | Checking every read global before the run: refuses a run that would not read it (`a && b`). |
+| Set errors | `GlobalsError`, opaque, its frames shown against the store's names when made | `RunError`: its names resolve against a program, which a caller setting a value does not have, and another program's ids would name the wrong values. |
+| "Simple free" | Exact-size free lists, reused by the next block of that size; the limit checked by matching the new value's block sizes against free and old blocks before changing anything | Bump only (a store replacing values grows until its limit); freeing only a block at the heap's end (order-dependent); checking the limit without reuse (a same-size replace fails at the limit). |
+| What the store limit counts | The heap, freed blocks included; not the slots, which the environment bounds | Slots too: the limit would depend on how many values are declared. |
+| `Memory::globals` | Removed, `FORMAT` 7 | Kept: it counted the slots as machine memory, which they no longer are. |
+| The fingerprint fast path | Only for programs compiled here; a decoded program is checked read by read | For every program: stored bytes may keep the fingerprint and tamper the types, which reads a slot as another type (a fault). |
 
 ### 10.5 Questions raised while writing this
 

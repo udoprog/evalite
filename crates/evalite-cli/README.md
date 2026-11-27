@@ -8,7 +8,7 @@
 `evalite`, the command line for [evalite]: small, strictly typed
 expressions that are safe to run on anyone's input.
 
-Variables are declared and bound with `--var name:Type=value`, where a
+Variables are declared and set with `--var name:Type=value`, where a
 type is `Int`, `Bool`, `String`, `Option<T>` or `List<T>`, and a value is
 `3`, `true`, `"text"`, `none`, `some(2)` or `[1, 2]`.
 

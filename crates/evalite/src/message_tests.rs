@@ -85,14 +85,31 @@ fn every_message_with_and_without_a_program() {
             "the program needs 8 words of memory, more than the 2 the machine allows",
         ),
         (
-            Message::UnknownValue,
-            "the program reads no value of that name",
-            "the program reads no value of that name",
+            Message::NotDeclared {
+                name: "nothing".into(),
+            },
+            "no value `nothing` is declared",
+            "no value `nothing` is declared",
         ),
         (
-            Message::AlreadyBound { global: strength },
-            "`strength` is already bound",
-            "the value is already bound",
+            Message::OtherLayout {
+                global: Some(strength),
+            },
+            "the store does not hold `strength` where the program reads it, of its type",
+            "the store does not hold the program's values where it reads them",
+        ),
+        (
+            Message::OtherLayout { global: None },
+            "the store does not hold the program's values where it reads them",
+            "the store does not hold the program's values where it reads them",
+        ),
+        (
+            Message::PastAddressSpace {
+                store: 1,
+                machine: 1,
+            },
+            "the store's 1 word and the machine's 1 word are more than a run can address",
+            "the store's 1 word and the machine's 1 word are more than a run can address",
         ),
         (
             Message::Mistyped {
@@ -184,9 +201,9 @@ fn every_message_with_and_without_a_program() {
             "the value needs 4 words of memory, 1 are left",
         ),
         (
-            Message::Unbound { global: strength },
-            "`strength` is not bound, bind an Int before running",
-            "a value the program reads is not bound",
+            Message::Unset { global: strength },
+            "`strength` is not set, set it to an Int before running",
+            "a value the program reads is not set",
         ),
         (
             Message::OutOfFuel { fuel: 3 },
@@ -283,9 +300,9 @@ fn every_message_with_and_without_a_program() {
             "while loading the program",
         ),
         (
-            Message::Binding { global: strength },
-            "while binding `strength`",
-            "while binding a value",
+            Message::Setting { global: strength },
+            "while setting `strength`",
+            "while setting a value",
         ),
         (
             Message::AtPath {
@@ -343,8 +360,8 @@ fn every_message_with_and_without_a_program() {
 
     // Ids the program does not have show as if there were no program.
     assert_eq!(
-        show(&Message::Binding { global: 99 }, Some(&program)),
-        "while binding a value"
+        show(&Message::Setting { global: 99 }, Some(&program)),
+        "while setting a value"
     );
     assert_eq!(
         show(
@@ -413,14 +430,18 @@ fn every_fault_has_its_own_text() {
 }
 
 #[test]
-fn mistyped_nested_binding_gives_path_then_binding() {
+fn mistyped_nested_set_gives_path_then_setting() {
     let env = env();
-    let program = compile("health.boxes + strength + bonus.unwrap_or(0)", &env).unwrap();
-    let mut machine = Machine::default();
-    let mut run = machine.load(&program).unwrap();
+    let mut globals = Globals::new(&env);
+    let set_messages = |error: &GlobalsError| {
+        error
+            .labels()
+            .map(|l| l.message().to_string())
+            .collect::<Vec<_>>()
+    };
 
-    let error = run
-        .bind(
+    let error = globals
+        .set(
             "health",
             &Value::record([
                 ("boxes", Value::int(1)),
@@ -430,50 +451,55 @@ fn mistyped_nested_binding_gives_path_then_binding() {
         .unwrap_err();
 
     assert_eq!(
-        messages(&error, &program),
+        set_messages(&error),
         [
             "expected Int, found Bool",
             "at `health.count[1]`",
-            "while binding `health`",
+            "while setting `health`",
         ]
     );
     assert_eq!(
         format!("{error:#}"),
-        "expected another type, found Bool: at `_._[1]`: while binding a value"
+        "expected Int, found Bool: at `health.count[1]`: while setting `health`"
     );
+    assert_eq!(error.to_string(), "expected Int, found Bool");
+    assert_eq!(
+        error.labels().map(|l| l.is_primary()).collect::<Vec<_>>(),
+        [true, false, false]
+    );
+    assert!(error.labels().all(|l| l.span().is_none()));
+    assert_eq!(error.labels().len(), 3);
 
     // A whole value of the wrong type has no path.
-    let error = run.bind("strength", &Value::none()).unwrap_err();
+    let error = globals.set("strength", &Value::none()).unwrap_err();
     assert_eq!(
-        messages(&error, &program),
-        ["expected Int, found none", "while binding `strength`"]
+        set_messages(&error),
+        ["expected Int, found none", "while setting `strength`"]
     );
 
-    let error = run
-        .bind("bonus", &Value::some(Value::bool(true)))
+    let error = globals
+        .set("bonus", &Value::some(Value::bool(true)))
         .unwrap_err();
     assert_eq!(
-        messages(&error, &program),
+        set_messages(&error),
         [
             "expected Option<Int>, found some(Bool)",
-            "while binding `bonus`"
+            "while setting `bonus`"
         ]
     );
 
-    let error = run.bind("nothing", &Value::int(1)).unwrap_err();
-    assert_eq!(
-        messages(&error, &program),
-        ["the program reads no value of that name"]
-    );
+    let error = globals.set("nothing", &Value::int(1)).unwrap_err();
+    assert_eq!(set_messages(&error), ["no value `nothing` is declared"]);
 }
 
 #[test]
 fn mistyped_host_result_gives_path_function_then_instruction() {
     let env = env();
+    let globals = Globals::new(&env);
     let source = "1 + count(2).n";
     let (program, debug) = compile_debug(source, &env, &Options::new()).unwrap();
     let mut machine = Machine::default();
-    let run = machine.load(&program).unwrap();
+    let run = machine.load(&program, &globals).unwrap();
 
     let mut host = |_: &str, _: Vec<Value>| Ok(Value::record([("n", Value::bool(false))]));
     let error = run.run_with(&mut host).unwrap_err();
@@ -495,7 +521,7 @@ fn mistyped_host_result_gives_path_function_then_instruction() {
         ]
     );
 
-    let run = machine.load(&program).unwrap();
+    let run = machine.load(&program, &globals).unwrap();
     let mut host = |_: &str, _: Vec<Value>| Ok(Value::int(1));
     let error = run.run_with(&mut host).unwrap_err();
     assert_eq!(
@@ -515,8 +541,9 @@ fn host_failure_keeps_the_hosts_error_as_source() {
 
     let env = env();
     let program = compile("count(2).n", &env).unwrap();
+    let globals = Globals::new(&env);
     let mut machine = Machine::default();
-    let run = machine.load(&program).unwrap();
+    let run = machine.load(&program, &globals).unwrap();
 
     let mut host = |_: &str, _: Vec<Value>| Err("no table".to_owned());
     let error = run.run_with(&mut host).unwrap_err();
@@ -534,7 +561,7 @@ fn host_failure_keeps_the_hosts_error_as_source() {
 
     // Errors evalite makes have no source.
     let error = Machine::default()
-        .load(&compile("1 / 0", &env).unwrap())
+        .load(&compile("1 / 0", &env).unwrap(), &globals)
         .unwrap()
         .run()
         .unwrap_err();
@@ -574,9 +601,9 @@ fn runtime_errors_give_instruction_then_running() {
     ] {
         let (program, debug) = compile_debug(source, &env, &Options::new()).unwrap();
         let mut machine = Machine::default();
-        let mut run = machine.load(&program).unwrap();
+        let mut globals = Globals::new(&env);
 
-        for (name, _) in run.globals() {
+        for (name, _) in program.globals() {
             let value = match name {
                 "strength" => Value::int(2),
                 "health" => Value::record([
@@ -586,10 +613,10 @@ fn runtime_errors_give_instruction_then_running() {
                 _ => Value::none(),
             };
 
-            run.bind(name, &value).unwrap();
+            globals.set(name, &value).unwrap();
         }
 
-        let error = run.run().unwrap_err();
+        let error = machine.load(&program, &globals).unwrap().run().unwrap_err();
         let got = labels(&error, &program, Some(&debug), source);
 
         assert_eq!(got.len(), 3, "{source}: {got:?}");
@@ -635,7 +662,8 @@ fn out_of_fuel_gives_instruction_then_running() {
     let source = "1 + 2 + 3";
     let (program, debug) = compile_debug(source, &env, &Options::new()).unwrap();
     let mut machine = Machine::new(Limits::new().fuel(3));
-    let error = machine.load(&program).unwrap().run().unwrap_err();
+    let globals = Globals::new(&env);
+    let error = machine.load(&program, &globals).unwrap().run().unwrap_err();
 
     assert_eq!(
         labels(&error, &program, Some(&debug), source),
@@ -655,38 +683,36 @@ fn out_of_fuel_gives_instruction_then_running() {
 }
 
 #[test]
-fn load_and_unbound_errors_have_context() {
+fn load_and_unset_errors_have_context() {
     let env = env();
     let program = compile("strength", &env).unwrap();
+    let mut globals = Globals::new(&env);
 
     let error = Machine::new(Limits::new().memory(0))
-        .load(&program)
+        .load(&program, &globals)
         .unwrap_err();
     assert_eq!(
         messages(&error, &program),
         [
-            "the program needs 2 words of memory, more than the 0 the machine allows",
+            "the program needs 1 word of memory, more than the 0 the machine allows",
             "while loading the program",
         ]
     );
 
     let mut machine = Machine::default();
-    let error = machine.load(&program).unwrap().run().unwrap_err();
+    let error = machine.load(&program, &globals).unwrap().run().unwrap_err();
     assert_eq!(
         messages(&error, &program),
         [
-            "`strength` is not bound, bind an Int before running",
+            "`strength` is not set, set it to an Int before running",
+            "while running instruction 0",
             "while running the program",
         ]
     );
 
-    let mut run = machine.load(&program).unwrap();
-    run.bind("strength", &Value::int(1)).unwrap();
-    let error = run.bind("strength", &Value::int(1)).unwrap_err();
-    assert_eq!(
-        messages(&error, &program),
-        ["`strength` is already bound", "while binding `strength`"]
-    );
+    globals.set("strength", &Value::int(1)).unwrap();
+    let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
+    assert_eq!(outcome.value(), &Value::int(1));
 }
 
 #[test]
@@ -697,9 +723,9 @@ fn structural_compile_spans_point_into_its_text() {
     let text = structure.to_text();
 
     let mut machine = Machine::default();
-    let mut run = machine.load(&program).unwrap();
-    run.bind("strength", &Value::int(2)).unwrap();
-    let error = run.run().unwrap_err();
+    let mut globals = Globals::new(&env);
+    globals.set("strength", &Value::int(2)).unwrap();
+    let error = machine.load(&program, &globals).unwrap().run().unwrap_err();
 
     let got = labels(&error, &program, Some(&debug), &text);
     assert_eq!(got[0].1.as_deref(), Some("[1, 2][strength]"));

@@ -4,8 +4,9 @@
 //! [`Label`]s an error is inspected through.
 //!
 //! A message holds only plain data: numbers, and ids into the
-//! [`Program`] that names are resolved against when it is shown. Nothing
-//! here allocates or formats until an error is made or shown.
+//! [`Program`] (or the [`Globals`](crate::Globals) store) that names are
+//! resolved against when it is shown, through [`Names`]. Nothing here
+//! allocates or formats until an error is made or shown.
 
 use std::fmt;
 use std::iter::FusedIterator;
@@ -16,17 +17,21 @@ use crate::debug::DebugInfo;
 use crate::error::{Diagnostic, ParseText};
 use crate::program::Program;
 use crate::types::is_field_name;
-use crate::types::{TypeId, TypeNode};
+use crate::types::{TypeId, TypeNode, Types};
 
 /// What went wrong, or what was being done when it did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Message {
     /// The program needs more memory than the machine has.
     TooMuchMemory { needed: u64, allowed: u32 },
-    /// A binding names a value the program does not read.
-    UnknownValue,
-    /// A value is bound twice.
-    AlreadyBound { global: u32 },
+    /// A value set in a store that its environment does not declare.
+    NotDeclared { name: Box<str> },
+    /// A program that reads `global` (or, when `None`, some value) where
+    /// the store does not hold it with its type.
+    OtherLayout { global: Option<u32> },
+    /// A store and a machine whose words together are past what a
+    /// reference can address.
+    PastAddressSpace { store: u64, machine: u32 },
     /// A value is not of its declared type: it is `found` instead, inside
     /// a `some(..)` when `in_some`.
     Mistyped {
@@ -34,10 +39,10 @@ pub(crate) enum Message {
         found: Found,
         in_some: bool,
     },
-    /// A bound or returned value does not fit in the memory left.
+    /// A set or returned value does not fit in the memory left.
     TooLarge { needed: u64, left: u64 },
-    /// A value the program reads was not bound before it ran.
-    Unbound { global: u32 },
+    /// A value the program reads is not set in the store it runs with.
+    Unset { global: u32 },
     /// The run took every step it was allowed.
     OutOfFuel { fuel: u64 },
     /// Arithmetic past the range of an `Int`; `b` is unused for `Neg` and
@@ -59,8 +64,8 @@ pub(crate) enum Message {
     Fault(Fault),
     /// Context: loading a program onto a machine.
     LoadingProgram,
-    /// Context: binding a value the program reads.
-    Binding { global: u32 },
+    /// Context: setting a value of a store.
+    Setting { global: u32 },
     /// Context: the part of a value at `path` from `root`.
     AtPath { root: Root, path: Box<[Seg]> },
     /// Context: calling a function of the caller's.
@@ -386,6 +391,8 @@ pub(crate) enum Fault {
     OptionLostValue,
     ReadAsSeveral,
     NotUtf8,
+    StorePastLimit,
+    WriteToStore,
 }
 
 impl Fault {
@@ -427,6 +434,8 @@ impl Fault {
             Self::OptionLostValue => "an option lost its value",
             Self::ReadAsSeveral => "a value read as several",
             Self::NotUtf8 => "a string is not UTF-8",
+            Self::StorePastLimit => "a store past its limit",
+            Self::WriteToStore => "writes to the store it reads",
         }
     }
 }
@@ -453,16 +462,44 @@ impl Frame {
     }
 }
 
-/// A message shown with the names `program` gives its ids, or without
-/// names when there is no program.
+/// What gives a message's ids their names: a [`Program`] for its runs,
+/// or a store for setting its values.
+pub(crate) trait Names {
+    /// The table the message's type ids are in.
+    fn types(&self) -> &Types;
+
+    /// The name and type of the value `global`.
+    fn global(&self, global: u32) -> Option<(&str, TypeId)>;
+
+    /// The name of the caller's function `function`.
+    fn function(&self, function: u32) -> Option<&str>;
+}
+
+impl Names for Program {
+    fn types(&self) -> &Types {
+        &self.types
+    }
+
+    fn global(&self, global: u32) -> Option<(&str, TypeId)> {
+        let global = index(&self.globals, global)?;
+        Some((global.name.as_str(), global.ty))
+    }
+
+    fn function(&self, function: u32) -> Option<&str> {
+        Some(index(&self.functions, function)?.name.as_str())
+    }
+}
+
+/// A message shown with the names `names` gives its ids, or without
+/// names when there are none.
 pub(crate) struct Shown<'a> {
-    message: &'a Message,
-    program: Option<&'a Program>,
+    pub(crate) message: &'a Message,
+    pub(crate) names: Option<&'a dyn Names>,
 }
 
 impl fmt::Display for Shown<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let p = self.program;
+        let p = self.names;
 
         match self.message {
             Message::TooMuchMemory { needed, allowed } => write!(
@@ -470,17 +507,28 @@ impl fmt::Display for Shown<'_> {
                 "the program needs {} of memory, more than the {allowed} the machine allows",
                 plural(*needed, "word", "words")
             ),
-            Message::UnknownValue => f.write_str("the program reads no value of that name"),
-            Message::AlreadyBound { global } => match global_name(p, *global) {
-                Some(name) => write!(f, "`{name}` is already bound"),
-                None => f.write_str("the value is already bound"),
+            Message::NotDeclared { name } => write!(f, "no value `{name}` is declared"),
+            Message::OtherLayout { global } => match global.and_then(|g| global_name(p, g)) {
+                Some(name) => write!(
+                    f,
+                    "the store does not hold `{name}` where the program reads it, of its type"
+                ),
+                None => {
+                    f.write_str("the store does not hold the program's values where it reads them")
+                }
             },
+            Message::PastAddressSpace { store, machine } => write!(
+                f,
+                "the store's {} and the machine's {} are more than a run can address",
+                plural(*store, "word", "words"),
+                plural(*machine, "word", "words")
+            ),
             Message::Mistyped {
                 expected,
                 found,
                 in_some,
             } => {
-                match p.and_then(|p| p.types.to_type(*expected)) {
+                match p.and_then(|p| p.types().to_type(*expected)) {
                     Some(ty) => write!(f, "expected {ty}, found ")?,
                     None => f.write_str("expected another type, found ")?,
                 }
@@ -518,14 +566,13 @@ impl fmt::Display for Shown<'_> {
                 "the value needs {} of memory, {left} are left",
                 plural(*needed, "word", "words")
             ),
-            Message::Unbound { global } => match (global_name(p, *global), global_type(p, *global))
-            {
+            Message::Unset { global } => match (global_name(p, *global), global_type(p, *global)) {
                 (Some(name), Some(ty)) => {
                     let ty = ty.to_string();
                     let a = crate::error::article(&ty);
-                    write!(f, "`{name}` is not bound, bind {a} {ty} before running")
+                    write!(f, "`{name}` is not set, set it to {a} {ty} before running")
                 }
-                _ => f.write_str("a value the program reads is not bound"),
+                _ => f.write_str("a value the program reads is not set"),
             },
             Message::OutOfFuel { fuel } => write!(
                 f,
@@ -558,9 +605,9 @@ impl fmt::Display for Shown<'_> {
             Message::HostFailed => f.write_str("the function failed"),
             Message::Fault(fault) => write!(f, "the program is faulty: {}", fault.what()),
             Message::LoadingProgram => f.write_str("while loading the program"),
-            Message::Binding { global } => match global_name(p, *global) {
-                Some(name) => write!(f, "while binding `{name}`"),
-                None => f.write_str("while binding a value"),
+            Message::Setting { global } => match global_name(p, *global) {
+                Some(name) => write!(f, "while setting `{name}`"),
+                None => f.write_str("while setting a value"),
             },
             Message::AtPath { root, path } => {
                 f.write_str("at `")?;
@@ -668,27 +715,27 @@ fn index<T>(items: &[T], at: u32) -> Option<&T> {
     items.get(usize::try_from(at).ok()?)
 }
 
-fn global_name(program: Option<&Program>, global: u32) -> Option<&str> {
-    Some(index(&program?.globals, global)?.name.as_str())
+fn global_name(names: Option<&dyn Names>, global: u32) -> Option<&str> {
+    Some(names?.global(global)?.0)
 }
 
-fn global_type(program: Option<&Program>, global: u32) -> Option<crate::Type> {
-    let program = program?;
-    program.types.to_type(index(&program.globals, global)?.ty)
+fn global_type(names: Option<&dyn Names>, global: u32) -> Option<crate::Type> {
+    let names = names?;
+    names.types().to_type(names.global(global)?.1)
 }
 
-fn function_name(program: Option<&Program>, function: u32) -> Option<&str> {
-    Some(index(&program?.functions, function)?.name.as_str())
+fn function_name(names: Option<&dyn Names>, function: u32) -> Option<&str> {
+    names?.function(function)
 }
 
-fn field_name(program: Option<&Program>, record: TypeId, field: u32) -> Option<&str> {
-    match program?.types.get(record)? {
+fn field_name(names: Option<&dyn Names>, record: TypeId, field: u32) -> Option<&str> {
+    match names?.types().get(record)? {
         TypeNode::Record(fields) => Some(index(fields, field)?.name.as_str()),
         _ => None,
     }
 }
 
-/// Why a program could not be loaded, bound or run.
+/// Why a program could not be loaded or run.
 ///
 /// It is opaque: [`Display`](fmt::Display) gives its message, `{:#}` the
 /// whole chain of what was being done, and [`labels`](Self::labels) each
@@ -696,21 +743,24 @@ fn field_name(program: Option<&Program>, record: TypeId, field: u32) -> Option<&
 /// [`DebugInfo`], where in the expression it is.
 ///
 /// ```
-/// use evalite::{Environment, Machine, Type, Value};
+/// use evalite::{Environment, Globals, Machine, Type};
 ///
 /// let mut env = Environment::new();
 /// env.value("strength", Type::int())?;
 /// let program = evalite::compile("strength", &env)?;
 ///
+/// let globals = Globals::new(&env);
 /// let mut machine = Machine::default();
-/// let mut run = machine.load(&program)?;
-/// let error = run.bind("strength", &Value::bool(true)).unwrap_err();
+/// let error = machine.load(&program, &globals)?.run().unwrap_err();
 ///
-/// assert_eq!(error.to_string(), "expected another type, found Bool");
-/// assert_eq!(format!("{error:#}"), "expected another type, found Bool: while binding a value");
+/// assert_eq!(error.to_string(), "a value the program reads is not set");
+/// assert_eq!(
+///     format!("{error:#}"),
+///     "a value the program reads is not set: while running instruction 0: while running the program",
+/// );
 ///
 /// let labels: Vec<String> = error.labels(&program, None).map(|l| l.message().to_string()).collect();
-/// assert_eq!(labels, ["expected Int, found Bool", "while binding `strength`"]);
+/// assert_eq!(labels[0], "`strength` is not set, set it to an Int before running");
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
 pub struct RunError {
@@ -768,7 +818,6 @@ impl RunError {
     }
 
     /// Every frame, primary first.
-    #[cfg(test)]
     pub(crate) fn frames(&self) -> &[Frame] {
         &self.inner.frames
     }
@@ -802,17 +851,17 @@ impl RunError {
     /// label that of the innermost one.
     ///
     /// ```
-    /// use evalite::{Environment, Machine, Type, Value};
+    /// use evalite::{Environment, Globals, Machine, Type, Value};
     ///
     /// let mut env = Environment::new();
     /// env.value("a", Type::int())?;
     /// let source = "1 + a / 0";
     /// let (program, debug) = evalite::compile_debug(source, &env, &evalite::Options::new())?;
     ///
+    /// let mut globals = Globals::new(&env);
+    /// globals.set("a", &Value::int(7))?;
     /// let mut machine = Machine::default();
-    /// let mut run = machine.load(&program)?;
-    /// run.bind("a", &Value::int(7))?;
-    /// let error = run.run().unwrap_err();
+    /// let error = machine.load(&program, &globals)?.run().unwrap_err();
     ///
     /// let labels = error.labels(&program, Some(&debug)).collect::<Vec<_>>();
     /// assert_eq!(labels.len(), 3);
@@ -878,7 +927,7 @@ fn write_frames(frames: &[Frame], f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(
             &Shown {
                 message: &frame.message,
-                program: None,
+                names: None,
             },
             f,
         )?;
@@ -1088,11 +1137,11 @@ where
 /// The [`Label`]s of an error, primary first.
 ///
 /// ```
-/// use evalite::{Machine, Limits};
+/// use evalite::{Globals, Machine, Limits};
 ///
 /// let env = evalite::Environment::new();
 /// let program = evalite::compile("[1, 2, 3][1]", &env)?;
-/// let error = Machine::new(Limits::new().memory(1)).load(&program).unwrap_err();
+/// let error = Machine::new(Limits::new().memory(1)).load(&program, &Globals::new(&env)).unwrap_err();
 ///
 /// let labels = error.labels(&program, None);
 /// assert_eq!(labels.len(), 2);
@@ -1121,6 +1170,11 @@ enum LabelsInner<'a> {
     },
     /// One label without a span, the error's own text.
     One(Option<&'a (dyn fmt::Display + 'a)>),
+    /// Labels without spans, each a message shown already.
+    Shown {
+        frames: std::slice::Iter<'a, Box<str>>,
+        first: bool,
+    },
 }
 
 impl<'a> Labels<'a> {
@@ -1135,6 +1189,17 @@ impl<'a> Labels<'a> {
     pub(crate) fn one(error: &'a (dyn fmt::Display + 'a)) -> Self {
         Self {
             inner: LabelsInner::One(Some(error)),
+        }
+    }
+
+    /// Labels of messages shown already, the primary first, without
+    /// spans.
+    pub(crate) fn shown(frames: &'a [Box<str>]) -> Self {
+        Self {
+            inner: LabelsInner::Shown {
+                frames: frames.iter(),
+                first: true,
+            },
         }
     }
 }
@@ -1162,7 +1227,7 @@ impl<'a> Iterator for Labels<'a> {
                 Some(Label {
                     message: Text::Run(Shown {
                         message: &frame.message,
-                        program: *program,
+                        names: program.map(|p| p as &dyn Names),
                     }),
                     span,
                     primary,
@@ -1184,6 +1249,11 @@ impl<'a> Iterator for Labels<'a> {
                 span: None,
                 primary: true,
             }),
+            LabelsInner::Shown { frames, first } => Some(Label {
+                message: Text::Other(frames.next()?),
+                span: None,
+                primary: std::mem::replace(first, false),
+            }),
         }
     }
 
@@ -1198,6 +1268,7 @@ impl<'a> Iterator for Labels<'a> {
                 let n = usize::from(error.is_some());
                 (n, Some(n))
             }
+            LabelsInner::Shown { frames, .. } => frames.size_hint(),
         }
     }
 }
@@ -1218,11 +1289,11 @@ impl<'a> Label<'a> {
     /// Where in the source this label is about, when known.
     ///
     /// ```
-    /// use evalite::{Environment, Machine, Options};
+    /// use evalite::{Environment, Globals, Machine, Options};
     ///
     /// let env = Environment::new();
     /// let (program, debug) = evalite::compile_debug("2 + -(9223372036854775807 * 2)", &env, &Options::new())?;
-    /// let error = Machine::default().load(&program)?.run().unwrap_err();
+    /// let error = Machine::default().load(&program, &Globals::new(&env))?.run().unwrap_err();
     ///
     /// let primary = error.labels(&program, Some(&debug)).next().unwrap();
     /// assert_eq!(primary.span().map(|s| s.range()), Some(6..29));
@@ -1236,11 +1307,12 @@ impl<'a> Label<'a> {
     /// What it says, formatted when shown.
     ///
     /// ```
-    /// use evalite::{Environment, Machine, Limits};
+    /// use evalite::{Environment, Globals, Machine, Limits};
     ///
     /// let env = Environment::new();
     /// let program = evalite::compile("1 + 2", &env)?;
-    /// let error = Machine::new(Limits::new().fuel(1)).load(&program)?.run().unwrap_err();
+    /// let globals = Globals::new(&env);
+    /// let error = Machine::new(Limits::new().fuel(1)).load(&program, &globals)?.run().unwrap_err();
     ///
     /// let messages: Vec<String> = error.labels(&program, None).map(|l| l.message().to_string()).collect();
     /// assert_eq!(messages, [
@@ -1258,11 +1330,12 @@ impl<'a> Label<'a> {
     /// of the first label only.
     ///
     /// ```
-    /// use evalite::{Environment, Machine, Limits};
+    /// use evalite::{Environment, Globals, Machine, Limits};
     ///
     /// let env = Environment::new();
     /// let program = evalite::compile("1 + 2", &env)?;
-    /// let error = Machine::new(Limits::new().fuel(1)).load(&program)?.run().unwrap_err();
+    /// let globals = Globals::new(&env);
+    /// let error = Machine::new(Limits::new().fuel(1)).load(&program, &globals)?.run().unwrap_err();
     ///
     /// let primary: Vec<bool> = error.labels(&program, None).map(|l| l.is_primary()).collect();
     /// assert_eq!(primary, [true, false, false]);
@@ -1303,5 +1376,9 @@ impl fmt::Display for Text<'_> {
 /// Show `message` against `program`, for tests.
 #[cfg(test)]
 pub(crate) fn show(message: &Message, program: Option<&Program>) -> String {
-    Shown { message, program }.to_string()
+    Shown {
+        message,
+        names: program.map(|p| p as &dyn Names),
+    }
+    .to_string()
 }

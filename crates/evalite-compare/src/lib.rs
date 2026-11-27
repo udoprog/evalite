@@ -186,9 +186,11 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// evalite: an [`evalite::Environment`] declaring every variable as an
-/// `Int`, and a reused [`evalite::Machine`].
+/// `Int`, a [`evalite::Globals`] store holding their values, set once, and
+/// a reused [`evalite::Machine`].
 pub struct Evalite {
     env: evalite::Environment,
+    globals: evalite::Globals,
     machine: evalite::Machine,
 }
 
@@ -201,44 +203,33 @@ impl Evalite {
                 .map_err(|e| Error::new("evalite", e))?;
         }
 
+        let mut globals = evalite::Globals::new(&env);
+
+        for (name, value) in VARIABLES {
+            globals
+                .set(name, &evalite::Value::int(value))
+                .map_err(|e| Error::new("evalite", e))?;
+        }
+
         Ok(Self {
             env,
+            globals,
             machine: evalite::Machine::new(evalite::Limits::new()),
         })
     }
 
-    /// Compile: parse, type check and generate a verified program, then
-    /// resolve the values it reads, as a caller holding its values would
-    /// once per program.
+    /// Compile: parse, type check and generate a verified program.
     pub fn compile(&self, source: &str) -> Result<EvaliteProgram, Error> {
         let program = evalite::compile(source, &self.env).map_err(|e| Error::new("evalite", e))?;
-
-        let bindings = program
-            .globals()
-            .map(|(name, _)| {
-                let value = VARIABLES
-                    .iter()
-                    .find(|(n, _)| *n == name)
-                    .map(|(_, v)| *v)
-                    .ok_or_else(|| Error::new("evalite", format!("no value for {name}")))?;
-                Ok((name.to_owned(), evalite::Value::int(value)))
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
-
-        Ok(EvaliteProgram { program, bindings })
+        Ok(EvaliteProgram { program })
     }
 
-    /// Evaluate: load the program, bind its prepared values and run it.
+    /// Evaluate: load the program over the store of values and run it.
     pub fn evaluate(&mut self, program: &EvaliteProgram) -> Result<i64, Error> {
-        let mut run = self
+        let run = self
             .machine
-            .load(&program.program)
+            .load(&program.program, &self.globals)
             .map_err(|e| Error::new("evalite", e))?;
-
-        for (name, value) in &program.bindings {
-            run.bind(name, value)
-                .map_err(|e| Error::new("evalite", e))?;
-        }
 
         let outcome = run.run().map_err(|e| Error::new("evalite", e))?;
         let value = outcome.value();
@@ -250,11 +241,9 @@ impl Evalite {
     }
 }
 
-/// A compiled evalite program and the values it reads, resolved by name
-/// once.
+/// A compiled evalite program.
 pub struct EvaliteProgram {
     program: evalite::Program,
-    bindings: Vec<(String, evalite::Value)>,
 }
 
 /// evalexpr: a [`evalexpr::HashMapContext`] holding every variable as an

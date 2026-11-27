@@ -4,7 +4,7 @@
 //! `evalite`, the command line for [evalite]: small, strictly typed
 //! expressions that are safe to run on anyone's input.
 //!
-//! Variables are declared and bound with `--var name:Type=value`, where a
+//! Variables are declared and set with `--var name:Type=value`, where a
 //! type is `Int`, `Bool`, `String`, `Option<T>` or `List<T>`, and a value is
 //! `3`, `true`, `"text"`, `none`, `some(2)` or `[1, 2]`.
 //!
@@ -38,8 +38,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use evalite::{
-    DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, DEFAULT_MEMORY, Environment, Labels, Limits,
-    Machine, Options, RunError, Span,
+    DEFAULT_FUEL, DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, DEFAULT_MEMORY, Environment, Globals, Labels,
+    Limits, Machine, Options, RunError, Span,
 };
 
 use crate::vars::{Var, VarError, parse_var};
@@ -65,7 +65,7 @@ The language: https://docs.rs/evalite";
     after_help = AFTER_HELP
 )]
 struct Cli {
-    /// Declare and bind a variable, as `name:Type=value`.
+    /// Declare and set a variable, as `name:Type=value`.
     #[arg(long = "var", value_name = "NAME:TYPE=VALUE", global = true, value_parser = parse_var)]
     vars: Vec<Var>,
     /// The deepest an expression may nest.
@@ -158,17 +158,19 @@ impl Session<'_> {
 
         let failed = |error: RunError| render(source, error.labels(&program, Some(&debug)));
 
-        let mut run = machine.load(&program).map_err(failed)?;
-
-        // Variables the expression does not read are not bound.
-        let read = run.globals().map(|(n, _)| n).collect::<Vec<_>>();
+        // Variables the expression does not read are not set.
+        let read = program.globals().map(|(n, _)| n).collect::<Vec<_>>();
+        let mut globals = Globals::new(&self.env);
 
         for var in &self.cli.vars {
             if read.contains(&var.name.as_str()) {
-                run.bind(&var.name, &var.value).map_err(failed)?;
+                globals
+                    .set(&var.name, &var.value)
+                    .map_err(|error| render(source, error.labels()))?;
             }
         }
 
+        let run = machine.load(&program, &globals).map_err(failed)?;
         let outcome = run.run().map_err(failed)?;
         let ty = program.result_type();
         let mut out = format!("{} : {ty}", outcome.value());
@@ -176,12 +178,11 @@ impl Session<'_> {
         if self.cli.explain {
             let memory = program.memory();
             out.push_str(&format!(
-                "\ntype: {ty}\nmemory: {} words at most (stack {}, heap {}, constants {}, values read {}), {} used\nsteps: {}",
+                "\ntype: {ty}\nmemory: {} words at most (stack {}, heap {}, constants {}), {} used\nsteps: {}",
                 memory.total(),
                 memory.stack(),
                 memory.heap(),
                 memory.constants(),
-                memory.globals(),
                 outcome.memory(),
                 outcome.steps(),
             ));

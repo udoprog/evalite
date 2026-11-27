@@ -82,17 +82,17 @@ pub fn compile_with(
 /// # Examples
 ///
 /// ```
-/// use evalite::{Environment, Machine, Options, Type, Value};
+/// use evalite::{Environment, Globals, Machine, Options, Type, Value};
 ///
 /// let mut env = Environment::new();
 /// env.value("bonus", Type::int())?;
 /// let source = "1 + 9223372036854775807 + bonus";
 /// let (program, debug) = evalite::compile_debug(source, &env, &Options::new())?;
 ///
+/// let mut globals = Globals::new(&env);
+/// globals.set("bonus", &Value::int(0))?;
 /// let mut machine = Machine::default();
-/// let mut run = machine.load(&program)?;
-/// run.bind("bonus", &Value::int(0))?;
-/// let error = run.run().unwrap_err();
+/// let error = machine.load(&program, &globals)?.run().unwrap_err();
 ///
 /// let span = error.labels(&program, Some(&debug)).next().and_then(|l| l.span());
 /// assert_eq!(span.map(|s| &source[s.range()]), Some("1 + 9223372036854775807"));
@@ -1660,7 +1660,7 @@ impl<'a> Compiler<'a> {
             return Err(Diagnostics::one(internal("not one value at the end")));
         };
 
-        let program = Program::verify(
+        let mut program = Program::verify(
             self.env.fingerprint(),
             self.types,
             self.constants,
@@ -1673,6 +1673,8 @@ impl<'a> Compiler<'a> {
             Diagnostics::one(internal(format!("the compiled program is invalid: {e:#}")))
         })?;
 
+        // Its slots are the environment's, whose fingerprint it carries.
+        program.compiled = true;
         Ok((program, DebugInfo::new(self.spans)))
     }
 }

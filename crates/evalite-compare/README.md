@@ -44,17 +44,15 @@ Benchmarks are `compare/<expression>/<engine>/{compile,evaluate}`.
 
 | Engine   | `compile`                                              | `evaluate` |
 |----------|--------------------------------------------------------|------------|
-| evalite  | `evalite::compile`: parse, type check, generate and verify a `Program`; then resolve the values it reads (`Program::globals`) once | `Machine::load`, `bind` each prepared value, `run` |
+| evalite  | `evalite::compile`: parse, type check, generate and verify a `Program` | `Machine::load` over a `Globals` store set once, `run` |
 | evalexpr | `build_operator_tree`: tokenize and build a `Node`     | `Node::eval_with_context` against a filled `HashMapContext` |
 | fasteval | `Parser::parse` then `compile` into a reused, cleared `Slab`, which folds constants | `Instruction::eval` against a `BTreeMap<String, f64>` namespace |
 
-evalite's `evaluate` includes binding the values, since a run takes them
-that way; the peers read theirs from a context or namespace the caller
-filled once. The bindings are resolved by name when compiling, as evalite's
-own `sheet/evaluate` bench does, since calling `Program::globals` on every
-evaluation builds each type again. evalite also checks types when
-compiling, which the others leave to evaluation (evalexpr) or do not have
-(fasteval).
+Like the peers, which read their values from a context or namespace the
+caller filled once, evalite reads its values in place from a `Globals`
+store the caller set once, so `evaluate` copies none of them. evalite also
+checks types when compiling, which the others leave to evaluation
+(evalexpr) or do not have (fasteval).
 
 Engine versions in `results.json` are read from `Cargo.lock`, which is not
 committed, so run the bin from the workspace after building the bench.

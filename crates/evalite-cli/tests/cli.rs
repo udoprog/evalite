@@ -73,7 +73,8 @@ fn explain_prints_details() {
 
 #[test]
 fn explain_counts_words() {
-    // An `Option<Int>` is two words wherever it is held.
+    // An `Option<Int>` is two words on the stack; the value read is in
+    // the store, not the machine's memory.
     let out = run(
         &[
             "eval",
@@ -87,7 +88,7 @@ fn explain_counts_words() {
     assert!(out.ok, "{}", out.stderr);
     assert_eq!(
         out.stdout.trim_end(),
-        "5 : Int\ntype: Int\nmemory: 5 words at most (stack 3, heap 0, constants 0, values read 2), 5 used\nsteps: 5"
+        "5 : Int\ntype: Int\nmemory: 3 words at most (stack 3, heap 0, constants 0), 3 used\nsteps: 5"
     );
 }
 

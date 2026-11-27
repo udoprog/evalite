@@ -7,7 +7,7 @@ use crate::message::{Invalid, Message, StoreError};
 use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 6;
+pub(crate) const FORMAT: u32 = 7;
 
 /// How many nodes the globals' and host functions' types may have
 /// together, each written out in full, as [`Program::globals`] and
@@ -180,13 +180,12 @@ pub(crate) struct HostFunction {
 ///
 /// let program = evalite::compile("[1, 2, 3][bonus.unwrap_or(0)]", &env)?;
 /// let memory = program.memory();
-/// assert_eq!(memory.globals(), 2); // an `Option<Int>` is held in two words
 /// assert_eq!(memory.constants(), 3); // the constant list's entries
 /// assert!(memory.stack() > 0);
 /// assert_eq!(memory.heap(), 0);
 /// assert_eq!(
 ///     memory.total(),
-///     u64::from(memory.stack() + memory.heap() + memory.constants() + memory.globals()),
+///     u64::from(memory.stack() + memory.heap() + memory.constants()),
 /// );
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
@@ -195,7 +194,6 @@ pub struct Memory {
     pub(crate) stack: u32,
     pub(crate) heap: u32,
     pub(crate) constants: u32,
-    pub(crate) globals: u32,
 }
 
 impl Memory {
@@ -215,21 +213,13 @@ impl Memory {
         self.constants
     }
 
-    /// The globals' slots, up to the end of the last one it reads: the
-    /// words of every value declared before it too, since each value is
-    /// held where its [`Environment`](crate::Environment) puts it. A value
-    /// is a word, two for an `Option<Int>`. Their parts, such as a bound
-    /// list's entries, are the bindings' to fit in the memory left.
-    pub fn globals(&self) -> u32 {
-        self.globals
-    }
-
-    /// Every word, the parts of bound and returned values aside.
+    /// Every word of the machine's it takes, the parts of returned values
+    /// aside. The values it reads are not among them: they are in the
+    /// [`Globals`](crate::Globals) store it runs with.
     pub fn total(&self) -> u64 {
         u64::from(self.stack)
             .saturating_add(u64::from(self.heap))
             .saturating_add(u64::from(self.constants))
-            .saturating_add(u64::from(self.globals))
     }
 }
 
@@ -257,6 +247,10 @@ pub(crate) struct Stored {
 pub struct Program {
     /// The fingerprint of the layout it was compiled against.
     pub(crate) layout: u64,
+    /// Whether it was compiled here, rather than read from bytes: only
+    /// then is its fingerprint known to be that of the slots it reads,
+    /// as stored bytes may claim any fingerprint.
+    pub(crate) compiled: bool,
     pub(crate) types: Types,
     pub(crate) constants: Vec<Constant>,
     pub(crate) globals: Vec<Global>,
@@ -282,9 +276,9 @@ impl Program {
         self.memory
     }
 
-    /// The values it reads, which are bound before it runs, with their
-    /// types: each declared name the expression uses, once, and none it
-    /// does not.
+    /// The values it reads, which a [`Globals`](crate::Globals) store
+    /// holds for it, with their types: each declared name the expression
+    /// uses, once, and none it does not.
     ///
     /// ```
     /// use evalite::{Environment, Type};
@@ -475,8 +469,6 @@ impl Program {
             }
         }
 
-        let global_words = slots.iter().map(|(_, end, _)| *end).max().unwrap_or(0);
-
         let mut signatures = HashSet::new();
 
         for (at, function) in functions.iter().enumerate() {
@@ -530,10 +522,10 @@ impl Program {
         Ok(Self {
             memory: Memory {
                 constants: words(constant_words)?,
-                globals: global_words,
                 ..memory
             },
             layout,
+            compiled: false,
             types,
             constants,
             globals,
@@ -873,7 +865,6 @@ impl Verifier<'_> {
             stack: words(stack.max)?,
             heap: words(heap)?,
             constants: 0,
-            globals: 0,
         })
     }
 

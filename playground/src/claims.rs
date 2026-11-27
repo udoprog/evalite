@@ -151,13 +151,14 @@ pub const CLAIMS: &[Claim] = &[
             "// When the user saves the formula:\n\
              let bytes = evalite::compile(\"Int::min(wits, dexterity) + athletics\", &env)?.to_bytes()?;\n\
              \n\
-             // Later, whenever the values change:\n\
+             // The sheet's values, set once and as they change:\n\
+             globals.set(\"wits\", &Value::int(3))?;\n\
+             globals.set(\"dexterity\", &Value::int(2))?;\n\
+             globals.set(\"athletics\", &Value::int(1))?;\n\
+             \n\
+             // Later, whenever they change, run it over them:\n\
              let program = Program::from_bytes(&bytes)?;\n\
-             let mut run = machine.load(&program)?;\n\
-             run.bind(\"wits\", &Value::int(3))?;\n\
-             run.bind(\"dexterity\", &Value::int(2))?;\n\
-             run.bind(\"athletics\", &Value::int(1))?;\n\
-             run.run()?; // 3",
+             machine.load(&program, &globals)?.run()?; // 3",
         ),
         hint: None,
     },
@@ -304,7 +305,7 @@ mod tests {
 
     #[test]
     fn storing_and_loading_as_shown() {
-        use evalite::{Environment, Limits, Machine, Program, Type, Value};
+        use evalite::{Environment, Globals, Limits, Machine, Program, Type, Value};
 
         let mut env = Environment::new();
 
@@ -316,12 +317,14 @@ mod tests {
             .unwrap()
             .to_bytes()
             .unwrap();
+        let mut globals = Globals::new(&env);
+        globals.set("wits", &Value::int(3)).unwrap();
+        globals.set("dexterity", &Value::int(2)).unwrap();
+        globals.set("athletics", &Value::int(1)).unwrap();
+
         let program = Program::from_bytes(&bytes).unwrap();
         let mut machine = Machine::new(Limits::new());
-        let mut run = machine.load(&program).unwrap();
-        run.bind("wits", &Value::int(3)).unwrap();
-        run.bind("dexterity", &Value::int(2)).unwrap();
-        run.bind("athletics", &Value::int(1)).unwrap();
+        let run = machine.load(&program, &globals).unwrap();
         assert_eq!(run.run().unwrap().value().as_int(), Some(3));
 
         let error = Program::from_bytes(&bytes[..bytes.len() - 1]).unwrap_err();

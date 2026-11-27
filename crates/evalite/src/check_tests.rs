@@ -1183,17 +1183,9 @@ fn memory_bounds() {
         assert_eq!(memory(source), expected, "{source:?}");
     }
 
-    // The values a program reads are counted where the environment holds
-    // them: up to the end of the last slot it reads, `bonus`'s two words
-    // from word 8.
-    assert_eq!(compile("[wits, 2]", &env()).unwrap().memory().total(), 5);
-    assert_eq!(
-        compile("bonus.unwrap_or(wits)", &env())
-            .unwrap()
-            .memory()
-            .globals,
-        10
-    );
+    // The values a program reads are in the store, not the machine: only
+    // the words it pushes them to count.
+    assert_eq!(compile("[wits, 2]", &env()).unwrap().memory().total(), 4);
 }
 
 #[test]
@@ -1436,27 +1428,22 @@ fn tampered_programs() {
         (
             source,
             Box::new(|s| s.memory.stack -= 1),
-            "it declares 20 words of memory but uses 21: while verifying the program",
+            "it declares 5 words of memory but uses 6: while verifying the program",
         ),
         (
             source,
             Box::new(|s| s.memory.stack += 1),
-            "it declares 22 words of memory but uses 21: while verifying the program",
+            "it declares 7 words of memory but uses 6: while verifying the program",
         ),
         (
             source,
             Box::new(|s| s.memory.constants = 0),
-            "it declares 19 words of memory but uses 21: while verifying the program",
-        ),
-        (
-            "bonus",
-            Box::new(|s| s.memory.globals = 1),
-            "it declares 3 words of memory but uses 12: while verifying the program",
+            "it declares 4 words of memory but uses 6: while verifying the program",
         ),
         (
             "[wits]",
             Box::new(|s| s.memory.heap = 0),
-            "it declares 2 words of memory but uses 3: while verifying the program",
+            "it declares 1 word of memory but uses 2: while verifying the program",
         ),
         (
             "1 + 2",
@@ -2142,7 +2129,7 @@ fn stored_bytes_errors() {
     let error = load(&stored).unwrap_err();
     assert_eq!(
         format!("{error:#}"),
-        "it declares 1 word of memory but uses 3: while verifying the program"
+        "it declares 0 words of memory but uses 2: while verifying the program"
     );
 
     // The chain, frame by frame, as labels show it.
@@ -2153,17 +2140,17 @@ fn stored_bytes_errors() {
     assert_eq!(
         labels,
         [
-            ("it declares 1 word of memory but uses 3".to_owned(), true),
+            ("it declares 0 words of memory but uses 2".to_owned(), true),
             ("while verifying the program".to_owned(), false),
         ]
     );
 
     // Equal totals spent otherwise read as such.
     stored.memory.stack = 1;
-    stored.memory.globals = 2;
+    stored.memory.heap = 1;
     assert_eq!(
         load(&stored).unwrap_err().to_string(),
-        "it declares 3 words of memory, but uses them otherwise"
+        "it declares 2 words of memory, but uses them otherwise"
     );
 }
 
@@ -3164,7 +3151,7 @@ fn tampered_map_literals() {
         ),
         (
             Box::new(|s| s.memory.heap -= 1),
-            "it declares 8 words of memory but uses 9: while verifying the program".to_owned(),
+            "it declares 7 words of memory but uses 8: while verifying the program".to_owned(),
         ),
     ];
 
@@ -3454,28 +3441,29 @@ fn slot_widths() {
     assert_eq!(env.slot("b").unwrap().at, 3);
 }
 
-/// A run binds each value into its slot, and reads it from there, with
-/// slots it does not read left between.
+/// A run reads each value from its slot in the store, with slots it does
+/// not read, set or not, left between.
 #[test]
-fn binding_into_slots() {
+fn reading_from_slots() {
     let mut env = Environment::new();
     env.value("a", Type::option(Type::int())).unwrap();
     env.value("b", Type::list(Type::int())).unwrap();
     env.value("c", Type::int()).unwrap();
 
     let program = compile("c + b.len()", &env).unwrap();
-    assert_eq!(program.memory().globals(), 4);
+    let mut globals = Globals::new(&env);
+    globals
+        .set("b", &Value::list([Value::int(1), Value::int(2)]))
+        .unwrap();
+    globals.set("c", &Value::int(40)).unwrap();
 
     let mut machine = Machine::default();
-    let mut run = machine.load(&program).unwrap();
-    run.bind("b", &Value::list([Value::int(1), Value::int(2)]))
-        .unwrap();
-    run.bind("c", &Value::int(40)).unwrap();
+    let run = machine.load(&program, &globals).unwrap();
     assert_eq!(run.run().unwrap().value(), &Value::int(42));
 
-    let mut run = machine.load(&program).unwrap();
-    assert_eq!(
-        run.bind("a", &Value::none()).unwrap_err().to_string(),
-        "the program reads no value of that name"
-    );
+    // Setting a value it does not read changes nothing it reads.
+    globals.set("a", &Value::some(Value::int(7))).unwrap();
+    let run = machine.load(&program, &globals).unwrap();
+    assert_eq!(run.run().unwrap().value(), &Value::int(42));
+    assert_eq!(globals.get("a"), Some(Value::some(Value::int(7))));
 }

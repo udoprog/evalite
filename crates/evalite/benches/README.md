@@ -40,12 +40,12 @@ full run take about five minutes.
 - `compile`: source to a verified `Program` (parse, check, codegen and the
   verifier, which `compile` runs too).
 - `from_bytes`: a stored program decoded and verified.
-- `load`: `Machine::load`, which copies the constants in.
-- `load_bind`: `load` and `bind` of every global it reads, cloning each
-  value; `bind` is the difference from `load`.
-- `load_bind_run`: that and `run_with`, which includes reading the result
-  back into a `Value`; `run` is the difference from `load_bind`.
-- `end_to_end`: compile, load, bind and run.
+- `load`: `Machine::load` over the sheet's `Globals` store, which checks
+  the program's layout against the store's and copies the constants in.
+- `load_run`: that and `run_with`, which reads the values in the store
+  and includes reading the result back into a `Value`; `run` is the
+  difference from `load`.
+- `end_to_end`: compile, load and run.
 
 The cases, smallest first: `pool` (a dice pool sum), `pool_specialty`
 (attribute + skill + specialty + bonus), `unwrap_or_16` and `is_none_16`
@@ -61,10 +61,15 @@ to an `Int` by one more instruction, so the difference is roughly what
 reading the result costs.
 
 `sheet/*` is a whole character sheet, 108 computed values over one
-environment: `compile` and `from_bytes` of all of them, and `evaluate` of
-all of them from compiled programs, with the bindings prepared
-(`evaluate`) or looked up by name and cloned from the sheet's values
-(`evaluate_lookup`).
+environment: `compile` and `from_bytes` of all of them, `evaluate` of all
+of them from compiled programs over one store set once, and `set`, setting
+every value of the sheet in a new store, which a sheet does once rather
+than once a formula.
+
+`characterize/evaluate` is a sheet as characterize computes one: the
+sheet's values plus a `catalog` map of 10 000 entries, in one store set
+once, and 400 small formulas over it, each reading two or three values, a
+quarter of them one entry of the catalog.
 
 ## Profiling
 

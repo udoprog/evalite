@@ -31,8 +31,9 @@ caught before it runs, and no input can crash, hang or exhaust the host.
   safety](#limits-and-safety).
 - **Compile once, run many times.** Check an expression when the user saves
   it and store the compiled [`Program`] as bytes next to your data. Running
-  it later only binds new values, without parsing or checking again. See
-  [Storing programs](#storing-programs).
+  it later reads your values where a [`Globals`] store holds them, without
+  parsing, checking or copying them again. See [Storing
+  programs](#storing-programs) and [Values](#values).
 - **Stored bytes are checked.** Bytes read back from a database or a file
   may be corrupt or tampered with, so [`Program::from_bytes`] checks them
   again and refuses anything that is not a valid, well-typed program.
@@ -53,11 +54,11 @@ caught before it runs, and no input can crash, hang or exhaust the host.
 
 ## Quick start
 
-Declare what an expression may use, compile it, then bind values and run
-it:
+Declare what an expression may use, compile it, then set the values in a
+store and run it:
 
 ```rust
-use evalite::{Environment, Limits, Machine, Type, Value};
+use evalite::{Environment, Globals, Limits, Machine, Type, Value};
 
 let mut env = Environment::new();
 env.value("wits", Type::int())?;
@@ -67,13 +68,13 @@ env.value("bonus", Type::option(Type::int()))?;
 let program = evalite::compile("Int::min(wits, dexterity) + bonus.unwrap_or(0)", &env)?;
 assert_eq!(program.result_type(), Type::int());
 
-let mut machine = Machine::new(Limits::new());
-let mut run = machine.load(&program)?;
-run.bind("wits", &Value::int(3))?;
-run.bind("dexterity", &Value::int(2))?;
-run.bind("bonus", &Value::some(Value::int(1)))?;
+let mut globals = Globals::new(&env);
+globals.set("wits", &Value::int(3))?;
+globals.set("dexterity", &Value::int(2))?;
+globals.set("bonus", &Value::some(Value::int(1)))?;
 
-let outcome = run.run()?;
+let mut machine = Machine::new(Limits::new());
+let outcome = machine.load(&program, &globals)?.run()?;
 assert_eq!(outcome.value().as_int(), Some(3));
 
 // Mistakes are caught when compiling, and point at the input.
@@ -165,7 +166,7 @@ A map is read the same way, by its keys, as in
 `specialties[1001].dice` or `tags.get("brawl").unwrap_or(0)`:
 
 ```rust
-use evalite::{Environment, Machine, Type, Value};
+use evalite::{Environment, Globals, Machine, Type, Value};
 
 let mut env = Environment::new();
 env.value("specialties", Type::map(Type::int(), Type::record([("dice", Type::int())])))?;
@@ -176,15 +177,15 @@ let specialties = Value::map([
     (Value::int(7), Value::record([("dice", Value::int(1))])),
 ]);
 
+let mut globals = Globals::new(&env);
+globals.set("specialties", &specialties)?;
+
 let mut machine = Machine::default();
-let mut run = machine.load(&program)?;
-run.bind("specialties", &specialties)?;
-assert_eq!(run.run()?.value(), &Value::int(4));
+assert_eq!(machine.load(&program, &globals)?.run()?.value(), &Value::int(4));
 
 let program = evalite::compile("specialties[3].dice", &env)?;
-let mut run = machine.load(&program)?;
-run.bind("specialties", &specialties)?;
-assert_eq!(run.run().unwrap_err().to_string(), "the map has no key 3");
+let error = machine.load(&program, &globals)?.run().unwrap_err();
+assert_eq!(error.to_string(), "the map has no key 3");
 ```
 
 A type's functions are called by path, as in `Int::min(a, b, c)`:
@@ -244,14 +245,15 @@ string   = '"' ([^"\\] | '\"' | '\\')* '"'
 ## Limits and safety
 
 Four limits bound everything an expression can do, so it is safe to run
-whatever a user typed:
+whatever a user typed, and a store of values has a limit of its own:
 
 | Limit   | Bounds                                                              | Default                | Set with             |
 |---------|---------------------------------------------------------------------|------------------------|----------------------|
 | Nesting | each parenthesis, list, call, index and unary operator nests a level | [`DEFAULT_MAX_DEPTH`] (32) | [`Options::max_depth`] |
 | Length  | bytes of the expression's text, checked before it is lexed | [`DEFAULT_MAX_LEN`] (65536) | [`Options::max_len`] |
-| Memory  | 64-bit words for the stack, built lists, constants and bound values  | [`DEFAULT_MEMORY`] (1024)  | [`Limits::memory`]     |
+| Memory  | 64-bit words for the stack, built lists, constants and values functions return | [`DEFAULT_MEMORY`] (1024)  | [`Limits::memory`]     |
 | Fuel    | steps: one per instruction, plus one per list or map entry built, `Int` that `min`/`max` compares, word a function returns, and key or string-key word a map lookup compares | [`DEFAULT_FUEL`] (1000) | [`Limits::fuel`] |
+| Store   | 64-bit words for the parts of a store's values: strings, list and map entries, record fields, freed ones included | [`DEFAULT_GLOBALS`] (2^20) | [`Globals::with_limit`] |
 
 A type has bounds of its own: `MAX_TYPE_DEPTH` (64) levels and
 `MAX_TYPE_NODES` (65536) nodes written out, which `Environment::value`
@@ -271,9 +273,10 @@ bounds the wrong way round, and a host function's failure or wrongly typed
 result.
 
 ```rust
-use evalite::{Environment, Limits, Machine, Options};
+use evalite::{Environment, Globals, Limits, Machine, Options};
 
 let env = Environment::new();
+let globals = Globals::new(&env);
 
 let error = evalite::compile_with("(((1)))", &env, &Options::new().max_depth(2)).unwrap_err();
 assert_eq!(error.to_string(), "this parenthesis nests too deeply, the limit is 2 levels of nesting");
@@ -281,11 +284,11 @@ assert_eq!(error.to_string(), "this parenthesis nests too deeply, the limit is 2
 let program = evalite::compile("Int::min(1, 2, 3, 4, 5) + 9223372036854775807", &env)?;
 
 let mut machine = Machine::new(Limits::new().fuel(3));
-let error = machine.load(&program)?.run().unwrap_err();
+let error = machine.load(&program, &globals)?.run().unwrap_err();
 assert_eq!(error.to_string(), "the expression took too long: it used all of its 3 steps");
 
 let mut machine = Machine::new(Limits::new());
-let error = machine.load(&program)?.run().unwrap_err();
+let error = machine.load(&program, &globals)?.run().unwrap_err();
 assert_eq!(error.to_string(), "`1 + 9223372036854775807` overflows an Int");
 ```
 
@@ -309,16 +312,19 @@ declaration order and never moved, so a name is declared once. Every
 program compiled from it reads a value at the same slot, and records the
 environment's [`Environment::fingerprint`], a stable hash of the names and
 types in order. [`Environment::accepts`] tells whether a
-stored program reads its values where an environment holds them: one of
-the same fingerprint does, and so does one that only declares more values
-after the ones it reads.
+stored program reads its values where an environment holds them: one
+compiled against the same fingerprint does, and so does one whose every
+value is declared with its type in its slot, as in an environment that
+only declares more values after the ones it reads. A program read from
+bytes is checked value by value, as the bytes may claim any fingerprint.
+[`Machine::load`] refuses a program its store does not accept.
 
 A program carries no source text. To point run errors at the expression
 that failed, [`compile_debug`] also gives a [`DebugInfo`], which can be
 stored next to the program with [`DebugInfo::to_bytes`].
 
 ```rust
-use evalite::{DebugInfo, Environment, Machine, Options, Program, Type, Value};
+use evalite::{DebugInfo, Environment, Globals, Machine, Options, Program, Type, Value};
 
 let mut env = Environment::new();
 env.value("rank", Type::int())?;
@@ -330,14 +336,59 @@ let program = Program::from_bytes(&stored)?;
 let debug = DebugInfo::from_bytes(&stored_debug)?;
 assert_eq!(program.globals().collect::<Vec<_>>(), [("rank", &Type::int())]);
 
+let mut globals = Globals::new(&env);
+globals.set("rank", &Value::int(0))?;
+
 let mut machine = Machine::default();
-let mut run = machine.load(&program)?;
-run.bind("rank", &Value::int(0))?;
-let error = run.run().unwrap_err();
+let error = machine.load(&program, &globals)?.run().unwrap_err();
 let primary = error.labels(&program, Some(&debug)).next().and_then(|l| l.span());
 assert_eq!(primary.map(|s| s.range()), Some(0..9));
 
 assert!(Program::from_bytes(&stored[..stored.len() - 1]).is_err());
+```
+
+<br>
+
+## Values
+
+The values an expression reads live in a [`Globals`] store, one per set of
+values, such as one per character sheet. [`Globals::set`] checks a value
+against its declared type and writes it once, and every run of every
+program over the store reads it where it is: loading a program copies no
+values, however large they are, so a sheet of a thousand formulas over one
+large map pays for the map once, not once a formula. Setting a value again
+replaces it, freeing the words of the old one for values of the same size.
+A run reads the store and never writes to it, and reading a value that is
+not set is a run error naming it. A store has a word limit of its own
+([`Globals::with_limit`]), apart from the machine's [`Limits`].
+
+```rust
+use evalite::{Environment, Globals, Machine, Type, Value};
+
+let mut env = Environment::new();
+env.value("health", Type::record([("boxes", Type::int()), ("damage", Type::list(Type::int()))]))?;
+env.value("stamina", Type::int())?;
+
+let mut globals = Globals::new(&env);
+globals.set("health", &Value::record([
+    ("boxes", Value::int(7)),
+    ("damage", Value::list([Value::int(1), Value::int(2)])),
+]))?;
+
+let formulas = ["health.boxes - health.damage.len()", "health.boxes + stamina"];
+let programs = formulas
+    .iter()
+    .map(|f| evalite::compile(f, &env))
+    .collect::<Result<Vec<_>, _>>()?;
+
+let mut machine = Machine::default();
+assert_eq!(machine.load(&programs[0], &globals)?.run()?.value(), &Value::int(5));
+
+let error = machine.load(&programs[1], &globals)?.run().unwrap_err();
+assert_eq!(error.to_string(), "a value the program reads is not set");
+
+globals.set("stamina", &Value::int(3))?;
+assert_eq!(machine.load(&programs[1], &globals)?.run()?.value(), &Value::int(10));
 ```
 
 <br>
@@ -532,7 +583,7 @@ assert!(evalite::rewrite(source, &env, &one, &Options::new()).is_err());
 
 The `evalite` command runs expressions from the terminal, which is a quick
 way to try the language. Install it with `cargo install evalite-cli`.
-Variables are declared and bound with `--var name:Type=value`:
+Variables are declared and set with `--var name:Type=value`:
 
 ```text
 $ evalite eval 'Int::min(wits, dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
@@ -551,7 +602,7 @@ none : Option<Int>
 $ evalite eval '[10, 20, 30].get(rank).unwrap_or(0) * 2' --var rank:Int=1 --explain
 40 : Int
 type: Int
-memory: 7 words at most (stack 3, heap 0, constants 3, values read 1), 7 used
+memory: 6 words at most (stack 3, heap 0, constants 3), 6 used
 steps: 7
 ```
 
@@ -579,6 +630,7 @@ clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 [`DebugInfo::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.DebugInfo.html#method.to_bytes
 [`DebugInfo`]: https://docs.rs/evalite/latest/evalite/struct.DebugInfo.html
 [`DEFAULT_FUEL`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_FUEL.html
+[`DEFAULT_GLOBALS`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_GLOBALS.html
 [`DEFAULT_MAX_DEPTH`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MAX_DEPTH.html
 [`DEFAULT_MAX_LEN`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MAX_LEN.html
 [`DEFAULT_MEMORY`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MEMORY.html
@@ -589,6 +641,10 @@ clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 [`Limits::fuel`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.fuel
 [`Limits::memory`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.memory
 [`Machine::load`]: https://docs.rs/evalite/latest/evalite/struct.Machine.html#method.load
+[`Globals`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html
+[`Globals::set`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.set
+[`Globals::with_limit`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.with_limit
+[`Limits`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html
 [`MAX_DIAGNOSTICS`]: https://docs.rs/evalite/latest/evalite/constant.MAX_DIAGNOSTICS.html
 [`Node`]: https://docs.rs/evalite/latest/evalite/struct.Node.html
 [`NodeId`]: https://docs.rs/evalite/latest/evalite/struct.NodeId.html
