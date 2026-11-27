@@ -24,8 +24,8 @@ pub const MAX_TYPE_NODES: usize = 1 << 16;
 /// [`Type::record`], and look into one with the `is_*` and `as_*`
 /// try-accessors, which give `false` or `None` for any other type.
 ///
-/// Options nest: an `Option<Option<Int>>` is `none`, `some(none)` or
-/// `some(some(n))`, as `get` on a list of optional values gives.
+/// Options nest: an `Option<Option<Int>>` is `None`, `Some(None)` or
+/// `Some(Some(n))`, as `get` on a list of optional values gives.
 ///
 /// ```
 /// use evalite::Type;

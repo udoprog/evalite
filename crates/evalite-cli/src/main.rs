@@ -6,10 +6,10 @@
 //!
 //! Variables are declared and set with `--var name:Type=value`, where a
 //! type is `Int`, `Bool`, `String`, `Option<T>` or `List<T>`, and a value is
-//! `3`, `true`, `"text"`, `none`, `some(2)` or `[1, 2]`.
+//! `3`, `true`, `"text"`, `None`, `Some(2)` or `[1, 2]`.
 //!
 //! ```text
-//! $ evalite eval 'wits.min(dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
+//! $ evalite eval 'wits.min(dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=Some(1)'
 //! 3 : Int
 //!
 //! $ evalite eval 'skills[3] * 2' --var 'skills:List<Int>=[1, 2]'
@@ -48,11 +48,11 @@ use crate::vars::{Var, VarError, parse_var};
 const AFTER_HELP: &str = "\
 Variables:
   A type is Int, Bool, String, Option<T> or List<T>, and a value is 3, true,
-  \"text\", none, some(2) or [1, 2].
+  \"text\", None, Some(2) or [1, 2].
 
 Examples:
   evalite eval 'strength + 2' --var strength:Int=3
-  evalite eval 'bonus.unwrap_or(0) + 1' --var 'bonus:Option<Int>=none'
+  evalite eval 'bonus.unwrap_or(0) + 1' --var 'bonus:Option<Int>=None'
   evalite --var strength:Int=3          # one expression per line from stdin
 
 The language: https://docs.rs/evalite";

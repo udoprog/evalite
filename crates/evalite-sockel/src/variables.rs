@@ -56,7 +56,7 @@ pub struct Binding {
 
 /// One row of the [`VariablesEditor`], as typed: the type in the syntax
 /// evalite prints (`Int`, `Option<Int>`, `{boxes: Int}`) and the value in its
-/// literal syntax (`3`, `some(2)`, `{boxes: 7}`).
+/// literal syntax (`3`, `Some(2)`, `{boxes: 7}`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Variable {
     /// Tells the row apart from the others while the list changes; keep it

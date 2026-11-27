@@ -26,8 +26,8 @@ pub const EXAMPLES: &[Example] = &[
         source: "strength + bonus.unwrap_or(0) + specialties.brawl.unwrap_or(0)",
         vars: &[
             ("strength", "Int", "3"),
-            ("bonus", "Option<Int>", "some(2)"),
-            ("specialties", "{brawl: Option<Int>}", "{brawl: none}"),
+            ("bonus", "Option<Int>", "Some(2)"),
+            ("specialties", "{brawl: Option<Int>}", "{brawl: None}"),
         ],
         fuel: None,
     },

@@ -43,14 +43,14 @@ pub enum Gives {
 }
 
 const TYPED_VARS: &[(&str, &str, &str)] =
-    &[("rank", "Int", "3"), ("bonus", "Option<Int>", "some(2)")];
+    &[("rank", "Int", "3"), ("bonus", "Option<Int>", "Some(2)")];
 
 const SAFE_VARS: &[(&str, &str, &str)] =
     &[("rank", "Int", "2"), ("dice", "List<Int>", "[4, 2, 6]")];
 
 const COMPLETE_VARS: &[(&str, &str, &str)] = &[
     ("rank", "Int", "3"),
-    ("bonus", "Option<Int>", "some(2)"),
+    ("bonus", "Option<Int>", "Some(2)"),
     ("name", "String", "\"Ada\""),
 ];
 

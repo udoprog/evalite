@@ -35,7 +35,7 @@ fn fail<T>(message: impl Into<String>) -> Result<T, VarError> {
 }
 
 /// Parse `name:Type=value`, such as `strength:Int=3`,
-/// `bonus:Option<Int>=some(2)` or `track:{boxes: Int}={boxes: 7}`.
+/// `bonus:Option<Int>=Some(2)` or `track:{boxes: Int}={boxes: 7}`.
 pub(crate) fn parse_var(text: &str) -> Result<Var, VarError> {
     let Some((name, rest)) = text.split_once(':') else {
         return fail("expected `name:Type=value`, such as `strength:Int=3`");
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn parses_values() {
-        let v = parse_var("a:Option<List<Int>>=some([1, -2])").unwrap();
+        let v = parse_var("a:Option<List<Int>>=Some([1, -2])").unwrap();
         assert_eq!(
             v.value,
             Value::some(Value::list(vec![Value::int(1), Value::int(-2)]))
@@ -90,7 +90,7 @@ mod tests {
             Value::string("hi there")
         );
         assert_eq!(
-            parse_var("b:Option<Int>=none").unwrap().value,
+            parse_var("b:Option<Int>=None").unwrap().value,
             Value::none()
         );
     }
@@ -101,10 +101,10 @@ mod tests {
         assert!(parse_var("a:Int").is_err());
         assert!(parse_var("a:Float=1").is_err());
         assert!(parse_var("a:Int=x").is_err());
-        assert!(parse_var("a:Option<Option<Int>>=none").is_ok());
-        assert!(parse_var("a:Option<Option<Int>>=some(none)").is_ok());
-        assert!(parse_var("a:Option<Option<Int>>=some(some(1))").is_ok());
-        assert!(parse_var("a:Option<Option<Int>>=some(1)").is_err());
+        assert!(parse_var("a:Option<Option<Int>>=None").is_ok());
+        assert!(parse_var("a:Option<Option<Int>>=Some(None)").is_ok());
+        assert!(parse_var("a:Option<Option<Int>>=Some(Some(1))").is_ok());
+        assert!(parse_var("a:Option<Option<Int>>=Some(1)").is_err());
         assert!(parse_var("a:Int=1 2").is_err());
         assert_eq!(
             parse_var("t:{boxes: Int}={boxes: 7}").unwrap().value,

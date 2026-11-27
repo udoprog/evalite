@@ -195,7 +195,7 @@ impl Value {
     /// use evalite::Value;
     ///
     /// assert_eq!(Value::none().as_option(), Some(None));
-    /// assert_eq!(Value::none().to_string(), "none");
+    /// assert_eq!(Value::none().to_string(), "None");
     /// ```
     pub const fn none() -> Self {
         Self(Repr::None)
@@ -208,7 +208,7 @@ impl Value {
     ///
     /// let value = Value::some(Value::int(2));
     /// assert_eq!(value.as_option(), Some(Some(&Value::int(2))));
-    /// assert_eq!(value.to_string(), "some(2)");
+    /// assert_eq!(value.to_string(), "Some(2)");
     /// ```
     pub fn some(value: Value) -> Self {
         Self(Repr::Some(Box::new(value)))
@@ -530,9 +530,9 @@ impl fmt::Display for Value {
                     Repr::Int(n) => write!(f, "{n}")?,
                     Repr::Bool(b) => write!(f, "{b}")?,
                     Repr::String(s) => write_string(f, s)?,
-                    Repr::None => f.write_str("none")?,
+                    Repr::None => f.write_str("None")?,
                     Repr::Some(value) => {
-                        f.write_str("some(")?;
+                        f.write_str("Some(")?;
                         stack.push(Piece::Text(")"));
                         stack.push(Piece::Value(value));
                     }

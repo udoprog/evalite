@@ -50,7 +50,7 @@ impl fmt::Display for Expected<'_> {
         } else if ty.is_string() {
             f.write_str("a string in quotes, such as `\"Brawl\"`")
         } else if ty.as_option().is_some() {
-            f.write_str("`none` or `some(..)`")
+            f.write_str("`None` or `Some(..)`")
         } else if ty.as_list().is_some() {
             write!(f, "a {ty} such as `[..]`")
         } else {
@@ -121,7 +121,7 @@ impl FromStr for Type {
 
 impl Value {
     /// Parse a value of type `ty` as it is displayed: `3`, `-2`, `true`,
-    /// `"text"`, `none`, `some(2)`, `[1, 2]`, `{boxes: 7}`, or a map such
+    /// `"text"`, `None`, `Some(2)`, `[1, 2]`, `{boxes: 7}`, or a map such
     /// as `{1: "a", 42: "b"}`. A string is in quotes, escaping only `\"`
     /// and `\\`, a record gives each of its fields once, in any order, and
     /// a map each of its keys at most once, in any order. Whitespace may
@@ -136,8 +136,8 @@ impl Value {
     /// use evalite::{Type, Value};
     ///
     /// let ty = Type::parse("{boxes: Int, count: List<Option<Int>>}")?;
-    /// let value = Value::parse("{count: [some(-1), none], boxes: 7}", &ty)?;
-    /// assert_eq!(value.to_string(), "{boxes: 7, count: [some(-1), none]}");
+    /// let value = Value::parse("{count: [Some(-1), None], boxes: 7}", &ty)?;
+    /// assert_eq!(value.to_string(), "{boxes: 7, count: [Some(-1), None]}");
     /// assert_eq!(Value::parse(&value.to_string(), &ty)?, value);
     /// assert_eq!(Value::parse(r#""say \"hi\"""#, &Type::string())?, Value::string("say \"hi\""));
     ///
@@ -558,8 +558,8 @@ impl<'a> Cursor<'a> {
                 Value::string(self.quoted()?)
             } else if let Some(inner) = ty.as_option() {
                 match self.word() {
-                    ("none", _) => Value::none(),
-                    ("some", _) => {
+                    ("None", _) => Value::none(),
+                    ("Some", _) => {
                         self.expect('(')?;
                         stack.push(ValueFrame::Some);
                         ty = inner;

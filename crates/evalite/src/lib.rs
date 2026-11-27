@@ -106,7 +106,7 @@
 //! - `Map<K, V>`: values by key, the key an `Int` or a `String`, which come
 //!   from a name or a function declared with one, or from a literal such as
 //!   `{1: "a", 0x2A: "b"}` or `{"x": wits}`. `m[k]` is the value of key `k`,
-//!   an error when it is missing, and `m.get(k)` an `Option<V>`, `none` when
+//!   an error when it is missing, and `m.get(k)` an `Option<V>`, `None` when
 //!   it is missing. A lookup is a binary search of the keys, which are held
 //!   sorted. A literal's keys are integers, decimal or hexadecimal and
 //!   optionally negated, or strings, all of one type and each given once
@@ -117,7 +117,7 @@
 //!   unwrap it with `x.unwrap_or(0)`, which gives `0` when it is absent, or
 //!   with `x!`, which stops the run with an error when it is absent. Test it
 //!   with `x.is_some()` and `x.is_none()`. Options nest: an
-//!   `Option<Option<Int>>` is `none`, `some(none)` or `some(some(1))`, and
+//!   `Option<Option<Int>>` is `None`, `Some(None)` or `Some(Some(1))`, and
 //!   `x!!` unwraps both.
 //!
 //!   An expression writes one as `Some(x)`, or `None` where the option type
@@ -129,7 +129,7 @@
 //! Types and values are written the same way outside an expression, such as
 //! in a form or on a command line: [`Type::parse`] reads `Option<List<Int>>`,
 //! `Map<Int, String>` or `{boxes: Int}`, and [`Value::parse`] reads a value
-//! of a type, such as `some([1, -2])`, `{1: "a", 42: "b"}` or `{boxes: 7}`.
+//! of a type, such as `Some([1, -2])`, `{1: "a", 42: "b"}` or `{boxes: 7}`.
 //! Both read back what `Display` prints.
 //!
 //! Operators, tightest first. Binary operators are left-associative, except
@@ -158,12 +158,12 @@
 //! | `List<T>`   | `get(Int) -> Option<T>`, `len() -> Int`                      |
 //! | `Map<K, V>` | `get(K) -> Option<V>`, `len() -> Int`                        |
 //!
-//! `list.get(i)` is the entry at an index from 0, or `none` when the index
-//! is out of range, so `[10, 20].get(1)` is `some(20)`, an `Option<Int>`,
-//! and `[10, 20].get(2)` is `none`. Unwrap it like any option, as in
+//! `list.get(i)` is the entry at an index from 0, or `None` when the index
+//! is out of range, so `[10, 20].get(1)` is `Some(20)`, an `Option<Int>`,
+//! and `[10, 20].get(2)` is `None`. Unwrap it like any option, as in
 //! `[10, 20, 30].get(rank).unwrap_or(0)`. On a list of options it gives an
-//! option of an option, so an index out of range (`none`) is told apart from
-//! an absent entry (`some(none)`). `list[i]` is the entry itself, and an
+//! option of an option, so an index out of range (`None`) is told apart from
+//! an absent entry (`Some(None)`). `list[i]` is the entry itself, and an
 //! error out of range.
 //!
 //! A map is read the same way, by its keys, as in
@@ -273,8 +273,8 @@
 //! more than the machine has. Running out of fuel stops the run. There are no
 //! loops, so most expressions use a few dozen steps. Faults are errors, never
 //! panics: `Int` overflow, division by zero, `list[i]` past either end
-//! (`list.get(i)` gives `none` instead), `map[k]` of a missing key
-//! (`map.get(k)` gives `none` instead), `x!` of an absent option, `clamp` with its
+//! (`list.get(i)` gives `None` instead), `map[k]` of a missing key
+//! (`map.get(k)` gives `None` instead), `x!` of an absent option, `clamp` with its
 //! bounds the wrong way round, and a host function's failure or wrongly typed
 //! result.
 //!

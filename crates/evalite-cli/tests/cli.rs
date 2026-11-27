@@ -45,9 +45,9 @@ fn prints_value_and_type() {
 #[test]
 fn unwraps_options() {
     let expr = "bonus.unwrap_or(10) + 1";
-    let none = run(&["eval", expr, "--var", "bonus:Option<Int>=none"], "");
+    let none = run(&["eval", expr, "--var", "bonus:Option<Int>=None"], "");
     assert_eq!(none.stdout, "11 : Int\n");
-    let some = run(&["eval", expr, "--var", "bonus:Option<Int>=some(2)"], "");
+    let some = run(&["eval", expr, "--var", "bonus:Option<Int>=Some(2)"], "");
     assert_eq!(some.stdout, "3 : Int\n");
 }
 
@@ -80,7 +80,7 @@ fn explain_counts_words() {
             "eval",
             "x.unwrap_or(4) + 1",
             "--var",
-            "x:Option<Int>=none",
+            "x:Option<Int>=None",
             "--explain",
         ],
         "",
@@ -191,7 +191,7 @@ fn bad_var() {
         "x:Int",
         "x:Float=1",
         "x:Int=abc",
-        "x:Option<Option<Int>>=some(1)",
+        "x:Option<Option<Int>>=Some(1)",
     ] {
         let out = run(&["eval", "1", "--var", var], "");
         assert!(!out.ok, "{var}");

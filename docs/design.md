@@ -96,7 +96,7 @@ Comparisons do not chain: `a < b < c` is an error.
 | `Bool` | `true`, `false`. |
 | `String` | Literals with only `\"` and `\\` escapes. No string operators. Strings are used as arguments, map keys and record indexes. |
 | `List<T>` | `[a, b]`: one or more entries of one type. `[]` is an error. |
-| `Option<T>` | Comes from declared names and functions, `list.get(i)` and `map.get(k)`. It nests: `Option<Option<Int>>` is `none`, `some(none)` or `some(some(1))`. |
+| `Option<T>` | Comes from declared names and functions, `list.get(i)` and `map.get(k)`. It nests: `Option<Option<Int>>` is `None`, `Some(None)` or `Some(Some(1))`. |
 | records | `{boxes: Int, "Brawl (bar)": Int}`, with fields sorted by name. Read with `.boxes`, or `["Brawl (bar)"]` for a field that isn't a valid name. Expressions have no record literals. |
 | `Map<K, V>` | `K` is `Int` or `String`, which is checked at declaration (`DeclareError`) and in stored tables. Read with `m[k]` (a run error when missing) or `m.get(k)`. |
 
@@ -182,6 +182,10 @@ written once as `sig::Shape` with one type variable `T`:
 - Map values are written `{1: "a"}`. `Value::parse` refuses a duplicate key.
   `Value::map` sorts its entries and keeps the last of a repeated key.
 - `Value::parse` reads `Int`s in decimal only: `0x1A` is refused there.
+- Options print and parse as `None` and `Some(..)`, the spelling of the
+  expression syntax; lowercase `none` / `some(..)` is refused (a breaking
+  change in 0.3). Alternatives rejected: keep lowercase (two spellings for one
+  value), accept both (two texts for one value).
 
 **Map literals** (f3b53baf, landed; decided by the user):
 

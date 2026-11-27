@@ -164,16 +164,16 @@ fn value_errors() {
         ("expected `true` or `false`, found `yes`".into(), 0..3)
     );
     assert_eq!(
-        value_error("some(1", "Option<Int>"),
+        value_error("Some(1", "Option<Int>"),
         ("expected `)`, found the end".into(), 6..6)
     );
     assert_eq!(
         value_error("maybe", "Option<Int>"),
-        ("expected `none` or `some(..)`, found `maybe`".into(), 0..5)
+        ("expected `None` or `Some(..)`, found `maybe`".into(), 0..5)
     );
     assert_eq!(
-        value_error("some(1)", "Option<Option<Int>>"),
-        ("expected `none` or `some(..)`, found `1`".into(), 5..6)
+        value_error("Some(1)", "Option<Option<Int>>"),
+        ("expected `None` or `Some(..)`, found `1`".into(), 5..6)
     );
     assert_eq!(
         value_error("1", "List<Int>"),
@@ -272,7 +272,7 @@ fn maps_round_trip() {
     ]);
     assert_eq!(Value::parse(&value.to_string(), ty).unwrap(), value);
     assert_eq!(
-        Value::parse(r#" { "" : { } , "b \"q\"" : {3: some(4), -1: none} } "#, ty).unwrap(),
+        Value::parse(r#" { "" : { } , "b \"q\"" : {3: Some(4), -1: None} } "#, ty).unwrap(),
         value
     );
 
