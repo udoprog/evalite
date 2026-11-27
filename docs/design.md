@@ -156,7 +156,9 @@ type the cursor refuses is reported at its place in the expression, and the
 tokens up to the `>` closing the annotation are skipped as one `Invalid`
 token, with no other error (the end, or a closer of a group the annotation
 is in, stops the skip; inside a group the skipped text opens, only its
-closer counts), which keeps recovery linear (`tests::recovery_is_linear`
+closer counts, and any other closer stops the skip, so `(None::<{ ) + 3`
+skips just the `{`; at most `max_depth` groups opened, past which an opener
+stops it), which keeps recovery linear (`tests::recovery_is_linear`
 has annotation inputs). Whitespace after the type or the skipped text is
 outside the error node.
 Highlighting classes names inside `::<..>` as types (a record field's name as

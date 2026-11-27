@@ -665,8 +665,8 @@ impl Parser<'_> {
 
     /// Skip to past the `>` closing an annotation, whose error is reported,
     /// as one `Invalid` token. Inside a group the skipped text opens, only
-    /// its closer counts. The end, or a closer of a group the annotation is
-    /// in, stops it first. What the lexer rejects is skipped unreported:
+    /// its closer counts. The end, any other closer, or an opener past
+    /// `max_depth` groups opened stops it first, unconsumed. What the lexer rejects is skipped unreported:
     /// the annotation has its one error. Whitespace after the last token
     /// skipped is left to the caller.
     fn skip_annotation(&mut self) -> Result<(), Diagnostic> {
@@ -674,7 +674,9 @@ impl Parser<'_> {
         let mut first = None;
         let mut end = self.lexer.position();
         let mut angles = 1usize;
-        let mut groups = 0usize;
+        // The closers of the groups the skipped text opens, innermost last,
+        // at most `max_depth` of them.
+        let mut groups = Vec::new();
 
         loop {
             let token = match lexer.next() {
@@ -685,13 +687,22 @@ impl Parser<'_> {
 
             match token.kind {
                 Syntax::Whitespace => continue,
-                kind if opens(kind) => groups = groups.saturating_add(1),
-                kind if closes(kind) => match groups.checked_sub(1) {
-                    Some(g) => groups = g,
-                    None => break,
-                },
-                Syntax::Lt if groups == 0 => angles = angles.saturating_add(1),
-                Syntax::Gt if groups == 0 => angles = angles.saturating_sub(1),
+                kind if opens(kind) => {
+                    if groups.len() >= self.max_depth {
+                        break;
+                    }
+
+                    groups.push(closer(kind));
+                }
+                kind if closes(kind) => {
+                    if groups.last() != Some(&kind) {
+                        break;
+                    }
+
+                    groups.pop();
+                }
+                Syntax::Lt if groups.is_empty() => angles = angles.saturating_add(1),
+                Syntax::Gt if groups.is_empty() => angles = angles.saturating_sub(1),
                 _ => {}
             }
 
@@ -1153,6 +1164,15 @@ fn opens(kind: Syntax) -> bool {
         kind,
         Syntax::OpenParen | Syntax::OpenBracket | Syntax::OpenBrace
     )
+}
+
+/// The closer of the group the opener `kind` opens.
+fn closer(kind: Syntax) -> Syntax {
+    match kind {
+        Syntax::OpenBracket => Syntax::CloseBracket,
+        Syntax::OpenBrace => Syntax::CloseBrace,
+        _ => Syntax::CloseParen,
+    }
 }
 
 /// Whether `kind` closes a group.

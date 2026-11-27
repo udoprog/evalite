@@ -1469,6 +1469,30 @@ fn recover_annotations() {
             &[("expected a type, found `]`", 9..10)],
         ),
         (
+            "(None::<{ ) + 3",
+            "(+ (paren (error None :: < {)) 3)",
+            &[("expected a field name, found `)`", 10..11)],
+        ),
+        (
+            "(None::<[ ) + 3",
+            "(+ (paren (error None :: < [)) 3)",
+            &[("expected a type, found `[`", 8..9)],
+        ),
+        (
+            "[(None::<{ ] + 3)",
+            "(error (+ [(paren (error None :: < {))] 3) ))",
+            &[
+                ("expected `)` to close the `(` at byte 1, found `]`", 1..2),
+                ("expected a field name, found `]`", 11..12),
+                ("unmatched `)`, there is no group open to close", 16..17),
+            ],
+        ),
+        (
+            "[None::<{ ] + 3",
+            "(+ [(error None :: < {)] 3)",
+            &[("expected a field name, found `]`", 10..11)],
+        ),
+        (
             "None::<Int Bool> + 1",
             "(+ (error None :: < Int Bool>) 1)",
             &[("expected `>` after the type, found a name", 11..15)],
@@ -1634,6 +1658,7 @@ fn recovery_is_linear() {
         "None::<é".repeat(n),
         format!("{}{}", "None::<[".repeat(n), "]".repeat(n)),
         format!("{}{}", "(None::<1 ".repeat(n), ")".repeat(n)),
+        format!("{}{}", "(None::<{".repeat(n), ")".repeat(n)),
         "x::<".repeat(n),
     ] {
         let (tree, errors) = recover_with(&source, &unlimited);
