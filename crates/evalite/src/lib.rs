@@ -28,9 +28,11 @@
 //!   safety](#limits-and-safety).
 //! - **Compile once, run many times.** Check an expression when the user saves
 //!   it and store the compiled [`Program`] as bytes next to your data. Running
-//!   it later reads your values where a [`Globals`] store holds them, without
-//!   parsing, checking or copying them again. See [Storing
-//!   programs](#storing-programs) and [Values](#values).
+//!   it later reads your values in place from a [`Globals`] store without
+//!   parsing, checking or copying them again — 2–5× faster to evaluate than
+//!   `evalexpr`, and overtaking `fasteval` on larger formulas while keeping
+//!   static typing and sandboxing. See [Storing programs](#storing-programs),
+//!   [Values](#values) and [Performance](#performance).
 //! - **Stored bytes are checked.** Bytes read back from a database or a file
 //!   may be corrupt or tampered with, so [`Program::from_bytes`] checks them
 //!   again and refuses anything that is not a valid, well-typed program.
@@ -672,6 +674,35 @@
 //!
 //! <br>
 //!
+//! ## Performance
+//!
+//! evalite is built for compile-once, evaluate-many workloads over a shared
+//! [`Globals`] store. In
+//! [evalite-compare](https://github.com/udoprog/evalite/tree/main/crates/evalite-compare),
+//! measured against `evalexpr` and `fasteval` on the same 16 integer variables
+//! with compile and evaluate timed apart:
+//!
+//! - **Evaluation:** 2–5× faster than `evalexpr` across every expression
+//!   measured, and faster than `fasteval` on the 64-term formula (764 ns vs
+//!   1.11 µs) — while providing static typing, options, records, lists, maps
+//!   and deterministic fuel and memory limits. On the smallest expressions,
+//!   `fasteval` (`f64`-only, without type checking or sandboxing) stays ahead
+//!   by ~40–65 ns where fixed per-call overhead dominates.
+//! - **Compilation:** 2–26 µs per expression — slower than both peers because
+//!   `evalite::compile` parses, statically type-checks, generates bytecode and
+//!   runs the verifier before anything executes (work `evalexpr` defers to
+//!   evaluation and `fasteval` does not do).
+//! - **Shared store:** values live in [`Globals`] and are read in place, so
+//!   evaluating 400 formulas over a 10,000-entry map takes microseconds instead
+//!   of copying the map per run.
+//!
+//! See the [benchmark charts in the
+//! playground](https://udoprog.github.io/evalite/) or
+//! [crates/evalite-compare/README.md](https://github.com/udoprog/evalite/blob/main/crates/evalite-compare/README.md)
+//! for methodology and full numbers.
+//!
+//! <br>
+//!
 //! ## The command line
 //!
 //! The `evalite` command runs expressions from the terminal, which is a quick
@@ -731,14 +762,22 @@
 //! [`Diagnostic::labels`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html#method.labels
 //! [`Diagnostic`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html
 //! [`Diagnostics`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostics.html
+//! [`Environment::accepts`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html#method.accepts
+//! [`Environment::fingerprint`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html#method.fingerprint
+//! [`Environment::function_repeated`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html#method.function_repeated
+//! [`Environment`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html
 //! [`Label`]: https://docs.rs/evalite/latest/evalite/struct.Label.html
 //! [`Limits::fuel`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.fuel
 //! [`Limits::memory`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.memory
 //! [`Machine::load`]: https://docs.rs/evalite/latest/evalite/struct.Machine.html#method.load
 //! [`Globals`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html
 //! [`Globals::from_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.from_bytes
+//! [`Globals::insert`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.insert
 //! [`Globals::migrate`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.migrate
+//! [`Globals::push`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.push
+//! [`Globals::remove`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.remove
 //! [`Globals::set`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.set
+//! [`Globals::set_at`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.set_at
 //! [`Globals::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.to_bytes
 //! [`Globals::with_limit`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.with_limit
 //! [`Limits`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html
@@ -747,16 +786,20 @@
 //! [`NodeId`]: https://docs.rs/evalite/latest/evalite/struct.NodeId.html
 //! [`Options::max_depth`]: https://docs.rs/evalite/latest/evalite/struct.Options.html#method.max_depth
 //! [`Options::max_len`]: https://docs.rs/evalite/latest/evalite/struct.Options.html#method.max_len
+//! [`Path`]: https://docs.rs/evalite/latest/evalite/struct.Path.html
 //! [`Program::from_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Program.html#method.from_bytes
 //! [`Program::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Program.html#method.to_bytes
 //! [`Program`]: https://docs.rs/evalite/latest/evalite/struct.Program.html
 //! [`Reference`]: https://docs.rs/evalite/latest/evalite/struct.Reference.html
 //! [`references`]: https://docs.rs/evalite/latest/evalite/fn.references.html
+//! [`Rewrite::check`]: https://docs.rs/evalite/latest/evalite/struct.Rewrite.html#method.check
+//! [`rewrite`]: https://docs.rs/evalite/latest/evalite/fn.rewrite.html
 //! [`RunError`]: https://docs.rs/evalite/latest/evalite/struct.RunError.html
 //! [`Step`]: https://docs.rs/evalite/latest/evalite/struct.Step.html
 //! [`Structure::apply`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.apply
 //! [`Structure::complete`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.complete
 //! [`Structure::references`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.references
+//! [`Structure::rewrite`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.rewrite
 //! [`Structure::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.to_bytes
 //! [`Structure`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html
 //! [`StructureError`]: https://docs.rs/evalite/latest/evalite/struct.StructureError.html

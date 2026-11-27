@@ -145,7 +145,8 @@ pub const CLAIMS: &[Claim] = &[
     Claim {
         head: "Compile once, run many times",
         body: "Check an expression when the user saves it, and keep the compiled program as bytes \
-               next to your data. Running it later skips parsing and checking.",
+               next to your data. Running it later reads values in place from a Globals store without \
+               parsing, checking or copying them again.",
         cases: &[],
         rust: Some(
             "// When the user saves the formula:\n\
