@@ -769,14 +769,54 @@ Decisions (user, 2026-11-27, on b128c319; shape by the lead on landing):
 Not exposed: whether a key literal was written in hex. Phase 2 reads it from
 the span text or the `Hex` node.
 
-**Next:** References 2 (2a7885af), `rewrite(from_path, to_path)`:
+### 9.4 Rewrite (`rewrite.rs`, 2a7885af)
 
-- it rewrites a path prefix, which covers renaming a global or a field,
-  re-keying, and renaming a host function;
-- text is patched with span edits that keep formatting, switching field
-  spelling where needed, with hex keys staying hex;
-- structures are patched as node edits;
-- the result must still type-check when an `Environment` is given.
+`evalite::rewrite(source, &env, &rewrite, &options) -> (String, usize)` and
+`Structure::rewrite(&env, &rewrite, &options) -> usize` replace one path with
+another wherever an expression reads it, or a path past it, and give how
+many references were rewritten:
+
+- `Path` is the host's owned path: `Path::value(name)` or
+  `Path::function(name)`, then `.field(name)`, `.int_key(n)`,
+  `.string_key(s)` and `.index(n)`. It has literal steps only, and
+  `Display`s as `specialties[26].dice`. `Reference::starts_with(&path)` tests
+  a reference against it. A dynamic step starts with no literal step.
+- `Rewrite::new(from, to)`, optionally `.check(&new_env)`. `from` and `to`
+  must start at the same kind of name and have the same kinds of steps. Each
+  part that differs is replaced in place, which covers renaming a value, a
+  host function or a field along a path, and re-keying. `to`'s root must be a
+  valid name.
+- References are found against `env`, the environment the expression
+  compiles against now. With `check`, the result must compile against that
+  environment (usually the one with the new names), else nothing changes.
+  The check also runs when nothing matched, so it reports formulas the new
+  environment breaks.
+- Text: each change is a span edit of exactly its bytes, so spacing and
+  parentheses are kept. A dotted field whose new name isn't a plain field
+  name becomes `["x y"]`, replacing from its `.`. A quoted field stays quoted.
+  An `Int` key or index written in hex stays hex, with its `0x`/`0X` and
+  digit case.
+- Structures: node edits on a clone, swapped in only on success. A `Name` or
+  `Call` is renamed, a `Field` is renamed or becomes an `Index` by a new
+  `String` node, a `String` node is replaced, and an `Int`/`Hex` literal is
+  replaced with one of the same kind.
+- Cost: one references walk, then the edits sorted by start, so linear in
+  the expression plus the edits (and the sort).
+- `RewriteError` is opaque. Its causes are a shape mismatch, an invalid new
+  name, the source failing to compile, and the result failing the check.
+  `{:#}` and `source()` give the compile errors.
+
+Decisions (lead, 2026-11-27, recommended options):
+
+| Question | Picked | Alternatives |
+|---|---|---|
+| Path type | an owned, public `Path` builder with literal steps (also for Globals 3) | `&[Step]`, which hosts cannot build because steps carry spans; a data-carrying public enum |
+| Key steps | `int_key`/`string_key` builders, so a path never holds a non-key value | `key(Value)` refused later for other kinds |
+| Which rewrites | same root kind and same step kinds, so every changed part is a token edit | any prefix to any prefix, which can't be expressed when the path runs through `unwrap_or(..)` or `get(..)` |
+| Two environments | find against `env`; check against an optional `Rewrite::check` env | check against `env` itself, which can't hold both the old and the new names of a renamed field |
+| API shape | a `Rewrite` value passed to `evalite::rewrite` / `Structure::rewrite`, like `references` | free functions with six arguments, `from`, `to` and an `Option<&Environment>` among them |
+| Count | references that read `from`; 0 when `from == to` | edits made |
+| `i64::MIN` keys | refused by the check, since the literal can't be written; unchecked, it is written and doesn't compile | a special form |
 
 ## 10. Planned: the globals store
 
@@ -892,7 +932,7 @@ map literals (f3b53baf) and references (b128c319, landed), which all touch
 | 6 | Values per run | Read in place, read-only. Temporaries in scratch | Copy on load (the cost the store exists to remove). |
 | 7 | Unset globals | A set flag per slot. Reading an unset global is a run error naming it | Default values (hide mistakes), or refusing to run unless all are set (a program may read only set ones). |
 | 8 | Store limit | A word limit, `set` failing cleanly | Unbounded (unsafe for hosts storing user data). |
-| 9 | Update paths | The references `Reference`/`Step` path, literal steps only | A separate path type. A dynamic step has no single target. |
+| 9 | Update paths | `Path` from References 2 (9.4), literal steps only | A separate path type. A dynamic step has no single target. |
 | 10 | Missing key or index in `set_at` | Error. Inserting is Globals 4 | Upsert (blurs set and insert). |
 | 11 | Container capacity | A header word before the entries, with the reference keeping (start, len) | Capacity in the reference word (changes the run-time layout and halves the address bits), or exact-size reallocation per update (O(n) per insert). |
 | 12 | Growth and shrink | Double past capacity (min 4). Halve below a quarter | A fixed increment (quadratic total cost). Halving at a half (thrash). |

@@ -474,6 +474,49 @@
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! To make the change, [`rewrite`] replaces one [`Path`] with another
+//! wherever an expression reads it: a value or a function renamed, a field
+//! renamed along a path, or a key re-keyed. Only the bytes of the parts that
+//! change are replaced, so the rest of the text stays as the user wrote it,
+//! and [`Structure::rewrite`] edits a structure's nodes the same way. Given
+//! the environment with the new names, [`Rewrite::check`] refuses a rewrite
+//! whose result would not compile.
+//!
+//! ```
+//! use evalite::{Environment, Options, Path, Rewrite, Type};
+//!
+//! let specialty = Type::record([("dice", Type::int())]);
+//! let mut env = Environment::new();
+//! env.value("specialties", Type::map(Type::int(), specialty.clone()))?;
+//!
+//! let mut renamed = Environment::new();
+//! renamed.value("skills", Type::map(Type::int(), specialty))?;
+//!
+//! let source = "specialties[0x1A2B].dice * 2 + specialties[7].dice";
+//!
+//! let rekey = Rewrite::new(
+//!     Path::value("specialties").int_key(0x1A2B),
+//!     Path::value("specialties").int_key(0x1A2C),
+//! )
+//! .check(&env);
+//! let (text, n) = evalite::rewrite(source, &env, &rekey, &Options::new())?;
+//! assert_eq!((text.as_str(), n), ("specialties[0x1A2C].dice * 2 + specialties[7].dice", 1));
+//!
+//! let rename = Rewrite::new(Path::value("specialties"), Path::value("skills")).check(&renamed);
+//! let (text, n) = evalite::rewrite(source, &env, &rename, &Options::new())?;
+//! assert_eq!((text.as_str(), n), ("skills[0x1A2B].dice * 2 + skills[7].dice", 2));
+//!
+//! // Renaming only one of them leaves `specialties[7]`, which `renamed` does
+//! // not declare.
+//! let one = Rewrite::new(
+//!     Path::value("specialties").int_key(7),
+//!     Path::value("skills").int_key(7),
+//! )
+//! .check(&renamed);
+//! assert!(evalite::rewrite(source, &env, &one, &Options::new()).is_err());
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! <br>
 //!
 //! ## The command line
@@ -578,6 +621,7 @@ mod methods;
 mod parser;
 mod program;
 mod references;
+mod rewrite;
 mod sig;
 mod structure;
 mod syntax;
@@ -616,6 +660,9 @@ mod types_tests;
 #[cfg(test)]
 mod references_tests;
 
+#[cfg(test)]
+mod rewrite_tests;
+
 pub use self::check::{compile, compile_debug, compile_with};
 pub use self::complete::{CompleteError, Completion, CompletionKind};
 pub use self::debug::DebugInfo;
@@ -626,7 +673,8 @@ pub use self::parser::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, Options};
 #[cfg(test)]
 pub(crate) use self::parser::{Parsed, Tree, parse_with};
 pub use self::program::{Memory, Program};
-pub use self::references::{Reference, ReferenceKind, Step, StepKind, references};
+pub use self::references::{Path, Reference, ReferenceKind, Step, StepKind, references};
+pub use self::rewrite::{Rewrite, RewriteError, rewrite};
 pub use self::structure::{
     BinaryOp, EditError, HOLE, Node, NodeId, Structure, StructureError, StructureErrors, UnaryOp,
 };

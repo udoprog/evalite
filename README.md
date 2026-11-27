@@ -469,6 +469,48 @@ assert_eq!(dice.name(), Some("dice"));
 assert_eq!(refs[1].steps()[0].kind(), StepKind::Dynamic);
 ```
 
+To make the change, [`rewrite`] replaces one [`Path`] with another
+wherever an expression reads it: a value or a function renamed, a field
+renamed along a path, or a key re-keyed. Only the bytes of the parts that
+change are replaced, so the rest of the text stays as the user wrote it,
+and [`Structure::rewrite`] edits a structure's nodes the same way. Given
+the environment with the new names, [`Rewrite::check`] refuses a rewrite
+whose result would not compile.
+
+```rust
+use evalite::{Environment, Options, Path, Rewrite, Type};
+
+let specialty = Type::record([("dice", Type::int())]);
+let mut env = Environment::new();
+env.value("specialties", Type::map(Type::int(), specialty.clone()))?;
+
+let mut renamed = Environment::new();
+renamed.value("skills", Type::map(Type::int(), specialty))?;
+
+let source = "specialties[0x1A2B].dice * 2 + specialties[7].dice";
+
+let rekey = Rewrite::new(
+    Path::value("specialties").int_key(0x1A2B),
+    Path::value("specialties").int_key(0x1A2C),
+)
+.check(&env);
+let (text, n) = evalite::rewrite(source, &env, &rekey, &Options::new())?;
+assert_eq!((text.as_str(), n), ("specialties[0x1A2C].dice * 2 + specialties[7].dice", 1));
+
+let rename = Rewrite::new(Path::value("specialties"), Path::value("skills")).check(&renamed);
+let (text, n) = evalite::rewrite(source, &env, &rename, &Options::new())?;
+assert_eq!((text.as_str(), n), ("skills[0x1A2B].dice * 2 + skills[7].dice", 2));
+
+// Renaming only one of them leaves `specialties[7]`, which `renamed` does
+// not declare.
+let one = Rewrite::new(
+    Path::value("specialties").int_key(7),
+    Path::value("skills").int_key(7),
+)
+.check(&renamed);
+assert!(evalite::rewrite(source, &env, &one, &Options::new()).is_err());
+```
+
 <br>
 
 ## The command line

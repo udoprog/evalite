@@ -3,6 +3,7 @@
 //! checker's own walk so every step is typed as compiling types it.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use syntree::Span;
 
@@ -10,7 +11,8 @@ use crate::check::references_parsed;
 use crate::env::Environment;
 use crate::error::Diagnostics;
 use crate::parser::{Options, parse_with};
-use crate::structure::NodeId;
+use crate::structure::{NodeId, escape, is_reserved};
+use crate::types::is_field_name;
 use crate::value::Value;
 
 /// What a [`Reference`] starts at.
@@ -42,7 +44,7 @@ pub enum StepKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum StepRepr {
+pub(crate) enum StepRepr {
     Field(String),
     Key(Value),
     Index(i64),
@@ -190,6 +192,132 @@ impl Reference {
     pub fn steps(&self) -> &[Step] {
         &self.steps
     }
+
+    /// Whether it reads `path`, or a path past it: `stats.rank.max` starts
+    /// with `stats` and `stats.rank`. A dynamic step starts with no literal
+    /// step.
+    ///
+    /// ```
+    /// use evalite::{Environment, Options, Path, Type};
+    ///
+    /// let mut env = Environment::new();
+    /// env.value("stats", Type::record([("rank", Type::int()), ("wits", Type::int())]))?;
+    ///
+    /// let refs = evalite::references("stats.rank + stats.wits", &env, &Options::new())?;
+    /// let rank = Path::value("stats").field("rank");
+    /// assert_eq!(refs.iter().filter(|r| r.starts_with(&rank)).count(), 1);
+    /// assert!(refs.iter().all(|r| r.starts_with(&Path::value("stats"))));
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn starts_with(&self, path: &Path) -> bool {
+        self.kind == path.kind
+            && self.name == path.name
+            && self.steps.len() >= path.steps.len()
+            && self
+                .steps
+                .iter()
+                .zip(&path.steps)
+                .all(|(step, want)| step.repr != StepRepr::Dynamic && step.repr == *want)
+    }
+}
+
+/// A path from a value or a function's result through literal fields, map
+/// keys and list indexes, such as `specialties[0x1A].dice`, as a host
+/// writes it to find or [`rewrite`](crate::rewrite()) the
+/// [`Reference`]s that read it.
+///
+/// ```
+/// use evalite::Path;
+///
+/// let path = Path::value("specialties").int_key(0x1A).field("dice");
+/// assert_eq!(path.to_string(), "specialties[26].dice");
+/// assert_eq!(Path::function("roll").field("Brawl (bar)").to_string(), r#"roll()["Brawl (bar)"]"#);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Path {
+    pub(crate) kind: ReferenceKind,
+    pub(crate) name: String,
+    /// Never [`StepRepr::Dynamic`].
+    pub(crate) steps: Vec<StepRepr>,
+}
+
+impl Path {
+    /// The path of the value `name`.
+    pub fn value(name: impl Into<String>) -> Self {
+        Self::root(ReferenceKind::Value, name.into())
+    }
+
+    /// The path of what a call of the function `name` gives.
+    pub fn function(name: impl Into<String>) -> Self {
+        Self::root(ReferenceKind::Function, name.into())
+    }
+
+    fn root(kind: ReferenceKind, name: String) -> Self {
+        Self {
+            kind,
+            name,
+            steps: Vec::new(),
+        }
+    }
+
+    /// Then the record's field `name`.
+    pub fn field(mut self, name: impl Into<String>) -> Self {
+        self.steps.push(StepRepr::Field(name.into()));
+        self
+    }
+
+    /// Then the map's `Int` key `key`.
+    pub fn int_key(mut self, key: i64) -> Self {
+        self.steps.push(StepRepr::Key(Value::int(key)));
+        self
+    }
+
+    /// Then the map's `String` key `key`.
+    pub fn string_key(mut self, key: impl Into<String>) -> Self {
+        self.steps.push(StepRepr::Key(Value::string(key)));
+        self
+    }
+
+    /// Then the list's index `index`.
+    pub fn index(mut self, index: i64) -> Self {
+        self.steps.push(StepRepr::Index(index));
+        self
+    }
+}
+
+impl fmt::Display for Path {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.name)?;
+
+        if self.kind == ReferenceKind::Function {
+            f.write_str("()")?;
+        }
+
+        for step in &self.steps {
+            match step {
+                StepRepr::Field(name) if is_field_name(name) && !is_reserved(name) => {
+                    write!(f, ".{name}")?;
+                }
+                StepRepr::Field(name) => write!(f, "[{}]", quoted(name))?,
+                StepRepr::Key(key) => match (key.as_int(), key.as_str()) {
+                    (Some(n), _) => write!(f, "[{n}]")?,
+                    (_, Some(s)) => write!(f, "[{}]", quoted(s))?,
+                    _ => f.write_str("[?]")?,
+                },
+                StepRepr::Index(n) => write!(f, "[{n}]")?,
+                StepRepr::Dynamic => f.write_str("[?]")?,
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// `s` as a string literal.
+pub(crate) fn quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len().saturating_add(2));
+    escape(&mut out, s);
+    out
 }
 
 /// Every name `source` uses, as a [`Reference`] with the path it reads,
