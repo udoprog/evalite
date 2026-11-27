@@ -1826,7 +1826,12 @@ impl<'a> Compiler<'a> {
                     ));
                 }
 
-                self.emit(Instr::MapIndex(list.ty));
+                let hex = hex_literal(index_node, self.source);
+                self.emit(if hex {
+                    Instr::MapIndexHex(list.ty)
+                } else {
+                    Instr::MapIndex(list.ty)
+                });
                 self.record_index(list.path, true, index_node);
                 self.push_path(value, *node.span(), list.path);
                 return Ok(());
@@ -2443,6 +2448,35 @@ fn literal(node: N<'_>, source: &str) -> (Option<Literal>, Span<u32>) {
     };
 
     (literal, *node.span())
+}
+
+/// Whether `node` is an integer literal written in hexadecimal, under
+/// a minus or parentheses or not.
+fn hex_literal(node: N<'_>, source: &str) -> bool {
+    let mut node = node;
+
+    while node.value() == Syntax::Paren {
+        match exprs(node).next() {
+            Some(inner) => node = inner,
+            None => return false,
+        }
+    }
+
+    let hex = |n: N<'_>, negative: bool| {
+        n.value() == Syntax::Integer
+            && source
+                .get(n.range())
+                .and_then(|t| parse_int(t, negative))
+                .is_some_and(|(_, hex)| hex)
+    };
+
+    match node.value() {
+        Syntax::Integer => hex(node, false),
+        Syntax::Unary if operator(node) == Some(Syntax::Minus) => {
+            exprs(node).next().is_some_and(|n| hex(n, true))
+        }
+        _ => false,
+    }
 }
 
 /// What a map's key is.

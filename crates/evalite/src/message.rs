@@ -151,6 +151,8 @@ pub(crate) enum Message {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Key {
     Int(i64),
+    /// An `Int` key written in hexadecimal, shown that way.
+    Hex(i64),
     /// A `String` key, cut to [`MAX_KEY_SHOWN`] characters.
     String(Box<str>),
 }
@@ -192,6 +194,10 @@ impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Int(n) => write!(f, "{n}"),
+            Self::Hex(n) => {
+                let sign = if *n < 0 { "-" } else { "" };
+                write!(f, "`{sign}0x{:X}`", n.unsigned_abs())
+            }
             Self::String(s) => write!(f, "{s:?}"),
         }
     }

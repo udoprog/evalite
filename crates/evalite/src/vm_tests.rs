@@ -2170,7 +2170,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
     let n = |rng: &mut Rng| rng.below(5) as u32;
     let ty = |rng: &mut Rng| TypeId(rng.below(types as usize + 2) as u32);
 
-    match rng.below(42) {
+    match rng.below(43) {
         0 => Instr::Int([0, 1, -1, i64::MIN, i64::MAX][rng.below(5)]),
         1 => Instr::Bool(rng.below(2) == 0),
         2 => Instr::Const(n(rng)),
@@ -2224,6 +2224,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
         38 => Instr::Record(ty(rng)),
         39 => Instr::OptionEq(ty(rng)),
         40 => Instr::OptionNe(ty(rng)),
+        41 => Instr::MapIndexHex(ty(rng)),
         _ => Instr::Call(n(rng)),
     }
 }
@@ -2261,6 +2262,7 @@ fn nudge(rng: &mut Rng, instr: Instr) -> Instr {
         Instr::Unwrap(ty) => Instr::Unwrap(TypeId(d(ty.0))),
         Instr::MapIndex(ty) => Instr::MapGet(TypeId(d(ty.0))),
         Instr::MapGet(ty) => Instr::MapIndex(TypeId(d(ty.0))),
+        Instr::MapIndexHex(ty) => Instr::MapIndexHex(TypeId(d(ty.0))),
         Instr::Some(ty) => Instr::None(TypeId(d(ty.0))),
         Instr::None(ty) => Instr::Some(TypeId(d(ty.0))),
         Instr::Empty(ty) => Instr::Empty(TypeId(d(ty.0))),
@@ -2850,6 +2852,14 @@ fn map_literals_evaluate() {
     );
 
     assert_eq!(fails("{1: 2}[3]"), "the map has no key 3");
+    assert_eq!(
+        fails("{1: 2}[0x31E4A2C9]"),
+        "the map has no key `0x31E4A2C9`"
+    );
+    assert_eq!(fails("{1: 2}[0x1a]"), "the map has no key `0x1A`");
+    assert_eq!(fails("{1: 2}[-0x1A]"), "the map has no key `-0x1A`");
+    assert_eq!(fails("{1: 2}[(0x1A)]"), "the map has no key `0x1A`");
+    assert_eq!(fails("{1: 2}[0x1A + 0]"), "the map has no key 26");
     assert_eq!(fails(r#"{"a": 2}["b"]"#), r#"the map has no key "b""#);
     assert_eq!(
         fails_chain("{1: 2, 0x10: 3}[wits]"),

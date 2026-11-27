@@ -69,7 +69,7 @@ fn huge_length_prefix() {
     // The stored form starts with its format, then the body's field count,
     // then each field's tag and value: `types` (tag 0) first, whose first
     // byte is its length. Every length prefix of the program is tried.
-    assert_eq!(&bytes[..3], &[12, 8, 0]);
+    assert_eq!(&bytes[..3], &[13, 8, 0]);
 
     for at in 0..bytes.len() {
         for claimed in [u64::from(u32::MAX), u64::MAX >> 1, u64::MAX] {

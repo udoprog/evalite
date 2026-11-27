@@ -740,7 +740,7 @@ The `Instr` enum in `program.rs`:
 | `Empty(ty)` | push an empty list or map of type `ty` (the verifier refuses any other type): a reference of length 0, which takes no words and whose start is never read |
 | `Len` | a list's or map's length from its reference |
 | `Call(f)` | call host function `f` |
-| `MapIndex(map)`, `MapGet(map)` | binary search. A missing key is an error naming the key, or an absent option |
+| `MapIndex(map)`, `MapIndexHex(map)`, `MapGet(map)` | binary search. A missing key is an error naming the key, or an absent option. `MapIndexHex` is `MapIndex` of a key written as a hex literal (`0x1A`, `-0x1A`, in parentheses or not), which the error shows as `` `0x1A` `` (uppercase digits) instead of decimal |
 
 Operands are pushed in source order, so a binary operator finds its right
 operand on top. Instructions whose work depends on a type carry the `TypeId`,

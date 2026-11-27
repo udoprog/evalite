@@ -858,7 +858,7 @@ impl<'a> Run<'a> {
                 self.call(f, host)?;
                 return Ok(next);
             }
-            Instr::MapIndex(map) | Instr::MapGet(map) => {
+            Instr::MapIndex(map) | Instr::MapIndexHex(map) | Instr::MapGet(map) => {
                 let Some(TypeNode::Map { key, value }) = types.get(map) else {
                     return Err(fault(Fault::NoSuchType));
                 };
@@ -882,7 +882,7 @@ impl<'a> Run<'a> {
                             .ok_or_else(|| fault(Fault::OutsideMemory))?;
                         self.push_from(from, width)?;
                     }
-                    (Instr::MapIndex(..), None) => {
+                    (Instr::MapIndex(..) | Instr::MapIndexHex(..), None) => {
                         let key = if strings {
                             let (at, len) = needle.as_reference()?;
                             // Only as much as the message shows: a key is cut to
@@ -890,6 +890,8 @@ impl<'a> Run<'a> {
                             // one more byte tells it was cut.
                             let max = MAX_KEY_SHOWN.saturating_mul(4).saturating_add(4);
                             Key::string(&memory::string_prefix(self, at, len, max)?)
+                        } else if matches!(instr, Instr::MapIndexHex(..)) {
+                            Key::Hex(needle.as_int())
                         } else {
                             Key::Int(needle.as_int())
                         };

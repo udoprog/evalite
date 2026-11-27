@@ -7,7 +7,7 @@ use crate::message::{Invalid, Message, StoreError};
 use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 12;
+pub(crate) const FORMAT: u32 = 13;
 
 /// How many nodes the globals' and host functions' types may have
 /// together, each written out in full, as [`Program::globals`] and
@@ -125,6 +125,9 @@ pub(crate) enum Instr {
     /// at the same depth, or present with equal values.
     OptionEq(TypeId),
     OptionNe(TypeId),
+    /// `MapIndex` of a key written as a hexadecimal literal, which an
+    /// error shows as written.
+    MapIndexHex(TypeId),
 }
 
 /// A value in a constant list.
@@ -875,9 +878,9 @@ impl Verifier<'_> {
                     counted.ok_or_else(|| fail(Invalid::LenNonList))?;
                     self.find(TypeNode::Int)?
                 }
-                Instr::MapIndex(map) | Instr::MapGet(map) => {
+                Instr::MapIndex(map) | Instr::MapIndexHex(map) | Instr::MapGet(map) => {
                     let invalid = match instr {
-                        Instr::MapIndex(_) => Invalid::IndexNonMap,
+                        Instr::MapIndex(_) | Instr::MapIndexHex(_) => Invalid::IndexNonMap,
                         _ => Invalid::GetNonMap,
                     };
 
@@ -889,7 +892,7 @@ impl Verifier<'_> {
                     need(stack.pop(), Some(map)).map_err(|_| fail(invalid))?;
 
                     match instr {
-                        Instr::MapIndex(_) => *value,
+                        Instr::MapIndex(_) | Instr::MapIndexHex(_) => *value,
                         _ => self.find(TypeNode::Option(*value))?,
                     }
                 }
