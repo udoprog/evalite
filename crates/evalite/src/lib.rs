@@ -7,7 +7,7 @@
 //! Small, strictly typed expressions that are safe to run on anyone's input.
 //!
 //! evalite is "eval lite": let users write formulas such as
-//! `Int::min(wits, dexterity) + athletics` or `bonus.unwrap_or(0) + 1`, check
+//! `wits.min(dexterity) + athletics` or `bonus.unwrap_or(0) + 1`, check
 //! them once against the names you declare, store the compiled program, and
 //! run it later in a fixed budget of memory and steps. Every mistake is
 //! caught before it runs, and no input can crash, hang or exhaust the host.
@@ -62,7 +62,7 @@
 //! env.value("dexterity", Type::int())?;
 //! env.value("bonus", Type::option(Type::int()))?;
 //!
-//! let program = evalite::compile("Int::min(wits, dexterity) + bonus.unwrap_or(0)", &env)?;
+//! let program = evalite::compile("wits.min(dexterity) + bonus.unwrap_or(0)", &env)?;
 //! assert_eq!(program.result_type(), Type::int());
 //!
 //! let mut globals = Globals::new(&env);
@@ -639,7 +639,7 @@
 //! Variables are declared and set with `--var name:Type=value`:
 //!
 //! ```text
-//! $ evalite eval 'Int::min(wits, dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
+//! $ evalite eval 'wits.min(dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
 //! 3 : Int
 //!
 //! $ evalite eval 'skills[3] * 2' --var 'skills:List<Int>=[1, 2]'

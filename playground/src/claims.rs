@@ -149,7 +149,7 @@ pub const CLAIMS: &[Claim] = &[
         cases: &[],
         rust: Some(
             "// When the user saves the formula:\n\
-             let bytes = evalite::compile(\"Int::min(wits, dexterity) + athletics\", &env)?.to_bytes()?;\n\
+             let bytes = evalite::compile(\"wits.min(dexterity) + athletics\", &env)?.to_bytes()?;\n\
              \n\
              // The sheet's values, set once and as they change:\n\
              globals.set(\"wits\", &Value::int(3))?;\n\
@@ -313,7 +313,7 @@ mod tests {
             env.value(name, Type::int()).unwrap();
         }
 
-        let bytes = evalite::compile("Int::min(wits, dexterity) + athletics", &env)
+        let bytes = evalite::compile("wits.min(dexterity) + athletics", &env)
             .unwrap()
             .to_bytes()
             .unwrap();

@@ -9,7 +9,7 @@
 //! `3`, `true`, `"text"`, `none`, `some(2)` or `[1, 2]`.
 //!
 //! ```text
-//! $ evalite eval 'Int::min(wits, dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
+//! $ evalite eval 'wits.min(dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
 //! 3 : Int
 //!
 //! $ evalite eval 'skills[3] * 2' --var 'skills:List<Int>=[1, 2]'

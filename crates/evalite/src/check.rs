@@ -41,7 +41,7 @@ type N<'a> = Node<'a, Syntax, crate::parser::Flavor>;
 /// env.value("wits", Type::int())?;
 /// env.value("bonus", Type::option(Type::int()))?;
 ///
-/// let program = evalite::compile("Int::min(wits, 3) + bonus.unwrap_or(0)", &env)?;
+/// let program = evalite::compile("wits.min(3) + bonus.unwrap_or(0)", &env)?;
 /// assert_eq!(program.result_type(), Type::int());
 ///
 /// let errors = evalite::compile("wits + bonus", &env).unwrap_err();

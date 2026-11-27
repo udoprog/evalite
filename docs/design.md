@@ -30,7 +30,7 @@ Source files are named relative to `crates/evalite/src/`.
 ## 1. Goals and invariants
 
 evalite runs small, strictly typed expressions written by untrusted users,
-such as character-sheet formulas (`Int::min(wits, dexterity) + athletics`).
+such as character-sheet formulas (`wits.min(dexterity) + athletics`).
 A host declares the names and functions an expression may use, compiles it
 once, stores the program, and runs it many times.
 

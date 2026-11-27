@@ -68,7 +68,7 @@
 //!
 //! #[function_component]
 //! fn Formula() -> Html {
-//!     let source = use_state(|| AttrValue::from("Int::min(wits, 3) + bonus"));
+//!     let source = use_state(|| AttrValue::from("wits.min(3) + bonus"));
 //!     let errors = use_state(|| None::<Rc<Diagnostics>>);
 //!
 //!     let environment = use_memo((), |_| {
@@ -116,7 +116,7 @@
 //! # fn rows() -> Html {
 //! html! {
 //!     <tr>
-//!         <td><ExpressionPreview source="Int::min(wits, 3) + bonus" /></td>
+//!         <td><ExpressionPreview source="wits.min(3) + bonus" /></td>
 //!         <td><TypeBadge ty={Type::option(Type::int())} /></td>
 //!     </tr>
 //! }
