@@ -117,6 +117,12 @@ const CONSTRUCTS: &[(&str, &str)] = &[
     ("[-1, _]", "[-1, _]"),
     ("[[1], [2]][0][0]", "[[1], [2]][0][0]"),
     ("[10, 11].get(wits)", "[10, 11].get(wits)"),
+    ("None::<Int>", "None::<Int>"),
+    ("None :: < List<Int> >", "None::<List<Int>>"),
+    ("[None::<Bool>, None]", "[None::<Bool>, None]"),
+    ("None::<Int>.unwrap_or(1)", "None::<Int>.unwrap_or(1)"),
+    ("None::<Int>!", "None::<Int>!"),
+    ("bonus == None::<Int>", "bonus == None::<Int>"),
 ];
 
 #[test]
@@ -291,6 +297,12 @@ fn compiling_a_structure_matches_compiling_its_text() {
         "bonus == None || Some(wits) != bonus",
         "None",
         "Some(1, 2)",
+        "None::<Int>.unwrap_or(wits) + bonus.unwrap_or(0)",
+        "[None, None::<Bool>]",
+        "bonus == None::<Int>",
+        "bonus == None::<Bool>",
+        "None::<{a: Int}>.unwrap_or({a: 1}).a",
+        "Int::min(None::<Int>, 1)",
     ] {
         same_as_text(&s(text), &env);
     }
@@ -703,7 +715,7 @@ fn tampered_structures_are_refused() {
     bytes[0] = 7;
     assert!(matches!(
         Structure::from_bytes(&bytes).map_err(|e| e.message().clone()),
-        Err(Message::WrongFormat { found: 7, reads: 4 })
+        Err(Message::WrongFormat { found: 7, reads: 5 })
     ));
     let error = Structure::from_bytes(&[4, 2, 3]).unwrap_err();
     assert_eq!(*error.message(), Message::NotDecoded);
@@ -907,6 +919,17 @@ fn random_node(rng: &mut Rng, b: &mut Structure, depth: u32) -> NodeId {
                 rng.pick(&["", "Brawl (bar)", "a\"b", "\\", "é ünï"])
                     .to_string(),
             )),
+            5 if rng.below(3) == 0 => Node(Repr::Annotated {
+                ty: rng
+                    .pick(&[
+                        "Int",
+                        "Bool",
+                        "List<Int>",
+                        "Map<String,Int>",
+                        r#"{"b c": Int}"#,
+                    ])
+                    .to_string(),
+            }),
             _ => Node(Repr::Name(rng.pick(NAMES).to_string())),
         }
     } else {
@@ -1029,19 +1052,24 @@ fn stored_form_is_stable() {
     // These bytes are format 1's, which held its number as the body's first
     // field (tag 0), the nodes as tag 1 and the root as tag 2. Format 4
     // writes its number ahead of a body of the same nodes (tag 0) and root
-    // (tag 1), and still reads format 1.
+    // (tag 1), as format 5 does, and both still read format 1.
     let (nodes, root) = (&golden[4..golden.len() - 2], &golden[golden.len() - 2..]);
     assert_eq!(golden[..4], [3, 0, 1, 1]);
     assert_eq!(root, [2, 35]);
-    assert_eq!(bytes[..3], [4, 2, 0]);
+    assert_eq!(bytes[..3], [5, 2, 0]);
     assert_eq!(bytes[3..bytes.len() - 2], *nodes);
     assert_eq!(bytes[bytes.len() - 2..], [1, 35]);
     assert_eq!(Structure::from_bytes(golden).unwrap(), structure);
     assert_eq!(Structure::from_bytes(&bytes).unwrap(), structure);
 
+    // Format 4's body is format 5's, and is read.
+    let mut four = bytes.clone();
+    four[0] = 4;
+    assert_eq!(Structure::from_bytes(&four).unwrap(), structure);
+
     // A hexadecimal integer is a node of its own, after the others.
     let hex = s("0x1F").to_bytes().unwrap();
-    assert_eq!(hex, [4, 2, 0, 1, 13, 1, 0, 62, 1, 0]);
+    assert_eq!(hex, [5, 2, 0, 1, 13, 1, 0, 62, 1, 0]);
 }
 
 #[test]
@@ -1123,16 +1151,16 @@ fn hexadecimal_integers_are_stored() {
     let odd = crate::structure::test_legacy(0, vec![Node(Repr::Hex(7))], id(0));
     assert!(matches!(
         Structure::from_bytes(&odd).map_err(|e| e.message().clone()),
-        Err(Message::WrongFormat { found: 0, reads: 4 })
+        Err(Message::WrongFormat { found: 0, reads: 5 })
     ));
 
     // A format after this one is refused by its number, before its body is
     // read, whatever that body's layout.
-    let mut new = musli::storage::to_vec(&5u32).unwrap();
+    let mut new = musli::storage::to_vec(&6u32).unwrap();
     new.extend([0xff, 0x00, 0x13, 0x37]);
     assert!(matches!(
         Structure::from_bytes(&new).map_err(|e| e.message().clone()),
-        Err(Message::WrongFormat { found: 5, reads: 4 })
+        Err(Message::WrongFormat { found: 6, reads: 5 })
     ));
 }
 
@@ -1232,7 +1260,8 @@ fn maps_compile() {
 }
 
 /// Format 3 stores a map as its own node, after the others; formats 1 and
-/// 2, which have none, are still read. Format 4 stores it as format 3 did.
+/// 2, which have none, are still read. Formats 4 and 5 store it as format 3
+/// did.
 #[test]
 fn maps_are_stored() {
     let structure = s(r#"{0x1F: "a", -2: wits}"#);
@@ -1247,7 +1276,7 @@ fn maps_are_stored() {
     assert_eq!(
         map,
         [
-            4, 2, 0, 3, 1, 1, 0, 2, 1, 1, 0, 4, 14, 1, 0, 1, 2, 0, 1, 1, 2
+            5, 2, 0, 3, 1, 1, 0, 2, 1, 1, 0, 4, 14, 1, 0, 1, 2, 0, 1, 1, 2
         ]
     );
 
@@ -1275,21 +1304,64 @@ fn maps_are_stored() {
     assert!(Structure::from_bytes(&past).is_err());
 }
 
-/// A structure has no node for `None::<T>`, so text with one is refused.
+/// `None::<T>` is a node of its own, which keeps its type as written,
+/// and is stored after the others.
 #[test]
-fn from_text_refuses_annotated_none() {
-    let errors = Structure::from_text("[None::<Int>, None]").unwrap_err();
-    let errors = errors
-        .iter()
-        .map(|e| (e.to_string(), e.span().range()))
-        .collect::<Vec<_>>();
+fn annotated_none_is_a_node() {
+    let structure = s("[None::<Int>, None]");
+    let entries = structure
+        .get(structure.root())
+        .and_then(Node::as_list)
+        .unwrap();
+    let first = structure.get(entries[0]).unwrap();
+    assert_eq!(first.as_annotated_none(), Some(Type::int()));
+    assert!(first.children().is_empty());
+    assert_eq!(structure.get(entries[1]).unwrap().as_annotated_none(), None);
+    assert_eq!(structure.to_text(), "[None::<Int>, None]");
 
+    // The type's spelling is kept; the space around it is not.
+    let spelled = s(r#"None::< Map<String,Option<{"b c": Int, a: Bool}>> >"#);
     assert_eq!(
-        errors,
-        [(
-            "a structure cannot hold `None::<T>`, write `None` where its type is known from its context"
-                .to_owned(),
-            1..12
-        )]
+        spelled.to_text(),
+        r#"None::<Map<String,Option<{"b c": Int, a: Bool}>>>"#
     );
+
+    // Built from a type, it is written as the type displays.
+    let mut built = Structure::new();
+    built
+        .replace(
+            built.root(),
+            Node::annotated_none(&Type::record([("b c", Type::int())])),
+        )
+        .unwrap();
+    assert_eq!(built.to_text(), r#"None::<{"b c": Int}>"#);
+
+    // Stored, and read back.
+    let bytes = structure.to_bytes().unwrap();
+    assert_eq!(Structure::from_bytes(&bytes).unwrap(), structure);
+    assert_eq!(
+        s("None::<Int>").to_bytes().unwrap(),
+        [5, 2, 0, 1, 15, 1, 0, 3, 73, 110, 116, 1, 0]
+    );
+    assert_ne!(s("None::<Int>"), s("None::<Bool>"));
+    assert_ne!(s("None::<Int>"), s("None"));
+
+    // A stored type that is not one is refused, so the text it gives
+    // always parses back.
+    for ty in [
+        "",
+        "Int>",
+        "Nope",
+        "Int, Bool",
+        "List<Int",
+        &"Option<".repeat(100),
+    ] {
+        let tampered = stored_with(vec![Node(Repr::Annotated { ty: ty.to_owned() })], 0);
+        let error = Structure::from_bytes(&tampered).unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "an annotated None's type is not a type: at node #0: while reading a stored structure",
+            "{ty:?}"
+        );
+    }
 }

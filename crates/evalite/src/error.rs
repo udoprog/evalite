@@ -418,9 +418,6 @@ pub(crate) enum ErrorKind {
     PathAsValue(String),
     /// A type annotation `::<T>` after a name other than `None`.
     AnnotatedName(String),
-    /// `None::<T>` where a structure is built from text, which has no
-    /// node for it.
-    AnnotationInStructure,
     /// An annotation's type not followed by `>`.
     ExpectedAnnotationEnd(Found),
     /// A group that was not closed at `close_span`, where it had to be.
@@ -809,9 +806,6 @@ impl fmt::Display for Diagnostic {
             ErrorKind::AnnotatedName(name) => write!(
                 f,
                 "only `None` takes a type in `::<..>`, such as `None::<Int>`, not `{name}`"
-            ),
-            ErrorKind::AnnotationInStructure => f.write_str(
-                "a structure cannot hold `None::<T>`, write `None` where its type is known from its context",
             ),
             ErrorKind::ExpectedAnnotationEnd(found) => {
                 write!(f, "expected `>` after the type, found {found}")

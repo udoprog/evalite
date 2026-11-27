@@ -20,15 +20,19 @@ use crate::parser::{Options, Tree, parse_with};
 use crate::program::Program;
 use crate::references::{Reference, locate_nodes};
 use crate::syntax::{Syntax, unescape};
-use crate::types::{is_field_name, is_value_name};
+use crate::types::{Type, is_field_name, is_value_name};
 
 type N<'a> = TreeNode<'a, Syntax, Flavor>;
 
 /// What a stored structure starts with, so later versions can tell. Format 2
-/// adds [`Repr::Hex`], format 3 [`Repr::Map`], and format 4 moves the number
-/// out of the body, ahead of it. Formats 1 to 3 are read as well, since
-/// their nodes are all format 4's.
-const FORMAT: u32 = 4;
+/// adds [`Repr::Hex`], format 3 [`Repr::Map`], format 4 moves the number
+/// out of the body, ahead of it, and format 5 adds [`Repr::Annotated`].
+/// Formats 1 to 4 are read as well, since their nodes are all format 5's.
+const FORMAT: u32 = 5;
+
+/// The format before [`FORMAT`], whose body is the same but for lacking
+/// [`Repr::Annotated`].
+const PREVIOUS: u32 = 4;
 
 /// What formats 1 to 3 start with: the field count of [`Legacy`], which
 /// held their number.
@@ -464,6 +468,23 @@ impl Node {
         Self(Repr::Unwrap { operand })
     }
 
+    /// `None::<T>`: no value, an `Option<T>` whatever is expected where it
+    /// is, with `T` written as [`Type`]'s `Display` writes it.
+    ///
+    /// ```
+    /// use evalite::{Environment, Node, Structure, Type};
+    ///
+    /// let mut s = Structure::new();
+    /// s.replace(s.root(), Node::annotated_none(&Type::list(Type::int())))?;
+    /// assert_eq!(s.to_text(), "None::<List<Int>>");
+    /// let program = s.compile(&Environment::new())?;
+    /// assert_eq!(program.result_type(), Type::option(Type::list(Type::int())));
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn annotated_none(ty: &Type) -> Self {
+        Self(Repr::Annotated { ty: ty.to_string() })
+    }
+
     /// The integer, if it is one.
     ///
     /// ```
@@ -688,6 +709,24 @@ impl Node {
         }
     }
 
+    /// The type `T`, if it is a `None::<T>`.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure, Type};
+    ///
+    /// let s = Structure::from_text("None::<Map<String, Int>>")?;
+    /// let ty = s.get(s.root()).and_then(Node::as_annotated_none);
+    /// assert_eq!(ty, Some(Type::map(Type::string(), Type::int())));
+    /// assert_eq!(Node::name("None").as_annotated_none(), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_annotated_none(&self) -> Option<Type> {
+        match &self.0 {
+            Repr::Annotated { ty } => Type::parse(ty).ok(),
+            _ => None,
+        }
+    }
+
     /// The entries, if it is a list.
     ///
     /// ```
@@ -817,6 +856,11 @@ pub(crate) enum Repr {
     Map {
         entries: Vec<(NodeId, NodeId)>,
     },
+    /// `None::<ty>`, its type as written, which [`Type::parse`] reads: a
+    /// stored one that does not is refused. Added in format 5.
+    Annotated {
+        ty: String,
+    },
 }
 
 impl Repr {
@@ -828,7 +872,8 @@ impl Repr {
             | Self::Hex(_)
             | Self::Bool(_)
             | Self::String(_)
-            | Self::Name(_) => Vec::new(),
+            | Self::Name(_)
+            | Self::Annotated { .. } => Vec::new(),
             Self::Unary { operand, .. } | Self::Unwrap { operand } => vec![*operand],
             Self::Binary { left, right, .. } => vec![*left, *right],
             Self::Call { args, .. } | Self::List { entries: args } => args.clone(),
@@ -1552,11 +1597,13 @@ impl Structure {
         };
 
         let stored = match crate::framed::split(bytes).map_err(not_decoded)? {
-            (FORMAT, body) => musli::storage::from_slice::<Stored>(body).map_err(not_decoded)?,
+            (FORMAT | PREVIOUS, body) => {
+                musli::storage::from_slice::<Stored>(body).map_err(not_decoded)?
+            }
             (LEGACY, _) => {
                 let legacy: Legacy = musli::storage::from_slice(bytes).map_err(not_decoded)?;
 
-                if !(1..FORMAT).contains(&legacy.format) {
+                if !(1..PREVIOUS).contains(&legacy.format) {
                     return Err(wrong_format(legacy.format));
                 }
 
@@ -1572,6 +1619,14 @@ impl Structure {
 
         for (at, node) in stored.nodes.iter().enumerate() {
             let at = NodeId(u32::try_from(at).map_err(|_| invalid(Invalid::TooManyNodes, None))?);
+
+            // The type is read as `Type::parse` reads any, so it is bounded
+            // in length and depth.
+            if let Repr::Annotated { ty } = &node.0
+                && Type::parse(ty).is_err()
+            {
+                return Err(invalid(Invalid::AnnotationNotAType, Some(at)));
+            }
 
             for child in node.children() {
                 let slot = parents
@@ -2066,6 +2121,11 @@ fn render(nodes: &[Node], root: NodeId) -> (String, Vec<(NodeId, Span<u32>)>) {
                 then.push(Emit::Node(*operand, power(*operand) < ATOM));
                 then.push(Emit::Text("!"));
             }
+            Node(Repr::Annotated { ty }) => {
+                out.push_str("None::<");
+                out.push_str(ty);
+                out.push('>');
+            }
             Node(Repr::Map { entries }) => {
                 out.push('{');
 
@@ -2281,12 +2341,14 @@ fn from_tree(source: &str, tree: &Tree) -> Result<Structure, Diagnostic> {
             Syntax::Unwrap => Node(Repr::Unwrap {
                 operand: *parts.first().ok_or_else(|| internal("no operand"))?,
             }),
-            Syntax::Annotated => {
-                return Err(Diagnostic::new(
-                    *node.span(),
-                    ErrorKind::AnnotationInStructure,
-                ));
-            }
+            Syntax::Annotated => Node(Repr::Annotated {
+                ty: node
+                    .children()
+                    .find(|n| n.value() == Syntax::TypeToken)
+                    .map(text)
+                    .ok_or_else(|| internal("an annotation without a type"))?
+                    .to_owned(),
+            }),
             _ => return Err(internal("not an expression")),
         };
 
@@ -2347,7 +2409,7 @@ fn exprs<'a>(node: N<'a>) -> impl Iterator<Item = N<'a>> {
         .take_while(move |n| {
             !(matches!(kind, Syntax::Method | Syntax::Field) && n.value() == Syntax::Dot)
         })
-        .filter(move |n| is_expr(n.value()) && kind != Syntax::Call);
+        .filter(move |n| is_expr(n.value()) && !matches!(kind, Syntax::Call | Syntax::Annotated));
 
     let args = node
         .children()

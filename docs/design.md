@@ -151,10 +151,14 @@ Highlighting classes names inside `::<..>` as types (a record field's name as
 a member), with `<`/`>` as punctuation, and the playground's completion offers
 the type names after `::<`, a `Map`'s `,` and a record field's `:`.
 
-A `Structure` has no node for it: `Structure::from_text` refuses
-`None::<T>` (`` a structure cannot hold `None::<T>` ``), so the playground's
-completion offers nothing elsewhere in an expression holding one. A
-`Repr` variant for it needs a format bump; it is a follow-up.
+In a `Structure` it is a leaf node, `Repr::Annotated { ty }`, holding the
+type as written (its `TypeToken`'s text, so the spelling round-trips; the
+space around it inside `<..>` does not), rendered `None::<ty>`. A stored
+one is re-read with `Type::parse` when decoded, so its length and depth are
+bounded as any type text's and its rendered text always parses back (section
+8). Not taken: the type as nested structure nodes, which would need a second
+tree encoding for types and a new recursion surface in the decoder. A type
+names no values, so references and rewrites pass the node through.
 
 Not taken: the same turbofish on empty literals (`[]::<Int>`,
 `{}::<String, Int>`). They are primaries, so `::<` there would be a postfix in
@@ -1184,10 +1188,11 @@ migrated (`migrate` carries values between environments, section 10).
 `(start, end)` spans, and refuses a span that ends before it starts. It is
 not versioned and is kept apart from the program.
 
-**Structures:** `Structure::to_bytes`/`from_bytes`, `FORMAT` = 4 (2 added
-`Repr::Hex`, 3 `Repr::Map`, 4 moved the number ahead of the body). The body
-is `Stored { nodes, root }`, with only the live nodes, renumbered in
-post order. It still reads formats 1 to 3, whose nodes are all format 4's:
+**Structures:** `Structure::to_bytes`/`from_bytes`, `FORMAT` = 5 (2 added
+`Repr::Hex`, 3 `Repr::Map`, 4 moved the number ahead of the body, 5 added
+`Repr::Annotated`). The body is `Stored { nodes, root }`, with only the live
+nodes, renumbered in post order. It still reads format 4, whose body is the
+same, and formats 1 to 3, whose nodes are all format 5's:
 they wrote `Stored { format, nodes, root }` with the number inside, so their
 bytes start with that struct's field count, 3, which is never a later
 format's number. `from_bytes` checks:
@@ -1196,7 +1201,9 @@ format's number. `from_bytes` checks:
 - no node has two parents, and the root has none;
 - the root exists;
 - every node is reachable from the root, which together with the parent
-  check rules out cycles.
+  check rules out cycles;
+- every `Annotated` node's type parses with `Type::parse`
+  (`AnnotationNotAType`).
 
 These checks are linear.
 
@@ -1225,7 +1232,9 @@ editor:
 A `Node` wraps a private `Repr`, one variant per expression kind:
 
 - `Hole`, `Int`, `Hex`, `Bool`, `String`, `Name`;
-- `Unary`, `Binary`, `Call`, `Method`, `Field`, `Index`, `List`, `Unwrap`.
+- `Unary`, `Binary`, `Call`, `Method`, `Field`, `Index`, `List`, `Unwrap`,
+  `Map`;
+- `Annotated`, a `None::<T>` holding its type as text (section 2).
 
 A method or field whose name is `None` is a *member hole*. The encoding is the
 stored form's, so variants keep their order.

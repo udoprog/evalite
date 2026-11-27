@@ -332,6 +332,15 @@ mod tests {
     }
 
     #[test]
+    fn around_an_annotated_none() {
+        let names = labels("None::<Int> + wi", 16);
+        assert!(names.iter().any(|l| l == "wits"), "{names:?}");
+
+        let members = labels("None::<Int>.un", 14);
+        assert!(members.iter().any(|l| l == "unwrap_or(_)"), "{members:?}");
+    }
+
+    #[test]
     fn members_after_a_dot() {
         let labels = labels("bonus.", 6);
         assert!(labels.iter().any(|l| l == "unwrap_or(_)"), "{labels:?}");
