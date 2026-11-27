@@ -2,6 +2,7 @@
 //! it is being edited, and which compiles through the same parser and
 //! checker as text.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use musli::{Decode, Encode};
@@ -1859,13 +1860,15 @@ fn check_nodes(
     }
 
     if !list.is_empty() {
-        // In the order they are written.
-        list.sort_by_key(|entry| {
-            spans
-                .iter()
-                .find(|(id, _)| *id == entry.node)
-                .map_or(u32::MAX, |(_, s)| s.start)
-        });
+        // In the order they are written, each node where its text first
+        // starts.
+        let mut starts = HashMap::with_capacity(spans.len());
+
+        for (id, span) in spans {
+            starts.entry(*id).or_insert(span.start);
+        }
+
+        list.sort_by_key(|entry| starts.get(&entry.node).copied().unwrap_or(u32::MAX));
 
         return Err(StructureErrors { list });
     }

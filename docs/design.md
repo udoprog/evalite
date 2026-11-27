@@ -673,7 +673,8 @@ stored form's, so variants keep their order.
     `_` as a hole.
 - **Compiling.**
   1. `check_nodes` reports every hole and every name that can't be written
-     (invalid or reserved: `true`, `false`, `_`), in text order.
+     (invalid or reserved: `true`, `false`, `_`), in text order, sorted by
+     each node's start from a map built once over the rendered spans.
   2. Otherwise the rendered text goes through `parse_with` and
      `compile_parsed`.
   3. Each diagnostic is mapped to the innermost node whose rendered span

@@ -570,6 +570,34 @@ fn id(n: u32) -> NodeId {
     crate::structure::test_id(n)
 }
 
+/// Run `f`, failing when it takes longer than a few seconds. Inputs are
+/// sized so that work quadratic in them would take far longer.
+fn quickly<T>(what: &str, f: impl FnOnce() -> T) -> T {
+    let start = std::time::Instant::now();
+    let out = f();
+    let took = start.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(5),
+        "{what} took {took:?}"
+    );
+    out
+}
+
+#[test]
+fn many_holes_are_reported_quickly() {
+    const HOLES: u32 = 100_000;
+
+    let mut nodes: Vec<Node> = (0..HOLES).map(|_| Node::hole()).collect();
+    nodes.push(Node::list((0..HOLES).map(id)));
+    let structure = Structure::from_bytes(&stored_with(nodes, HOLES)).unwrap();
+
+    let errors = quickly("compiling", || structure.compile(&env()).unwrap_err());
+    assert_eq!(errors.len(), usize::try_from(HOLES).unwrap());
+
+    // In the order they are written.
+    assert!(errors.iter().map(|e| e.node()).eq((0..HOLES).map(id)));
+}
+
 #[test]
 fn tampered_structures_are_refused() {
     let invalid = |bytes: Vec<u8>| match Structure::from_bytes(&bytes) {
