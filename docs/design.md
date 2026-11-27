@@ -506,15 +506,16 @@ verified programs never cause.
 `Limits::fuel` (default 1000) steps per run:
 
 - one per instruction;
-- plus `len` for `List`;
+- plus `len` for `List`, and the entries for `Map`;
 - plus `n` for `Min(n)`/`Max(n)`;
+- plus, for `MapIndex`/`MapGet`, one per key the binary search probes and
+  one per word of a `String` key compared, so a lookup costs about
+  log(entries) × key words, not a step however long its keys are;
 - plus the words of the parts of each value a host function returns.
 
 Running out is a run error. There are no backward jumps, so even without
 fuel a run is bounded by its code length. Fuel bounds the work per run that
 the host pays for.
-
-The crate docs' Limits table omits the `Min`/`Max` cost.
 
 Binding costs no fuel. It is bounded by the value's size, which the host
 supplies.

@@ -831,9 +831,10 @@ impl<'a> Run<'a> {
 
     /// Where the entry of key `needle` starts in the map of `len` entries
     /// from `start`, whose values are `width` words, found by binary
-    /// search; `strings` when its keys are strings, else `Int`s.
+    /// search; `strings` when its keys are strings, else `Int`s. It spends
+    /// a step per probe, and per word of a string key compared.
     fn find_key(
-        &self,
+        &mut self,
         start: usize,
         len: usize,
         width: usize,
@@ -854,6 +855,7 @@ impl<'a> Run<'a> {
                 .checked_mul(stride)
                 .and_then(|at| at.checked_add(start))
                 .ok_or_else(|| fault(Fault::OutsideMemory))?;
+            self.spend(1)?;
             let probe = self.get(Some(at))?;
 
             let order = if strings {
@@ -872,13 +874,15 @@ impl<'a> Run<'a> {
         Ok(None)
     }
 
-    /// The order of the strings `a` and `b` refer to, by their bytes.
-    fn compare_strings(&self, a: Word, b: Word) -> Result<Ordering, RunError> {
+    /// The order of the strings `a` and `b` refer to, by their bytes,
+    /// spending a step per word compared.
+    fn compare_strings(&mut self, a: Word, b: Word) -> Result<Ordering, RunError> {
         let (a_at, a_len) = a.as_reference()?;
         let (b_at, b_len) = b.as_reference()?;
         let common = a_len.min(b_len);
 
         for n in 0..common.div_ceil(8) {
+            self.spend(1)?;
             let x = self.get(a_at.checked_add(n))?.as_bytes();
             let y = self.get(b_at.checked_add(n))?.as_bytes();
             let take = common.saturating_sub(n.saturating_mul(8)).min(8);

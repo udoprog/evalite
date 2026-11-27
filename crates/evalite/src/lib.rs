@@ -251,7 +251,7 @@
 //! | Nesting | each parenthesis, list, call, index and unary operator nests a level | [`DEFAULT_MAX_DEPTH`] (32) | [`Options::max_depth`] |
 //! | Length  | bytes of the expression's text, checked before it is lexed | [`DEFAULT_MAX_LEN`] (65536) | [`Options::max_len`] |
 //! | Memory  | 64-bit words for the stack, built lists, constants and bound values  | [`DEFAULT_MEMORY`] (1024)  | [`Limits::memory`]     |
-//! | Fuel    | steps: one per instruction, plus one per list entry built or word a function returns | [`DEFAULT_FUEL`] (1000) | [`Limits::fuel`] |
+//! | Fuel    | steps: one per instruction, plus one per list or map entry built, `Int` that `min`/`max` compares, word a function returns, and key or string-key word a map lookup compares | [`DEFAULT_FUEL`] (1000) | [`Limits::fuel`] |
 //!
 //! Going too deep is a compile error at the construct that did; the parser
 //! never recurses, so no input overflows the stack. A program's memory is

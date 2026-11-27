@@ -1029,8 +1029,9 @@ fn fuel() {
         &Message::OutOfFuel { fuel: 0 }
     );
 
-    // A list of n entries, `min` and `max` of n take n more steps, and a
-    // call one more per word it returns.
+    // A list of n entries, `min` and `max` of n take n more steps, a call
+    // one more per word it returns, and a map lookup one more per key it
+    // probes and per word of a string key it compares.
     for (source, steps) in [
         ("[wits, wits, wits]", 7),
         ("Int::min(wits, wits, wits)", 7),
@@ -1039,6 +1040,10 @@ fn fuel() {
         ("wits.min(wits)", 5),
         ("flag || flag", 2),
         ("!flag || flag", 4),
+        ("ids[7]", 4),
+        ("ids.get(-4)", 5),
+        ("tags[\"brawl\"]", 7),
+        ("tags.get(\"athletics (long name)\")", 7),
     ] {
         let outcome = eval_in(source, &[], Limits::new()).unwrap();
         assert_eq!(outcome.steps, steps, "{source:?}");
@@ -1064,6 +1069,37 @@ fn fuel() {
     );
     let source = vec!["wits"; 500].join(" + ");
     assert_eq!(eval_in(&source, &[], Limits::new()).unwrap().steps, 999);
+}
+
+#[test]
+fn long_string_keys_spend_fuel() {
+    // Two keys of a MiB, alike but for their last byte, so each lookup
+    // compares about 2^17 words a probe.
+    let long = |last: char| format!("{}{last}", "x".repeat(1 << 20));
+    let map = Value::map([
+        (Value::string(long('a')), int(1)),
+        (Value::string(long('b')), int(2)),
+    ]);
+    let extra = [
+        ("m", Type::map(Type::string(), Type::int()), map),
+        ("k", Type::string(), Value::string(long('a'))),
+    ];
+
+    let source = vec!["m[k]"; 9_000].join(" + ");
+    let limits = Limits::new().memory(1 << 20).fuel(1 << 20);
+
+    let start = std::time::Instant::now();
+    let error = eval_in(&source, &extra, limits).unwrap_err();
+    let took = start.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(5),
+        "running took {took:?}"
+    );
+    assert_eq!(error.message(), &Message::OutOfFuel { fuel: 1 << 20 });
+
+    // One lookup fits.
+    let limits = Limits::new().memory(1 << 20).fuel(1 << 20);
+    assert_eq!(eval_in("m[k]", &extra, limits).unwrap().value, int(1));
 }
 
 #[test]
