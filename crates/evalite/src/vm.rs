@@ -961,12 +961,14 @@ impl<'a> Run<'a> {
     fn measure(&self, value: &Value, ty: TypeId, root: Root) -> Result<usize, RunError> {
         let program = self.program;
         let types = &program.types;
-        // Each node's parent and the step to it; the root has none.
-        let mut nodes = vec![(0usize, None::<Seg>)];
-        let mut work = vec![(value, ty, 0usize, None)];
+        // Each node's parent and the step to it; the root has none. Neither
+        // is allocated for a value without parts, as most bound values are.
+        let mut nodes = Vec::<(usize, Option<Seg>)>::new();
+        let mut work = Vec::new();
+        let mut next = Some((value, ty, 0usize, None));
         let mut total = 0usize;
 
-        while let Some((value, ty, node, option)) = work.pop() {
+        while let Some((value, ty, node, option)) = next.take().or_else(|| work.pop()) {
             let ty_node = types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))?;
 
             let found = match (ty_node, &value.0) {
@@ -974,7 +976,7 @@ impl<'a> Run<'a> {
                 | (TypeNode::Int, Repr::Int(_))
                 | (TypeNode::Bool, Repr::Bool(_)) => continue,
                 (TypeNode::Option(inner), Repr::Some(value)) => {
-                    work.push((value, *inner, node, Some(ty)));
+                    next = Some((value, *inner, node, Some(ty)));
                     continue;
                 }
                 (TypeNode::String, Repr::String(s)) => {
@@ -985,9 +987,39 @@ impl<'a> Run<'a> {
                     let width = types.width(*entry);
                     total = total.saturating_add(items.len().saturating_mul(width));
 
+                    if !items.is_empty() && nodes.is_empty() {
+                        nodes.push((0, None));
+                    }
+
                     for (i, item) in items.iter().enumerate() {
                         work.push((item, *entry, nodes.len(), None));
                         nodes.push((node, Some(Seg::Index(count(i)))));
+                    }
+
+                    continue;
+                }
+                // Both are sorted by name, so equal names pairwise is an
+                // exact match, found without a lookup.
+                (TypeNode::Record(fields), Repr::Record(map))
+                    if fields.len() == map.len()
+                        && fields.iter().zip(map.keys()).all(|(f, k)| f.name == *k) =>
+                {
+                    total = total.saturating_add(types.record_words(fields));
+
+                    if !fields.is_empty() && nodes.is_empty() {
+                        nodes.push((0, None));
+                    }
+
+                    for (n, (field, value)) in fields.iter().zip(map.values()).enumerate() {
+                        let field_id = u32::try_from(n).unwrap_or(u32::MAX);
+                        work.push((value, field.ty, nodes.len(), None));
+                        nodes.push((
+                            node,
+                            Some(Seg::Field {
+                                record: ty,
+                                field: field_id,
+                            }),
+                        ));
                     }
 
                     continue;
@@ -1004,6 +1036,10 @@ impl<'a> Run<'a> {
                         (None, true) => Found::RecordWithExtra,
                         (None, false) => {
                             total = total.saturating_add(types.record_words(fields));
+
+                            if nodes.is_empty() {
+                                nodes.push((0, None));
+                            }
 
                             for (n, field) in fields.iter().enumerate() {
                                 if let Some(value) = map.get(&field.name) {
@@ -1044,9 +1080,10 @@ impl<'a> Run<'a> {
     fn write(&mut self, value: &Value, ty: TypeId, dest: usize) -> Result<(), RunError> {
         let program = self.program;
         let types = &program.types;
-        let mut work = vec![(value, ty, dest)];
+        let mut work = Vec::new();
+        let mut next = Some((value, ty, dest));
 
-        while let Some((value, ty, dest)) = work.pop() {
+        while let Some((value, ty, dest)) = next.take().or_else(|| work.pop()) {
             let ty_node = types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))?;
 
             let word = match (ty_node, &value.0) {
@@ -1071,7 +1108,7 @@ impl<'a> Run<'a> {
                         dest
                     };
 
-                    work.push((value, *inner, dest));
+                    next = Some((value, *inner, dest));
                     continue;
                 }
                 (TypeNode::Int, Repr::Int(n)) => Word::int(*n),
@@ -1103,10 +1140,16 @@ impl<'a> Run<'a> {
                     let words = types.record_words(fields);
                     let at = self.alloc(words)?;
 
+                    let mut entries = map.iter();
+
                     for (offset, field) in types.field_offsets(fields) {
-                        let value = map
-                            .get(&field.name)
-                            .ok_or_else(|| fault(Fault::RecordLostField))?;
+                        // In step with the fields, as `measure` found them.
+                        let value = match entries.next() {
+                            Some((name, value)) if *name == field.name => value,
+                            _ => map
+                                .get(&field.name)
+                                .ok_or_else(|| fault(Fault::RecordLostField))?,
+                        };
                         let dest = at
                             .checked_add(offset)
                             .ok_or_else(|| fault(Fault::OutsideMemory))?;
