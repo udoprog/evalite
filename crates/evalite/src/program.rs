@@ -9,6 +9,10 @@ use crate::types::{TypeId, TypeNode, Types, is_value_name};
 /// The version of the stored form [`Program::to_bytes`] writes.
 pub(crate) const FORMAT: u32 = 3;
 
+/// How many nodes the globals' types may have together, each written out
+/// in full.
+const MAX_GLOBAL_TYPE_NODES: usize = 1 << 21;
+
 /// One instruction of a stack machine over words of memory. A value takes
 /// the words its type's layout gives it: one for an `Int`, a `Bool` (0 or
 /// 1), and a string, list or record (a reference packing where its parts
@@ -444,6 +448,17 @@ impl Program {
         let memory = verifier.code(&code, &global_ids, &functions, result)?;
 
         let ids: Vec<TypeId> = globals.iter().map(|g| g.ty).collect();
+
+        // The globals' types are held written out, so they are bounded
+        // together, not only one by one.
+        let nodes = ids
+            .iter()
+            .fold(0usize, |n, id| n.saturating_add(types.size(*id)));
+
+        if nodes > MAX_GLOBAL_TYPE_NODES {
+            return Err(Invalid::TypeTooLarge.into());
+        }
+
         let global_types = types
             .to_types(&ids)
             .ok_or_else(|| StoreError::from(Invalid::BadGlobal))?;

@@ -1583,6 +1583,55 @@ fn tampered_programs() {
             "the type nests too deeply: at type 65: while verifying the program",
         ),
         (
+            // Each record holds the one before twice, so 62 of them stand
+            // for about 2^62 nodes, and are refused at the first past the
+            // limit without being written out.
+            "1",
+            Box::new(|s| {
+                for n in 0..62 {
+                    let part = TypeId(n + 1);
+                    s.types.push(TypeNode::Record(vec![
+                        FieldNode {
+                            name: "a".into(),
+                            ty: part,
+                        },
+                        FieldNode {
+                            name: "b".into(),
+                            ty: part,
+                        },
+                    ]));
+                }
+            }),
+            "the type is too large: at type 17: while verifying the program",
+        ),
+        (
+            // Large types are fine one by one, but not as many globals.
+            "1",
+            Box::new(|s| {
+                for n in 0..15 {
+                    let part = TypeId(n + 1);
+                    s.types.push(TypeNode::Record(vec![
+                        FieldNode {
+                            name: "a".into(),
+                            ty: part,
+                        },
+                        FieldNode {
+                            name: "b".into(),
+                            ty: part,
+                        },
+                    ]));
+                }
+
+                for n in 0..40 {
+                    s.globals.push(Global {
+                        name: format!("g{n}"),
+                        ty: TypeId(16),
+                    });
+                }
+            }),
+            "the type is too large: while verifying the program",
+        ),
+        (
             "1",
             Box::new(|s| s.types.clear()),
             "a type is not in the type table: while verifying the program",

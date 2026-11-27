@@ -10,6 +10,11 @@ use musli::{Decode, Encode};
 /// types past it are refused, and so are stored programs.
 pub const MAX_TYPE_DEPTH: usize = 64;
 
+/// How many nodes a type may have once its shared parts are written out,
+/// so `List<Int>` has 2. Types are trees, but a stored table shares parts,
+/// so a few nodes can stand for more than a program could hold.
+pub(crate) const MAX_TYPE_NODES: usize = 1 << 16;
+
 /// The type of a value: `Int`, `Bool`, `String`, `List<T>`, `Option<T>`
 /// or a record.
 ///
@@ -413,6 +418,9 @@ pub(crate) struct Types {
     hasher: RandomState,
     /// How deeply each type nests.
     depths: Vec<usize>,
+    /// How many nodes each type has with its shared parts written out,
+    /// saturating.
+    sizes: Vec<usize>,
     /// The words a value of each type takes where it is held.
     widths: Vec<usize>,
     /// The ids of `Int`, `Bool` and `String`, found without hashing.
@@ -566,8 +574,25 @@ impl Types {
         self.depths.get(id.index()).copied().unwrap_or(usize::MAX)
     }
 
+    /// The nodes type `id` has with its shared parts written out.
+    pub(crate) fn size(&self, id: TypeId) -> usize {
+        self.sizes.get(id.index()).copied().unwrap_or(usize::MAX)
+    }
+
+    /// The nodes `node` would have with its shared parts written out.
+    fn node_size(&self, node: &TypeNode) -> usize {
+        match node {
+            TypeNode::Int | TypeNode::Bool | TypeNode::String => 1,
+            TypeNode::List(id) | TypeNode::Option(id) => self.size(*id).saturating_add(1),
+            TypeNode::Record(fields) => fields
+                .iter()
+                .fold(1usize, |n, f| n.saturating_add(self.size(f.ty))),
+        }
+    }
+
     /// The id of `node`, adding it when new. `None` when the table is
-    /// full or the type nests past [`MAX_TYPE_DEPTH`].
+    /// full, the type nests past [`MAX_TYPE_DEPTH`] or has more than
+    /// [`MAX_TYPE_NODES`] nodes.
     pub(crate) fn add(&mut self, node: TypeNode) -> Option<TypeId> {
         let hash = self.hash_node(&node);
 
@@ -594,6 +619,12 @@ impl Types {
             return None;
         }
 
+        let size = self.node_size(&node);
+
+        if size > MAX_TYPE_NODES {
+            return None;
+        }
+
         let width = match &node {
             TypeNode::Option(inner) if !self.has_niche(*inner) => {
                 self.width(*inner).saturating_add(1)
@@ -616,6 +647,7 @@ impl Types {
         self.nodes.push(node);
         self.next.push(before);
         self.depths.push(depth);
+        self.sizes.push(size);
         self.widths.push(width);
         Some(id)
     }
@@ -779,7 +811,8 @@ impl Types {
     }
 
     /// Check a stored table: each part before what holds it, each node
-    /// once, records sorted, and nothing nested past [`MAX_TYPE_DEPTH`].
+    /// once, records sorted, and nothing nested past [`MAX_TYPE_DEPTH`] or with more than
+    /// [`MAX_TYPE_NODES`] nodes written out.
     pub(crate) fn from_stored(nodes: Vec<TypeNode>) -> Result<Self, StoreError> {
         let mut types = Self::new();
 
@@ -806,6 +839,10 @@ impl Types {
                     return Err(fail(Invalid::FieldsUnsorted));
                 }
                 _ => {}
+            }
+
+            if types.node_size(&node) > MAX_TYPE_NODES {
+                return Err(fail(Invalid::TypeTooLarge));
             }
 
             match types.add(node) {
