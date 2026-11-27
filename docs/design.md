@@ -497,8 +497,11 @@ are held. Every walk uses an explicit work list.
 
 ### 6.1 Memory regions
 
-A `Machine` reserves `Limits::memory` words up front (`words: Box<[Word]>`)
-and runs one program at a time over a `Globals` store (section 7).
+A `Machine` reserves `Limits::memory` words (`words: Box<[Word]>`) on its
+first load that passes the checks below, keeping them for later loads, and
+runs one program at a time over a `Globals` store (section 7). `Machine::new`
+takes no memory, so a machine refused for its size (a `u32::MAX`-word one
+over any store is `PastAddressSpace`) never makes the allocation.
 `Machine::load(&program, &globals)`:
 
 1. refuses a program the store does not accept (`OtherLayout`, naming the
@@ -507,7 +510,8 @@ and runs one program at a time over a `Globals` store (section 7).
    (`TooMuchMemory`);
 3. refuses a store and machine whose words together are past 2^32
    (`PastAddressSpace`), so every address fits a reference;
-4. copies the constants in, and gives a `Run`.
+4. reserves the machine's words if it has not yet, copies the constants
+   in, and gives a `Run`.
 
 A run addresses **one space** (decision A, section 10.5): the store's words
 from 0, then the machine's. Reads dispatch on the address (`Words::word`:

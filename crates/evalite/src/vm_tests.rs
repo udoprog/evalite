@@ -1264,7 +1264,9 @@ fn stores_check_layouts() {
 }
 
 /// A store and a machine together are at most what a reference can
-/// address.
+/// address. The machine is refused before it reserves its words: it
+/// used to take its 4294967295 words (32 GiB) in `Machine::new`, which
+/// aborted the test binary where the allocation could not be made.
 #[test]
 fn address_space() {
     let mut env = Environment::new();
@@ -1279,6 +1281,30 @@ fn address_space() {
         chain(&error, &program),
         "the store's 5 words and the machine's 4294967295 words are more than a run can address: while loading the program"
     );
+    assert_eq!(machine.reserved(), 0);
+}
+
+/// A machine reserves its words on the first load that passes the
+/// checks, and keeps them for the next.
+#[test]
+fn memory_is_reserved_on_load() {
+    let env = Environment::new();
+    let globals = Globals::new(&env);
+    let program = compile("1 + 2", &env).unwrap();
+
+    let mut machine = Machine::new(Limits::new().memory(64));
+    assert_eq!(machine.reserved(), 0);
+
+    let too_large = compile("[1, 2, 3]", &env).unwrap();
+    let mut tiny = Machine::new(Limits::new().memory(1));
+    assert!(tiny.load(&too_large, &globals).is_err());
+    assert_eq!(tiny.reserved(), 0);
+
+    for _ in 0..2 {
+        let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
+        assert_eq!(outcome.value(), &Value::int(3));
+        assert_eq!(machine.reserved(), 64);
+    }
 }
 
 #[test]

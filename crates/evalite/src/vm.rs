@@ -227,14 +227,21 @@ pub struct Machine {
 }
 
 impl Machine {
-    /// A machine with `limits`, reserving all of its memory now.
+    /// A machine with `limits`. It reserves all of its memory on the first
+    /// [`load`](Self::load) that passes the checks, and keeps it for every
+    /// later one, so a machine refused before it runs anything never takes
+    /// its words.
     pub fn new(limits: Limits) -> Self {
-        let len = usize::try_from(limits.memory).unwrap_or(usize::MAX);
-
         Self {
             limits,
-            words: vec![Word::int(0); len].into_boxed_slice(),
+            words: Box::default(),
         }
+    }
+
+    /// The words it has reserved: none until a load passes the checks.
+    #[cfg(test)]
+    pub(crate) fn reserved(&self) -> usize {
+        self.words.len()
     }
 
     /// What it allows.
@@ -294,9 +301,12 @@ impl Machine {
             .context(Message::LoadingProgram);
         }
 
+        // Checked against the limit, not the words held: they are only
+        // reserved once the checks pass.
+        let len = usize::try_from(self.limits.memory).unwrap_or(usize::MAX);
         let base = globals.words().len();
         let end = base
-            .checked_add(self.words.len())
+            .checked_add(len)
             .filter(|end| u32::try_from(*end).is_ok());
 
         let Some(end) = end else {
@@ -306,6 +316,10 @@ impl Machine {
             }))
             .context(Message::LoadingProgram);
         };
+
+        if self.words.len() != len {
+            self.words = vec![Word::int(0); len].into_boxed_slice();
+        }
 
         self.load_checked(program, globals, end)
             .context(Message::LoadingProgram)
