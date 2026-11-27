@@ -1567,6 +1567,12 @@ impl<'a> Compiler<'a> {
 
     /// The value of the map key `node`.
     fn key(&self, node: N<'_>) -> MapKey {
+        // A key with a syntax error inside is reported already, not as
+        // other than a literal as well.
+        if node.walk().any(|n| n.value() == Syntax::Error) {
+            return MapKey::Broken;
+        }
+
         let (node, negative) = match node.value() {
             Syntax::Unary if operator(node) == Some(Syntax::Minus) => match exprs(node).next() {
                 Some(operand) => (operand, true),
@@ -1584,7 +1590,6 @@ impl<'a> Compiler<'a> {
                 Some(s) => MapKey::Literal(KeyLit::String(s)),
                 None => MapKey::Broken,
             },
-            Syntax::Error => MapKey::Broken,
             _ => MapKey::Other,
         }
     }

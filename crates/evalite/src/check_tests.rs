@@ -3140,3 +3140,27 @@ fn map_literal_long_repeated_key() {
         format!("the key \"{}…\" is given twice in this map", "k".repeat(64))
     );
 }
+
+/// A map entry without its `:` is reported once, at the first thing that is
+/// not its key's end, and a key with a syntax error in it is not also
+/// reported as not a literal.
+#[test]
+fn map_entry_syntax_errors_are_reported_once() {
+    let key_end =
+        |found: &str| format!("expected an operator or `:` after this map key, found {found}");
+
+    errors(&[
+        ("{1 2}", &key_end("an integer"), "2"),
+        ("{1::2}", &key_end("`::`"), "::"),
+        ("{1 2, 3: 4}", &key_end("an integer"), "2"),
+        ("{1 2 3}", &key_end("an integer"), "2"),
+        (
+            "{1 2, 3 4}",
+            &format!("{0}\n{0}", key_end("an integer")),
+            "2",
+        ),
+        ("{\"a\" + : 1}", "expected an expression, found `:`", ":"),
+        ("{-: 1}", "expected an expression, found `:`", ":"),
+        ("{(1 +): 1}", "expected an expression, found `)`", ")"),
+    ]);
+}

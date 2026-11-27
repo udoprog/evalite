@@ -213,8 +213,13 @@ enum Frame {
     /// A map's entry, which starts at `start`: its key, then once `colon`
     /// is passed its value. It binds more loosely than any operator, so
     /// only a `,`, a closer or the end closes it, into an `Entry` node, or
-    /// an `Error` node without its `:`.
-    Entry { start: Checkpoint, colon: bool },
+    /// an `Error` node without its `:`. Its missing `:` is reported once,
+    /// when `reported`.
+    Entry {
+        start: Checkpoint,
+        colon: bool,
+        reported: bool,
+    },
 }
 
 struct Group {
@@ -680,6 +685,7 @@ impl Parser<'_> {
         self.frames.push(Frame::Entry {
             start,
             colon: false,
+            reported: false,
         });
         Ok(())
     }
@@ -692,6 +698,35 @@ impl Parser<'_> {
             Frame::Group => Some(None),
             _ => None,
         })?
+    }
+
+    /// Whether the map entry being parsed lacks its `:`, which is not yet
+    /// reported.
+    fn key_unreported(&self) -> bool {
+        self.frames
+            .iter()
+            .rev()
+            .find_map(|frame| match frame {
+                Frame::Entry {
+                    colon, reported, ..
+                } => Some(!*colon && !*reported),
+                Frame::Group => Some(false),
+                _ => None,
+            })
+            .unwrap_or(false)
+    }
+
+    /// Note that the map entry being parsed has its missing `:` reported.
+    fn report_key_end(&mut self) {
+        let entry = self.frames.iter_mut().rev().find_map(|frame| match frame {
+            Frame::Entry { reported, .. } => Some(Some(reported)),
+            Frame::Group => Some(None),
+            _ => None,
+        });
+
+        if let Some(Some(reported)) = entry {
+            *reported = true;
+        }
     }
 
     /// Close the group on top of the stack, at the peeked token if
@@ -751,7 +786,7 @@ impl Parser<'_> {
                     };
                     (start.clone(), kind)
                 }
-                Some(Frame::Entry { start, colon }) if power == 0 => {
+                Some(Frame::Entry { start, colon, .. }) if power == 0 => {
                     let kind = if *colon { Syntax::Entry } else { Syntax::Error };
                     (start.clone(), kind)
                 }
@@ -878,6 +913,9 @@ impl Parser<'_> {
                 let (found, at) = self.found(Some(token));
 
                 let kind = if self.entry() == Some(false) {
+                    // The entry's one missing `:` is reported here, not
+                    // again at its `,` or closer.
+                    self.report_key_end();
                     ErrorKind::ExpectedKeyEnd(found)
                 } else {
                     ErrorKind::ExpectedOperator { found, open }
@@ -894,7 +932,7 @@ impl Parser<'_> {
     /// A `,` after an operand: the next entry of a list or arguments,
     /// otherwise an error, skipped with what follows it.
     fn comma(&mut self, token: Token) -> Result<State, Diagnostic> {
-        let key = self.entry() == Some(false);
+        let key = self.key_unreported();
         let (left, _) = self.reduce(0)?;
         let (found, at) = self.found(Some(token));
 
@@ -930,7 +968,7 @@ impl Parser<'_> {
     /// and skipped.
     fn closer(&mut self, token: Token) -> Result<State, Diagnostic> {
         // A map's key closed without its `:`.
-        let key = self.entry() == Some(false) && token.kind == Syntax::CloseBrace;
+        let key = self.key_unreported() && token.kind == Syntax::CloseBrace;
         let (left, _) = self.reduce(0)?;
         let (found, at) = self.found(Some(token));
 
