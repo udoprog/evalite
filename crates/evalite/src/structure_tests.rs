@@ -1304,6 +1304,30 @@ fn maps_are_stored() {
     assert!(Structure::from_bytes(&past).is_err());
 }
 
+/// A type that does not read back is refused when the node is built, and one
+/// that is accepted survives bytes and text.
+#[test]
+fn annotated_none_refuses_a_type_that_does_not_read_back() {
+    let mut deep = Type::int();
+    for _ in 0..64 {
+        deep = Type::list(deep);
+    }
+    assert!(Type::parse(&deep.to_string()).is_err());
+    assert!(Node::annotated_none(&deep).is_none());
+
+    let mut ok = Type::int();
+    for _ in 0..10 {
+        ok = Type::list(ok);
+    }
+    let mut built = Structure::new();
+    built
+        .replace(built.root(), Node::annotated_none(&ok).unwrap())
+        .unwrap();
+    let bytes = built.to_bytes().unwrap();
+    assert_eq!(Structure::from_bytes(&bytes).unwrap(), built);
+    assert_eq!(Structure::from_text(&built.to_text()).unwrap(), built);
+}
+
 /// `None::<T>` is a node of its own, which keeps its type as written,
 /// and is stored after the others.
 #[test]
@@ -1331,7 +1355,7 @@ fn annotated_none_is_a_node() {
     built
         .replace(
             built.root(),
-            Node::annotated_none(&Type::record([("b c", Type::int())])),
+            Node::annotated_none(&Type::record([("b c", Type::int())])).unwrap(),
         )
         .unwrap();
     assert_eq!(built.to_text(), r#"None::<{"b c": Int}>"#);

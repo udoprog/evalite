@@ -469,20 +469,23 @@ impl Node {
     }
 
     /// `None::<T>`: no value, an `Option<T>` whatever is expected where it
-    /// is, with `T` written as [`Type`]'s `Display` writes it.
+    /// is, with `T` written as [`Type`]'s `Display` writes it. `None` when
+    /// that text would not read back as a type, such as one nested too deep.
     ///
     /// ```
     /// use evalite::{Environment, Node, Structure, Type};
     ///
     /// let mut s = Structure::new();
-    /// s.replace(s.root(), Node::annotated_none(&Type::list(Type::int())))?;
+    /// s.replace(s.root(), Node::annotated_none(&Type::list(Type::int())).ok_or("not a type")?)?;
     /// assert_eq!(s.to_text(), "None::<List<Int>>");
     /// let program = s.compile(&Environment::new())?;
     /// assert_eq!(program.result_type(), Type::option(Type::list(Type::int())));
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
-    pub fn annotated_none(ty: &Type) -> Self {
-        Self(Repr::Annotated { ty: ty.to_string() })
+    pub fn annotated_none(ty: &Type) -> Option<Self> {
+        let ty = ty.to_string();
+        Type::parse(&ty).ok()?;
+        Some(Self(Repr::Annotated { ty }))
     }
 
     /// The integer, if it is one.
