@@ -5,7 +5,9 @@
 use std::fmt;
 
 use musli::{Decode, Encode};
-use syntree::{FlavorDefault, Node as TreeNode, Span};
+use syntree::{Node as TreeNode, Span};
+
+use crate::parser::Flavor;
 
 use crate::check::compile_parsed;
 use crate::debug::DebugInfo;
@@ -17,7 +19,7 @@ use crate::program::Program;
 use crate::syntax::{Syntax, unescape};
 use crate::types::{is_field_name, is_value_name};
 
-type N<'a> = TreeNode<'a, Syntax, FlavorDefault>;
+type N<'a> = TreeNode<'a, Syntax, Flavor>;
 
 /// What a stored structure starts with, so later versions can tell.
 const FORMAT: u32 = 1;

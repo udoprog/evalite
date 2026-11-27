@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use syntree::{FlavorDefault, Node, Span};
+use syntree::{Node, Span};
 
 use crate::Type;
 use crate::debug::DebugInfo;
@@ -16,7 +16,7 @@ use crate::sig::Mismatch;
 use crate::syntax::{Syntax, callee, unescape};
 use crate::types::{TypeId, TypeNode, Types};
 
-type N<'a> = Node<'a, Syntax, FlavorDefault>;
+type N<'a> = Node<'a, Syntax, crate::parser::Flavor>;
 
 /// Parse `source` and compile it against `env`, with the default
 /// [`Options`].

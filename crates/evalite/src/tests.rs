@@ -4,14 +4,14 @@
     clippy::indexing_slicing
 )]
 
-use syntree::{FlavorDefault, Node};
+use syntree::Node;
 
 use crate::error::{Delimiter, ErrorKind, Found, Nesting};
 use crate::lexer::span;
 use crate::syntax::unescape;
 use crate::*;
 
-type N<'a> = Node<'a, Syntax, FlavorDefault>;
+type N<'a> = Node<'a, Syntax, crate::parser::Flavor>;
 
 type Range = std::ops::Range<usize>;
 

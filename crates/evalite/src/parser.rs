@@ -1,13 +1,23 @@
-use syntree::{Builder, FlavorDefault, Span};
+use syntree::{Builder, EmptyVec, Span, TreeIndex};
 
 use crate::error::{Delimiter, Diagnostic, Diagnostics, ErrorKind, Found, Nesting, Reporter};
 use crate::lexer::{Lexer, Token, span};
 use crate::syntax::Syntax;
 
-/// A parsed expression: a `Root` node over every byte of the input.
-pub(crate) type Tree = syntree::Tree<Syntax, FlavorDefault>;
+syntree::flavor! {
+    /// The tree flavor: `u32` node pointers (source length is already limited
+    /// to `u32`) and no token index, which evalite never queries.
+    pub(crate) struct Flavor {
+        type Index = u32;
+        type Width = u32;
+        type Indexes = EmptyVec<TreeIndex<Self>>;
+    }
+}
 
-type Checkpoint = syntree::Checkpoint<<FlavorDefault as syntree::Flavor>::Pointer>;
+/// A parsed expression: a `Root` node over every byte of the input.
+pub(crate) type Tree = syntree::Tree<Syntax, Flavor>;
+
+type Checkpoint = syntree::Checkpoint<<Flavor as syntree::Flavor>::Pointer>;
 
 /// How many bytes an expression may be unless [`Options::max_len`] says
 /// otherwise (64 KiB).
@@ -119,7 +129,7 @@ pub(crate) fn parse_with(source: &str, options: &Options) -> Result<Parsed, Diag
 
     let mut parser = Parser {
         lexer: Lexer::new(source),
-        tree: Builder::new(),
+        tree: Builder::new_with(),
         peeked: None,
         rejected: false,
         reported: false,
@@ -233,7 +243,7 @@ enum State {
 
 struct Parser<'a> {
     lexer: Lexer<'a>,
-    tree: Builder<Syntax, FlavorDefault>,
+    tree: Builder<Syntax, Flavor>,
     peeked: Option<Token>,
     /// Whether the lexer rejected `peeked`, which it has reported.
     rejected: bool,
