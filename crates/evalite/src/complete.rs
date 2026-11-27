@@ -1082,13 +1082,9 @@ impl Structure {
         };
 
         for overload in overloads {
-            if overload.params.len() == args.len()
-                && overload
-                    .params
-                    .iter()
-                    .enumerate()
-                    .all(|(i, p)| fits(i, &|t| t == p))
-                && let Some(param) = overload.params.get(n)
+            if overload.takes(args.len())
+                && (0..args.len()).all(|i| overload.param(i).is_some_and(|p| fits(i, &|t| t == p)))
+                && let Some(param) = overload.param(n)
             {
                 want.push(Pattern::Type(param.clone()));
             }
@@ -1276,7 +1272,7 @@ impl Structure {
                     continue;
                 }
 
-                let n = overload.params.len();
+                let n = overload.holes();
                 let label = call_label(name, n);
                 let ty = Some(overload.ret.clone());
                 let signature = Some(overload.signature(name));

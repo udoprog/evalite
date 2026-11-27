@@ -4014,3 +4014,166 @@ fn record_literals_are_linear() {
         assert!(times[1] < times[0] * 10.0 + 0.05, "{times:?}");
     }
 }
+
+/// [`env`] with `min(Int...)`, at least one, `join(String, String...)`,
+/// any number, `choose(Bool)` beside `choose(Int, Int...)`, at least two, and
+/// `opt(Option<Int>...)`.
+fn repeated_env() -> Environment {
+    let mut env = env();
+    env.function_repeated("min", [], Type::int(), 1, Type::int())
+        .unwrap();
+    env.function_repeated("join", [Type::string()], Type::string(), 0, Type::string())
+        .unwrap();
+    env.function("choose", [Type::bool()], Type::int()).unwrap();
+    env.function_repeated("choose", [Type::int()], Type::int(), 2, Type::int())
+        .unwrap();
+    env.function_repeated("opt", [], Type::option(Type::int()), 0, Type::int())
+        .unwrap();
+    env
+}
+
+#[test]
+fn repeated_parameters() {
+    let env = repeated_env();
+
+    for (source, ty) in [
+        ("min(1)", "Int"),
+        ("min(3, 1, 2)", "Int"),
+        ("join(\", \")", "String"),
+        ("join(\", \", \"a\", \"b\")", "String"),
+        ("choose(true)", "Int"),
+        ("choose(1, 2, 3)", "Int"),
+        ("choose(1, 2, 3, 4)", "Int"),
+        ("opt()", "Int"),
+        ("opt(None)", "Int"),
+        // Each repeated argument expects the repeated type.
+        ("opt(None, Some(1), None)", "Int"),
+    ] {
+        let program = compile(source, &env).unwrap_or_else(|e| panic!("{source:?}: {e}"));
+        assert_eq!(program.result_type().to_string(), ty, "{source:?}");
+    }
+
+    for (source, message, at) in [
+        ("min()", "`min` takes one or more Int, found 0", "()"),
+        (
+            "min(1, true)",
+            "argument 2 of `min` must be Int, found Bool",
+            "true",
+        ),
+        (
+            "join()",
+            "`join` takes (String) then any number of String, found 0",
+            "()",
+        ),
+        (
+            "join(1)",
+            "argument 1 of `join` must be String, found Int",
+            "1",
+        ),
+        (
+            "choose(1, 2)",
+            "no `choose` takes (Int, Int), it takes (Bool) or (Int) then two or more Int",
+            "choose(1, 2)",
+        ),
+        (
+            "choose(\"a\")",
+            "no `choose` takes (String), it takes (Bool) or (Int) then two or more Int",
+            "choose(\"a\")",
+        ),
+    ] {
+        let (actual, range) = error_in(source, &env);
+        assert_eq!(actual, message, "{source:?}");
+        assert_eq!(&source[range.clone()], at, "{source:?}: {range:?}");
+    }
+
+    // Each count called is its own function of the program.
+    let program = compile("min(1) + min(1, 2) + min(3, 4) + min(1, 2, 3)", &env).unwrap();
+    let functions = program
+        .functions()
+        .into_iter()
+        .map(|(name, params, _)| format!("{name}{params:?}"))
+        .collect::<Vec<_>>();
+    assert_eq!(functions.len(), 3, "{functions:?}");
+}
+
+#[test]
+fn repeated_declarations() {
+    let int = Type::int;
+    let overlaps = |name: &str| Err(DeclareError::new(DeclareKind::Overlaps, name));
+
+    let mut env = Environment::new();
+    env.function_repeated("min", [], int(), 1, int()).unwrap();
+    // The same again replaces the return type.
+    env.function_repeated("min", [], int(), 1, Type::bool())
+        .unwrap();
+    assert_eq!(env.functions().next().unwrap().1, ["min(Int...) -> Bool"]);
+
+    assert_eq!(env.function("min", [int()], int()), overlaps("min"));
+    assert_eq!(
+        env.function("min", [int(), int(), int()], int()),
+        overlaps("min")
+    );
+    assert_eq!(
+        env.function_repeated("min", [], int(), 0, int()),
+        overlaps("min")
+    );
+    assert_eq!(
+        env.function_repeated("min", [int(), int()], int(), 5, int()),
+        overlaps("min")
+    );
+    // None of these take only Ints, or take none.
+    env.function("min", [], int()).unwrap();
+    env.function("min", [int(), Type::bool()], int()).unwrap();
+    env.function_repeated("min", [Type::bool()], int(), 0, int())
+        .unwrap();
+    // `min()` is taken.
+    assert_eq!(
+        env.function_repeated("min", [], Type::bool(), 0, int()),
+        overlaps("min")
+    );
+    env.function_repeated("min", [], Type::string(), 1, int())
+        .unwrap();
+
+    // Fixed first, then repeated.
+    let mut env = Environment::new();
+    env.function("max", [int(), int()], int()).unwrap();
+    env.function("max", [int()], int()).unwrap();
+    assert_eq!(
+        env.function_repeated("max", [], int(), 2, int()),
+        overlaps("max")
+    );
+    assert_eq!(
+        env.function_repeated("max", [int()], int(), 0, int()),
+        overlaps("max")
+    );
+    env.function_repeated("max", [int()], int(), 2, int())
+        .unwrap();
+    env.function_repeated("max", [], Type::bool(), 0, int())
+        .unwrap();
+    assert_eq!(env.function("max", [], int()), overlaps("max"));
+
+    // Types are checked as for `function`.
+    let mut deep = int();
+
+    for _ in 0..MAX_TYPE_DEPTH {
+        deep = Type::list(deep);
+    }
+
+    assert_eq!(
+        env.function_repeated("deep", [], deep, 0, int()),
+        Err(DeclareError::new(DeclareKind::TypeTooDeep, "deep"))
+    );
+    assert_eq!(
+        env.function_repeated("Deep", [], int(), 0, int()),
+        Err(DeclareError::new(DeclareKind::InvalidName, "Deep"))
+    );
+
+    // A minimum past any argument count is declared, and never matched.
+    env.function_repeated("never", [], int(), usize::MAX, int())
+        .unwrap();
+    let (message, _) = error_in("never(1)", &env);
+    assert_eq!(
+        message,
+        format!("`never` takes {} or more Int, found 1", usize::MAX)
+    );
+}

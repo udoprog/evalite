@@ -107,6 +107,9 @@ pub(crate) struct Signature {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Mismatch {
     Count(Arity),
+    /// Too few arguments for a repeated parameter of a caller's function,
+    /// which takes what is described, such as `one or more Int`.
+    Takes(String),
     /// The argument at this index, from 0, is not of the type described.
     Argument(usize, String),
 }

@@ -2874,3 +2874,47 @@ fn map_literal_values_in_key_order() {
     assert_eq!(fails("{2: 1 / 0, 1: fail()}[1]"), "the function failed");
     assert_eq!(fails("{1: 1 / 0, 2: fail()}[1]"), fails("1 / 0"));
 }
+
+#[test]
+fn repeated_parameters_run() {
+    let mut env = Environment::new();
+    env.function_repeated("min", [], Type::int(), 1, Type::int())
+        .unwrap();
+    env.function_repeated("join", [Type::string()], Type::string(), 0, Type::string())
+        .unwrap();
+
+    let mut host = |name: &str, args: Vec<Value>| -> Result<Value, String> {
+        match name {
+            "min" => args
+                .iter()
+                .filter_map(Value::as_int)
+                .min()
+                .map(Value::int)
+                .ok_or_else(|| "no arguments".to_owned()),
+            "join" => {
+                let mut parts = args.iter().filter_map(Value::as_str);
+                let sep = parts.next().unwrap_or_default();
+                Ok(Value::string(parts.collect::<Vec<_>>().join(sep)))
+            }
+            _ => Err(format!("unexpected call {name}{args:?}")),
+        }
+    };
+
+    let globals = Globals::new(&env);
+    let mut machine = Machine::default();
+
+    for (source, expected) in [
+        ("min(4)", Value::int(4)),
+        ("min(3, 1, 2) + min(5, 6)", Value::int(6)),
+        (r#"join("-")"#, Value::string("")),
+        (r#"join("-", "a", "b", "c")"#, Value::string("a-b-c")),
+    ] {
+        let program = compile(source, &env).unwrap_or_else(|e| panic!("{source:?}: {e}"));
+        let outcome = machine
+            .load(&program, &globals)
+            .unwrap()
+            .run_with(&mut host)
+            .unwrap_or_else(|e| panic!("{source:?}: {e}"));
+        assert_eq!(outcome.value(), &expected, "{source:?}");
+    }
+}

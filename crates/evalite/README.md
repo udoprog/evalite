@@ -235,6 +235,22 @@ let error = evalite::compile("skill(wits)", &env).unwrap_err();
 assert_eq!(error.to_string(), "no `skill` takes (Int), it takes (String) or (String, String)");
 ```
 
+A function's last parameter may repeat, given at least a count of times
+the caller chooses, with
+[`Environment::function_repeated`]:
+
+```rust
+use evalite::{Environment, Type};
+
+let mut env = Environment::new();
+env.function_repeated("lowest", [], Type::int(), 1, Type::int())?;
+
+assert!(evalite::compile("lowest(3, 1, 2)", &env).is_ok());
+
+let error = evalite::compile("lowest()", &env).unwrap_err();
+assert_eq!(error.to_string(), "`lowest` takes one or more Int, found 0");
+```
+
 The whole grammar, loosest first; whitespace may separate any two tokens:
 
 ```text

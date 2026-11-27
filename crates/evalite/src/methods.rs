@@ -67,7 +67,7 @@ impl MethodSig {
         };
 
         self.sig.call(rest, t).map_err(|mismatch| match mismatch {
-            Mismatch::Count(_) => count(),
+            Mismatch::Count(_) | Mismatch::Takes(_) => count(),
             Mismatch::Argument(n, ty) => Mismatch::Argument(n.saturating_add(1), ty),
         })
     }

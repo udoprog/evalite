@@ -9,19 +9,121 @@ use crate::{Program, Type};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Overload {
     pub(crate) params: Vec<Type>,
+    /// The type of a last parameter given any number of times, at least
+    /// the count with it, after `params`.
+    pub(crate) repeated: Option<(Type, usize)>,
     pub(crate) ret: Type,
 }
 
 impl Overload {
-    /// It in full, called `name`: `rating(String) -> Int`.
+    /// It in full, called `name`: `rating(String) -> Int`, or
+    /// `min(Int...) -> Int` for a repeated parameter.
     pub(crate) fn signature(&self, name: &str) -> String {
-        format!("{name}{} -> {}", self.describe(), self.ret)
+        let mut params = self.params.iter().map(Type::to_string).collect::<Vec<_>>();
+
+        if let Some((ty, _)) = &self.repeated {
+            params.push(format!("{ty}..."));
+        }
+
+        format!("{name}({}) -> {}", params.join(", "), self.ret)
     }
 
-    /// Its parameters as an error lists them, such as `(String, Int)`.
+    /// Its parameters as an error lists them, such as `(String, Int)`,
+    /// `one or more Int`, or `(String) then any number of Int`.
     pub(crate) fn describe(&self) -> String {
         let params = self.params.iter().map(Type::to_string).collect::<Vec<_>>();
-        format!("({})", params.join(", "))
+        let fixed = format!("({})", params.join(", "));
+
+        match &self.repeated {
+            None => fixed,
+            Some((ty, min)) if self.params.is_empty() => format!("{} {ty}", or_more(*min)),
+            Some((ty, min)) => format!("{fixed} then {} {ty}", or_more(*min)),
+        }
+    }
+
+    /// The fewest arguments it takes.
+    pub(crate) fn fewest(&self) -> usize {
+        let min = self.repeated.as_ref().map_or(0, |(_, min)| *min);
+        self.params.len().saturating_add(min)
+    }
+
+    /// How many holes a completion of a call leaves: one per argument it
+    /// takes at the fewest, and one for a repeated parameter that may be
+    /// given none.
+    pub(crate) fn holes(&self) -> usize {
+        match self.repeated {
+            Some((_, 0)) => self.params.len().saturating_add(1),
+            _ => self.fewest(),
+        }
+    }
+
+    /// Whether it takes `n` arguments.
+    pub(crate) fn takes(&self, n: usize) -> bool {
+        match self.repeated {
+            None => n == self.params.len(),
+            Some(_) => n >= self.fewest(),
+        }
+    }
+
+    /// The parameter argument `n` is given for.
+    pub(crate) fn param(&self, n: usize) -> Option<&Type> {
+        match self.params.get(n) {
+            Some(param) => Some(param),
+            None => self.repeated.as_ref().map(|(ty, _)| ty),
+        }
+    }
+
+    /// Whether a call could match both it and `other`: some list of
+    /// argument types both take. It costs their parameters.
+    fn overlaps(&self, other: &Self) -> bool {
+        // The one of fewer parameters, the repeating one of the same.
+        let key = |o: &Self| (o.params.len(), o.repeated.is_none());
+
+        let (short, long) = if key(self) <= key(other) {
+            (self, other)
+        } else {
+            (other, self)
+        };
+
+        let shared = short.params.len();
+
+        if long.params.get(..shared) != Some(short.params.as_slice()) {
+            return false;
+        }
+
+        let Some((ty, min)) = &short.repeated else {
+            // Neither repeats, which only the same parameters match both
+            // of, or only the longer, which takes more than the shorter.
+            return long.repeated.is_none() && long.params.len() == shared;
+        };
+
+        if !long.params.iter().skip(shared).all(|p| p == ty) {
+            return false;
+        }
+
+        match &long.repeated {
+            // The longer takes exactly its own count, which the shorter
+            // takes when it is at least its fewest.
+            None => long.params.len() >= shared.saturating_add(*min),
+            // Both take every count from the larger fewest on.
+            Some((other, _)) => other == ty,
+        }
+    }
+}
+
+/// `one or more`, `two or more` and on, or `any number of` for `0`.
+fn or_more(n: usize) -> String {
+    const WORDS: [&str; 10] = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    ];
+
+    if n == 0 {
+        return "any number of".to_owned();
+    }
+
+    match WORDS.get(n.saturating_sub(1)) {
+        Some(word) => format!("{word} or more"),
+        None => format!("{n} or more"),
     }
 }
 
@@ -69,6 +171,9 @@ pub(crate) enum DeclareKind {
     Redeclared,
     /// A value whose slot would end past the last word a slot may be at.
     TooManySlots,
+    /// A function overload a call could match as well as one declared
+    /// before it, other than the same parameters again.
+    Overlaps,
 }
 
 impl DeclareError {
@@ -112,6 +217,10 @@ impl fmt::Display for DeclareError {
                 f,
                 "`{name}` would be held past the last of the {} words the values may take",
                 u32::MAX
+            ),
+            DeclareKind::Overlaps => write!(
+                f,
+                "`{name}` is already declared to take some of the same arguments, so a call could match either"
             ),
         }
     }
@@ -220,7 +329,8 @@ impl Environment {
     /// parameter or `ret` nests deeper than
     /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH), has more than
     /// [`MAX_TYPE_NODES`](crate::MAX_TYPE_NODES) nodes or has a map keyed by other
-    /// than `Int` or `String`.
+    /// than `Int` or `String`, or when a call could match both it and a
+    /// [`function_repeated`](Self::function_repeated) declared before it.
     pub fn function(
         &mut self,
         name: &str,
@@ -234,14 +344,93 @@ impl Environment {
             check(name, ty)?;
         }
 
+        self.overload(
+            name,
+            Overload {
+                params,
+                repeated: None,
+                ret,
+            },
+        )
+    }
+
+    /// Declare a function of the caller's, which takes `params` and then
+    /// `repeated` given any number of times, at least `min`, and gives a
+    /// `ret`. The caller is given every argument in order, as for
+    /// [`function`](Self::function).
+    ///
+    /// ```
+    /// use evalite::{Environment, Type};
+    ///
+    /// let mut env = Environment::new();
+    /// env.function_repeated("min", [], Type::int(), 1, Type::int())?;
+    /// env.function_repeated("join", [Type::string()], Type::string(), 0, Type::string())?;
+    ///
+    /// assert!(evalite::compile("min(3, 1, 2)", &env).is_ok());
+    /// assert!(evalite::compile("join(\", \")", &env).is_ok());
+    ///
+    /// let error = evalite::compile("min()", &env).unwrap_err();
+    /// assert_eq!(error.to_string(), "`min` takes one or more Int, found 0");
+    ///
+    /// let (_, signatures) = env.functions().last().unwrap();
+    /// assert_eq!(signatures, ["min(Int...) -> Int"]);
+    ///
+    /// // A call of three Ints could match either.
+    /// let error = env.function("min", [Type::int(), Type::int(), Type::int()], Type::int()).unwrap_err();
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     "`min` is already declared to take some of the same arguments, so a call could match either"
+    /// );
+    /// # Ok::<_, evalite::DeclareError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`function`](Self::function) does, and when a call could match
+    /// both it and an overload declared before it, such as `min(Int, Int)`
+    /// and `min(Int...)`. Declaring the same parameters and `min` again
+    /// replaces the return type.
+    pub fn function_repeated(
+        &mut self,
+        name: &str,
+        params: impl IntoIterator<Item = Type>,
+        repeated: Type,
+        min: usize,
+        ret: Type,
+    ) -> Result<(), DeclareError> {
+        check_name(name)?;
+        let params = params.into_iter().collect::<Vec<_>>();
+
+        for ty in params.iter().chain([&repeated, &ret]) {
+            check(name, ty)?;
+        }
+
+        self.overload(
+            name,
+            Overload {
+                params,
+                repeated: Some((repeated, min)),
+                ret,
+            },
+        )
+    }
+
+    fn overload(&mut self, name: &str, new: Overload) -> Result<(), DeclareError> {
         let overloads = self.functions.entry(name.to_owned()).or_default();
 
-        if let Some(overload) = overloads.iter_mut().find(|o| o.params == params) {
-            overload.ret = ret;
+        if let Some(overload) = overloads
+            .iter_mut()
+            .find(|o| o.params == new.params && o.repeated == new.repeated)
+        {
+            overload.ret = new.ret;
             return Ok(());
         }
 
-        overloads.push(Overload { params, ret });
+        if overloads.iter().any(|o| o.overlaps(&new)) {
+            return Err(DeclareError::new(DeclareKind::Overlaps, name));
+        }
+
+        overloads.push(new);
         Ok(())
     }
 

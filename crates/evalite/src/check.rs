@@ -992,8 +992,8 @@ impl<'a> Compiler<'a> {
     fn param_expect(&mut self, overloads: &[Overload], len: usize, n: usize) -> Expect {
         let mut params = overloads
             .iter()
-            .filter(|o| o.params.len() == len)
-            .filter_map(|o| o.params.get(n));
+            .filter(|o| o.takes(len))
+            .filter_map(|o| o.param(n));
 
         let Some(first) = params.next() else {
             return Expect::Nothing;
@@ -1077,7 +1077,7 @@ impl<'a> Compiler<'a> {
                 at,
                 ErrorKind::ArgumentCount {
                     callee: Callee::Function("Some".to_owned()),
-                    expected: Arity::Exactly(1),
+                    expected: Arity::Exactly(1).to_string(),
                     found: args.len(),
                 },
             ));
@@ -1409,11 +1409,18 @@ impl<'a> Compiler<'a> {
         found: &[TypeId],
         at: Span<u32>,
     ) -> Result<Result<TypeId, Mismatch>, Diagnostic> {
-        if overload.params.len() != found.len() {
-            return Ok(Err(Mismatch::Count(Arity::Exactly(overload.params.len()))));
+        if !overload.takes(found.len()) {
+            return Ok(Err(match overload.repeated {
+                None => Mismatch::Count(Arity::Exactly(overload.params.len())),
+                Some(_) => Mismatch::Takes(overload.describe()),
+            }));
         }
 
-        for (n, (param, found)) in overload.params.iter().zip(found).enumerate() {
+        for (n, found) in found.iter().enumerate() {
+            let Some(param) = overload.param(n) else {
+                return Ok(Err(Mismatch::Count(Arity::Exactly(overload.params.len()))));
+            };
+
             if self.intern(param, at)? != *found {
                 return Ok(Err(Mismatch::Argument(n, param.to_string())));
             }
@@ -1538,7 +1545,11 @@ impl<'a> Compiler<'a> {
         node: N<'_>,
     ) -> Diagnostic {
         match mismatch {
-            Mismatch::Count(expected) => {
+            Mismatch::Count(_) | Mismatch::Takes(_) => {
+                let expected = match mismatch {
+                    Mismatch::Count(arity) => arity.to_string(),
+                    Mismatch::Takes(takes) | Mismatch::Argument(_, takes) => takes,
+                };
                 let at = node
                     .children()
                     .find(|n| n.value() == Syntax::Args)

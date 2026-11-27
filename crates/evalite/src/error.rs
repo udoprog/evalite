@@ -460,7 +460,8 @@ pub(crate) enum ErrorKind {
     /// A call with too few or too many arguments.
     ArgumentCount {
         callee: Callee,
-        expected: Arity,
+        /// What it takes, such as `2 arguments` or `one or more Int`.
+        expected: String,
         found: usize,
     },
     /// A call's argument of the wrong type, counting from 1.

@@ -1296,3 +1296,55 @@ fn option_parameters_take_option_literals() {
         assert_eq!(s.compile(&env).unwrap().result_type(), Type::int(), "{s}");
     }
 }
+
+#[test]
+fn repeated_parameters() {
+    let mut env = Environment::new();
+    env.value("bonus", Type::option(Type::int())).unwrap();
+    env.function_repeated("min", [], Type::int(), 1, Type::int())
+        .unwrap();
+    env.function_repeated("pair", [Type::string()], Type::int(), 2, Type::int())
+        .unwrap();
+    env.function_repeated("opt", [], Type::option(Type::int()), 0, Type::int())
+        .unwrap();
+
+    let root = s("_");
+    let all = root
+        .complete(&env, root.root(), Some(&Type::int()))
+        .unwrap();
+    let find = |label: &str| {
+        all.iter()
+            .find(|c| c.label() == label)
+            .unwrap_or_else(|| panic!("no {label:?}"))
+    };
+    assert_eq!(find("min(_)").signature(), Some("min(Int...) -> Int"));
+    assert_eq!(
+        find("pair(_, _, _)").signature(),
+        Some("pair(String, Int...) -> Int")
+    );
+    assert_eq!(
+        find("opt(_)").signature(),
+        Some("opt(Option<Int>...) -> Int")
+    );
+
+    // A repeated argument wants the repeated type, past the fewest too.
+    let labels = |text: &str, n: usize| {
+        let text = s(text);
+        text.complete(&env, text.holes()[n], Some(&Type::int()))
+            .unwrap()
+            .into_iter()
+            .map(|c| c.label)
+            .collect::<Vec<_>>()
+    };
+
+    for (text, n) in [("min(1, 2, _)", 0), ("pair(\"a\", 1, _, 2)", 0)] {
+        let labels = labels(text, n);
+        assert!(labels.iter().any(|l| l == "min(_)"), "{text:?}: {labels:?}");
+        assert!(!labels.iter().any(|l| l == "bonus"), "{text:?}: {labels:?}");
+    }
+
+    let first = labels("pair(_, 1, 2)", 0);
+    assert!(!first.iter().any(|l| l == "min(_)"), "{first:?}");
+    let opt = labels("opt(None, _)", 0);
+    assert!(opt.iter().any(|l| l == "bonus"), "{opt:?}");
+}

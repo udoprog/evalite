@@ -114,8 +114,9 @@ them (`some`, `none` stay legal names). Where an expected type comes from:
   the map's keys are in error (`{1: None, 1: Some(1)}` reports only the
   repeated key);
 - `Some(...)` expected to be `Option<T>` expects `T` of its argument;
-- a host function's parameter, when every overload of that many arguments
-  agrees on it (`f(None)`);
+- a host function's parameter, when every overload taking that many
+  arguments agrees on it (`f(None)`), a repeated parameter's type for each
+  argument it is given for (`min(None, Some(1))`);
 - a method's parameter, with `T` bound by its receiver
   (`opt.unwrap_or(None)` on an `Option<Option<Int>>`);
 - the operands of `==`/`!=`, each the other's type (`bonus == None`,
@@ -222,6 +223,31 @@ written once as `sig::Shape` with one type variable `T`:
 - A name may have several overloads, and a call takes the first whose
   parameter types equal the argument types exactly.
 - Redeclaring the same parameters replaces the return type.
+- `Environment::function_repeated(name, params, repeated, min, ret)`
+  declares one whose last parameter repeats: `params`, then `repeated` at
+  least `min` times (`min(Int...)` with 1, `concat(String...)` with 0).
+  The host gets every argument in one `Vec`, as for fixed ones. A separate
+  method rather than a builder or a parameter enum, so `function` keeps its
+  shape and the five arguments read in call order.
+- No two overloads of a name may take the same argument types, but for the
+  same declaration again (which replaces the return type): one a call
+  could match as well as an earlier one is `DeclareKind::Overlaps`, in
+  either order of declaration (`min(Int, Int)` and `min(Int...)`). Fixed
+  overloads only ever overlap when equal, so first-match order still
+  decides nothing among them that it didn't before. The check costs the
+  parameters of each overload of the name.
+- Signatures render the repeated one as `Int...` (`min(Int...) -> Int`),
+  without the minimum, which errors give: `` `min` takes one or more Int,
+  found 0 ``, and in an overload list `(Bool) or (Int) then two or more
+  Int`; a minimum of 0 reads `any number of Int`.
+- A program records each distinct (name, argument types) it calls, so a
+  repeated overload called with 2 and with 3 arguments is two host
+  functions of the program (`Program::functions`); the stored format is
+  unchanged. The entries are bounded by the calls, each by its arguments.
+- Completion offers a call with a hole for each argument it takes at the
+  fewest, one for a repeated parameter of minimum 0 (`min(_)`,
+  `concat(_)`), and each argument past the fixed ones wants the repeated
+  type.
 
 **Values:**
 
