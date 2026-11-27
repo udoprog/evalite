@@ -611,6 +611,17 @@ What a verified program guarantees:
 So the machine may run it on bare words, and any remaining fault is a bug in
 evalite, not in the bytes.
 
+Stored bytes have no size cap, so loading them is kept close to linear in
+their size, whatever the bytes repeat or share:
+
+- a jump records and compares a stack id, not a copy of the stack (section
+  3.5);
+- `Field` is a binary search of the record's offsets (section 4);
+- a map-key constant is checked sorted once, however many `Map`
+  instructions share it, since string keys compare byte by byte;
+- the globals' and host functions' types written out are bounded together
+  (section 3.5).
+
 **Debug info:** `DebugInfo::to_bytes`/`from_bytes` is a list of
 `(start, end)` spans, and refuses a span that ends before it starts. It is
 not versioned and is kept apart from the program.

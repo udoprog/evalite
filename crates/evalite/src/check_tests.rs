@@ -1879,6 +1879,33 @@ fn functions_types_are_bounded_together() {
 }
 
 #[test]
+fn shared_map_keys_verify_quickly() {
+    const MAPS: usize = 100_000;
+
+    // Two keys of 8 MiB, alike but for their last byte, so checking that
+    // they are sorted compares them whole. Comparing is fast, so they are
+    // long enough for comparing them once a map to show.
+    let long = |last: char| format!("{}{last}", "x".repeat(8 << 20));
+    let source = format!("{{{:?}: 1, {:?}: 2}}.len()", long('a'), long('b'));
+    let options = Options::new().max_len(usize::MAX);
+    let program = compile_with(&source, &Environment::new(), &options).unwrap();
+    let one: Stored = musli::storage::from_slice(&program.to_bytes().unwrap()).unwrap();
+
+    // Many maps of the one key constant, their lengths summed.
+    let mut many: Stored = musli::storage::from_slice(&program.to_bytes().unwrap()).unwrap();
+    many.code = one
+        .code
+        .iter()
+        .copied()
+        .chain((0..MAPS).flat_map(|_| one.code.iter().copied().chain([Instr::Add])))
+        .collect();
+    many.memory.stack = one.memory.stack + 1;
+    many.memory.heap = one.memory.heap * u32::try_from(MAPS + 1).unwrap();
+
+    load_quickly(&many).unwrap();
+}
+
+#[test]
 fn stored_bytes_errors() {
     let bytes = compile("wits + 1", &env()).unwrap().to_bytes().unwrap();
 

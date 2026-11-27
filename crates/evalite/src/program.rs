@@ -593,6 +593,8 @@ impl Verifier<'_> {
         let mut heap = 0usize;
         // The stack each pending jump expects where it lands.
         let mut targets = BTreeMap::<usize, usize>::new();
+        // The key constants found sorted, which maps share.
+        let mut sorted = HashSet::new();
 
         for (at, instr) in code.iter().enumerate() {
             let fail = |invalid: Invalid| {
@@ -719,7 +721,7 @@ impl Verifier<'_> {
                         return Err(fail(Invalid::MakeNonMap));
                     };
 
-                    let n = self.map_keys(keys, *key).map_err(fail)?;
+                    let n = self.map_keys(keys, *key, &mut sorted).map_err(fail)?;
 
                     for _ in 0..n {
                         need(stack.pop(), Some(*value))
@@ -845,7 +847,16 @@ impl Verifier<'_> {
     /// How many keys the constant `keys` holds, a list of `key`s in key
     /// order, each once, as a map's lookup needs them: `Int`s by value,
     /// strings by their bytes.
-    fn map_keys(&self, keys: u32, key: TypeId) -> Result<usize, Invalid> {
+    /// The entries of a map made from the key constant `keys`, checking
+    /// that its keys are of type `key`, and sorted unless `sorted` says it
+    /// was found so before: string keys are compared byte by byte, and
+    /// many maps may share one constant.
+    fn map_keys(
+        &self,
+        keys: u32,
+        key: TypeId,
+        sorted: &mut HashSet<u32>,
+    ) -> Result<usize, Invalid> {
         let list = index(&self.constant_types, keys).ok_or(Invalid::NoSuchConstant)?;
 
         let (Some(Constant::List { items, .. }), true) =
@@ -854,13 +865,17 @@ impl Verifier<'_> {
             return Err(Invalid::MapKeysMistyped);
         };
 
+        if sorted.contains(&keys) {
+            return Ok(items.len());
+        }
+
         // Only `Int`s and strings are keys, a map type's key is one of them.
         let text = |c: u32| match index(self.constants, c) {
             Some(Constant::String(s)) => Some(s.as_bytes()),
             _ => None,
         };
 
-        let sorted = items.windows(2).all(|pair| match *pair {
+        let in_order = items.windows(2).all(|pair| match *pair {
             [Scalar::Int(a), Scalar::Int(b)] => a < b,
             [Scalar::Const(a), Scalar::Const(b)] => matches!(
                 (text(a), text(b)),
@@ -873,10 +888,11 @@ impl Verifier<'_> {
             return Err(Invalid::EmptyMap);
         }
 
-        if !sorted {
+        if !in_order {
             return Err(Invalid::MapKeysUnsorted);
         }
 
+        sorted.insert(keys);
         Ok(items.len())
     }
 
