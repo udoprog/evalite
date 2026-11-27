@@ -2458,6 +2458,19 @@ fn map_lookup_errors() {
         message,
         format!("the map has no key \"{}…\"", "k".repeat(64))
     );
+
+    // Only the shown part of a long key is read, multibyte characters
+    // included, and a key just long enough to show is shown whole.
+    let wide = "é".repeat(1000);
+    let message = fails_in(&format!("tags[{wide:?}]"), &[]);
+    assert_eq!(
+        message,
+        format!("the map has no key \"{}…\"", "é".repeat(64))
+    );
+
+    let wide = "€".repeat(64);
+    let message = fails_in(&format!("tags[{wide:?}]"), &[]);
+    assert_eq!(message, format!("the map has no key \"{wide}\""));
 }
 
 /// A map set in a store is checked entry by entry, keys first, naming where a value

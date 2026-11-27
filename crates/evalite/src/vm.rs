@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 
 use crate::globals::Globals;
 use crate::memory::{self, Fuel, Words, WordsMut, count, fault};
-use crate::message::{Context, Fault, Key, Location, Message, Op, Root, RunError};
+use crate::message::{Context, Fault, Key, Location, MAX_KEY_SHOWN, Message, Op, Root, RunError};
 use crate::program::{Constant, HostFunction, Instr, Program, Scalar};
 use crate::types::TypeNode;
 use crate::value::Value;
@@ -810,7 +810,11 @@ impl<'a> Run<'a> {
                     (Instr::MapIndex(..), None) => {
                         let key = if strings {
                             let (at, len) = needle.as_reference()?;
-                            Key::string(&memory::string(self, at, len)?)
+                            // Only as much as the message shows: a key is cut to
+                            // `MAX_KEY_SHOWN` characters of at most 4 bytes, and
+                            // one more byte tells it was cut.
+                            let max = MAX_KEY_SHOWN.saturating_mul(4).saturating_add(4);
+                            Key::string(&memory::string_prefix(self, at, len, max)?)
                         } else {
                             Key::Int(needle.as_int())
                         };

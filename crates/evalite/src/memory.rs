@@ -186,6 +186,27 @@ pub(crate) fn string(
     String::from_utf8(bytes).map_err(|_| fault(Fault::NotUtf8))
 }
 
+/// At most the first `max` bytes of the string at `at` of `len` bytes, a
+/// character cut at the end read as U+FFFD, for showing in a message
+/// without reading a long string whole.
+pub(crate) fn string_prefix(
+    words: &(impl Words + ?Sized),
+    at: usize,
+    len: usize,
+    max: usize,
+) -> Result<String, RunError> {
+    let take = len.min(max);
+    inside(words, at, Some(take.div_ceil(8)))?;
+    let mut bytes = Vec::with_capacity(take);
+
+    for n in 0..take.div_ceil(8) {
+        bytes.extend_from_slice(&get(words, at.checked_add(n))?.as_bytes());
+    }
+
+    bytes.truncate(take);
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// Check `value` is of type `ty`, and that no string, list or map in it is
 /// too long for a reference, giving the words its parts take; a mismatch
 /// names its path from `root`.
