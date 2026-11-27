@@ -892,10 +892,16 @@ map literals (f3b53baf) and references (b128c319, landed), which all touch
 | 15 | Persistence | Values, re-verified on load, rebuilt densely | Raw words (fast, but it ties bytes to the in-memory layout and needs a word-level verifier). |
 | 16 | Migration | Carry over by name with equal type. Record fields by name. A new field without a value leaves the global unset, reported | Refuse the whole store on any change (hostile to evolving sheets). Implicit defaults. |
 
-### 10.5 Open questions raised while writing this
+### 10.5 Questions raised while writing this
 
-None of these is decided by a card. They are for the lead to settle before
-or in the phase named.
+The lead decided each of these on 2026-11-27, taking the recommended option
+(board rule). The phase cards carry the decisions.
+
+- **Decided:** A, one address space split at a boundary (Globals 2). B,
+  refuse redeclaring, with an ordered slot list in `Environment` (Globals 1).
+  C, accept on a fingerprint match, or else when every read (name, slot,
+  type) matches (Globals 1). D, append-only environments, with removal as a
+  new layout plus `migrate` (Globals 1/6).
 
 - **A. Two memories in one run (Globals 2).** Today `Instr::Global` and every
   reference address one `words` slice. With a separate read-only store and
