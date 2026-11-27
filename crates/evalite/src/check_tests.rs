@@ -4168,13 +4168,87 @@ fn repeated_declarations() {
         Err(DeclareError::new(DeclareKind::InvalidName, "Deep"))
     );
 
-    // A minimum past any argument count is declared, and never matched.
-    env.function_repeated("never", [], int(), usize::MAX, int())
+    // A minimum up to the most arguments a call may have is declared, and
+    // one past it refused.
+    env.function_repeated("never", [], int(), MAX_REPEATED_MIN, int())
         .unwrap();
     let (message, _) = error_in("never(1)", &env);
     assert_eq!(
         message,
-        format!("`never` takes {} or more Int, found 1", usize::MAX)
+        format!("`never` takes {MAX_REPEATED_MIN} or more Int, found 1")
+    );
+
+    for min in [MAX_REPEATED_MIN + 1, 1_000_000_000, usize::MAX] {
+        assert_eq!(
+            env.function_repeated("huge", [], int(), min, int()),
+            Err(DeclareError::new(DeclareKind::MinTooLarge, "huge"))
+        );
+    }
+
+    assert!(env.functions().all(|(name, _)| name != "huge"));
+}
+
+#[test]
+fn repeated_overlap_at_fixed() {
+    let int = Type::int;
+    let overlaps = |name: &str| Err(DeclareError::new(DeclareKind::Overlaps, name));
+
+    // `f()` takes either.
+    let mut env = Environment::new();
+    env.function_repeated("f", [], int(), 0, int()).unwrap();
+    assert_eq!(
+        env.function_repeated("f", [], Type::bool(), 0, Type::string()),
+        overlaps("f")
+    );
+    // Either needing an argument, none is taken by both.
+    env.function_repeated("f", [], Type::bool(), 1, Type::string())
+        .unwrap();
+
+    // `g(1)` takes either, in either order of declaration.
+    let mut env = Environment::new();
+    env.function_repeated("g", [], int(), 0, int()).unwrap();
+    assert_eq!(
+        env.function_repeated("g", [int()], Type::bool(), 0, int()),
+        overlaps("g")
+    );
+    let mut env = Environment::new();
+    env.function_repeated("g", [int()], Type::bool(), 0, int())
+        .unwrap();
+    assert_eq!(
+        env.function_repeated("g", [], int(), 0, int()),
+        overlaps("g")
+    );
+    // `g(1, true)` is the longer's alone, and `g(1, 2)` the shorter's.
+    let mut env = Environment::new();
+    env.function_repeated("g", [], int(), 0, int()).unwrap();
+    env.function_repeated("g", [int()], Type::bool(), 1, int())
+        .unwrap();
+    // The shorter needs more than the longer's fixed parameters.
+    let mut env = Environment::new();
+    env.function_repeated("k", [], int(), 2, int()).unwrap();
+    env.function_repeated("k", [int()], Type::bool(), 0, int())
+        .unwrap();
+    assert_eq!(
+        env.function_repeated("k", [int(), int()], Type::bool(), 0, int()),
+        overlaps("k")
+    );
+
+    // A fixed overload beside a repeated one of the same parameters.
+    let mut env = Environment::new();
+    env.function("h", [Type::string()], int()).unwrap();
+    env.function_repeated("h", [Type::string()], int(), 1, int())
+        .unwrap();
+    assert_eq!(
+        env.function_repeated("h", [Type::string()], Type::bool(), 0, int()),
+        overlaps("h")
+    );
+    let mut env = Environment::new();
+    env.function_repeated("h", [Type::string()], int(), 1, int())
+        .unwrap();
+    env.function("h", [Type::string()], int()).unwrap();
+    assert_eq!(
+        env.function("h", [Type::string(), int()], int()),
+        overlaps("h")
     );
 }
 

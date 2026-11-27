@@ -245,8 +245,19 @@ written once as `sig::Shape` with one type variable `T`:
   could match as well as an earlier one is `DeclareKind::Overlaps`, in
   either order of declaration (`min(Int, Int)` and `min(Int...)`). Fixed
   overloads only ever overlap when equal, so first-match order still
-  decides nothing among them that it didn't before. The check costs the
-  parameters of each overload of the name.
+  decides nothing among them that it didn't before. Two repeated
+  overloads overlap when they repeat the same type, or when the one of
+  more fixed parameters has minimum 0 and its fixed parameters can be the
+  other's repeated ones: a call stopping at them takes both
+  (`f(Int...)` and `f(Bool...)` both take `f()`, `g(Int...)` and
+  `g(Int, Bool...)` both take `g(1)`). A fixed overload overlaps a
+  repeated one the same way, by stopping at its own parameters, so
+  `h(String)` beside `h(String, Int...)` of minimum 1 is fine. The check
+  costs the parameters of each overload of the name.
+- `min` is at most `MAX_REPEATED_MIN` (32768, half of `DEFAULT_MAX_LEN`:
+  the most arguments a call of the default length can have, each but the
+  last followed by a comma); past it is `DeclareKind::MinTooLarge`, so no
+  host declaration asks for an unbounded count.
 - Signatures render the repeated one as `Int...` (`min(Int...) -> Int`),
   without the minimum, which errors give: `` `min` takes one or more Int,
   found 0 ``, and in an overload list `(Bool) or (Int) then two or more
@@ -257,7 +268,9 @@ written once as `sig::Shape` with one type variable `T`:
   unchanged. The entries are bounded by the calls, each by its arguments.
 - Completion offers a call with a hole for each argument it takes at the
   fewest, one for a repeated parameter of minimum 0 (`min(_)`,
-  `concat(_)`), and each argument past the fixed ones wants the repeated
+  `concat(_)`), and at most eight for the repeated parameter however
+  large its minimum, so a completion stays small (a call short of the
+  minimum is the usual arity error once filled), and each argument past the fixed ones wants the repeated
   type.
 
 **Values:**

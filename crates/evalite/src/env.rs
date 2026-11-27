@@ -49,12 +49,15 @@ impl Overload {
 
     /// How many holes a completion of a call leaves: one per argument it
     /// takes at the fewest, and one for a repeated parameter that may be
-    /// given none.
+    /// given none. The repeated parameter has at most
+    /// [`MAX_REPEATED_HOLES`], so a large minimum costs no more.
     pub(crate) fn holes(&self) -> usize {
-        match self.repeated {
-            Some((_, 0)) => self.params.len().saturating_add(1),
-            _ => self.fewest(),
-        }
+        let repeated = match self.repeated {
+            None => 0,
+            Some((_, min)) => min.clamp(1, MAX_REPEATED_HOLES),
+        };
+
+        self.params.len().saturating_add(repeated)
     }
 
     /// Whether it takes `n` arguments.
@@ -101,15 +104,30 @@ impl Overload {
             return false;
         }
 
+        // A call that stops at the longer's fixed parameters, which the
+        // shorter takes when they are at least its fewest.
+        let at_fixed = long.params.len() >= shared.saturating_add(*min);
+
         match &long.repeated {
-            // The longer takes exactly its own count, which the shorter
-            // takes when it is at least its fewest.
-            None => long.params.len() >= shared.saturating_add(*min),
-            // Both take every count from the larger fewest on.
-            Some((other, _)) => other == ty,
+            // The longer takes exactly its own count.
+            None => at_fixed,
+            // Both take every count from the larger fewest on when they
+            // repeat the same type, and the longer may stop at its fixed
+            // parameters when its minimum is 0.
+            Some((other, long_min)) => other == ty || (*long_min == 0 && at_fixed),
         }
     }
 }
+
+/// The most holes a completion of a call leaves for a repeated
+/// parameter, however large its minimum.
+const MAX_REPEATED_HOLES: usize = 8;
+
+/// The largest minimum count of a repeated parameter
+/// [`Environment::function_repeated`] accepts: the most arguments a call
+/// can have in an expression of [`DEFAULT_MAX_LEN`](crate::DEFAULT_MAX_LEN)
+/// bytes, each but the last followed by a comma.
+pub const MAX_REPEATED_MIN: usize = crate::DEFAULT_MAX_LEN / 2;
 
 /// `one or more`, `two or more` and on, or `any number of` for `0`.
 fn or_more(n: usize) -> String {
@@ -174,6 +192,9 @@ pub(crate) enum DeclareKind {
     /// A function overload a call could match as well as one declared
     /// before it, other than the same parameters again.
     Overlaps,
+    /// A repeated parameter whose minimum count is past
+    /// [`MAX_REPEATED_MIN`].
+    MinTooLarge,
 }
 
 impl DeclareError {
@@ -221,6 +242,10 @@ impl fmt::Display for DeclareError {
             DeclareKind::Overlaps => write!(
                 f,
                 "`{name}` is already declared to take some of the same arguments, so a call could match either"
+            ),
+            DeclareKind::MinTooLarge => write!(
+                f,
+                "the repeated parameter of `{name}` has a minimum past {MAX_REPEATED_MIN}, the most arguments a call of the default length can have"
             ),
         }
     }
@@ -386,9 +411,11 @@ impl Environment {
     ///
     /// # Errors
     ///
-    /// As [`function`](Self::function) does, and when a call could match
-    /// both it and an overload declared before it, such as `min(Int, Int)`
-    /// and `min(Int...)`. Declaring the same parameters and `min` again
+    /// As [`function`](Self::function) does, when `min` is past
+    /// [`MAX_REPEATED_MIN`], and when a call could match both it and an
+    /// overload declared before it, such as `min(Int, Int)` and
+    /// `min(Int...)`, or `f(Int...)` and `f(Bool...)`, which both take no
+    /// arguments. Declaring the same parameters and `min` again
     /// replaces the return type.
     pub fn function_repeated(
         &mut self,
@@ -403,6 +430,10 @@ impl Environment {
 
         for ty in params.iter().chain([&repeated, &ret]) {
             check(name, ty)?;
+        }
+
+        if min > MAX_REPEATED_MIN {
+            return Err(DeclareError::new(DeclareKind::MinTooLarge, name));
         }
 
         self.overload(

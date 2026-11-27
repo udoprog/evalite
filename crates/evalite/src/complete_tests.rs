@@ -1363,3 +1363,34 @@ fn repeated_parameters() {
     let opt = labels("opt(None, _)", 0);
     assert!(opt.iter().any(|l| l == "bonus"), "{opt:?}");
 }
+
+#[test]
+fn repeated_large_minimum() {
+    let mut env = Environment::new();
+    env.function_repeated(
+        "big",
+        [Type::string()],
+        Type::int(),
+        crate::MAX_REPEATED_MIN,
+        Type::int(),
+    )
+    .unwrap();
+    env.function_repeated("ten", [], Type::bool(), 10, Type::int())
+        .unwrap();
+
+    let root = s("_");
+    let all = root
+        .complete(&env, root.root(), Some(&Type::int()))
+        .unwrap();
+    let label = |name: &str| {
+        all.iter()
+            .find(|c| c.label().starts_with(name))
+            .unwrap_or_else(|| panic!("no {name:?}"))
+            .label()
+            .to_owned()
+    };
+
+    // The fixed parameter, then at most eight of the repeated one.
+    assert_eq!(label("big("), format!("big({})", ["_"; 9].join(", ")));
+    assert_eq!(label("ten("), format!("ten({})", ["_"; 8].join(", ")));
+}
