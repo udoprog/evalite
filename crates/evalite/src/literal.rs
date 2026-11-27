@@ -110,6 +110,15 @@ impl Type {
     }
 }
 
+/// The type `text` starts with and the bytes it takes, for an annotation
+/// such as the `Int>` of `None::<Int>`, which goes on past the type. Spans
+/// are relative to `text`, which the caller has bounded in length.
+pub(crate) fn type_prefix(text: &str) -> Result<(Type, usize), Diagnostic> {
+    let mut cursor = Cursor { text, at: 0 };
+    let ty = cursor.ty()?;
+    Ok((ty, cursor.at))
+}
+
 impl FromStr for Type {
     type Err = Diagnostic;
 

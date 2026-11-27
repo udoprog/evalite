@@ -134,8 +134,8 @@ compiled, and nothing converts implicitly:
   is known from where it is written: beside a typed entry of a list or
   map (`[None, Some(1)]`), as an argument (`bonus_or(None)`), or as
   `unwrap_or`'s default of an option of options, or beside `==`
-  (`bonus == None`). A bare `None` with nothing to give it a type is an
-  error.
+  (`bonus == None`). Elsewhere, write its type after it: `None::<Int>`.
+  A bare `None` with nothing to give it a type is an error.
 
 Types and values are written the same way outside an expression, such as
 in a form or on a command line: [`Type::parse`] reads `Option<List<Int>>`,

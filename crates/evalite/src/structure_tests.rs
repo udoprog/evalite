@@ -1274,3 +1274,22 @@ fn maps_are_stored() {
     );
     assert!(Structure::from_bytes(&past).is_err());
 }
+
+/// A structure has no node for `None::<T>`, so text with one is refused.
+#[test]
+fn from_text_refuses_annotated_none() {
+    let errors = Structure::from_text("[None::<Int>, None]").unwrap_err();
+    let errors = errors
+        .iter()
+        .map(|e| (e.to_string(), e.span().range()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        errors,
+        [(
+            "a structure cannot hold `None::<T>`, write `None` where its type is known from its context"
+                .to_owned(),
+            1..12
+        )]
+    );
+}

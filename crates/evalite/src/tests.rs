@@ -149,6 +149,10 @@ fn render(source: &str, node: N<'_>) -> String {
             format!("(: {} {})", parts[0], parts[1])
         }
         Syntax::Path => parts.join("::"),
+        Syntax::Annotated => {
+            assert_eq!(parts.len(), 4, "{parts:?}");
+            format!("(none {})", parts[2])
+        }
         Syntax::Args => parts.join(" "),
         Syntax::Call => format!("(call {})", parts.join(" ").trim_end()),
         Syntax::Method => format!("(method {})", parts.join(" ").trim_end()),
@@ -342,6 +346,8 @@ fn groups() {
         ("min(a, b)", "(call min a b)"),
         ("Int::min(a, b)", "(call Int::min a b)"),
         ("Int :: min(a)", "(call Int::min a)"),
+        ("None::<Int>", "(none Int)"),
+        ("None :: < List< Int > > + 1", "(+ (none List< Int >) 1)"),
         ("f(g(h(1)))", "(call f (call g (call h 1)))"),
         ("f([1, 2], \"t\")", "(call f [1 2] \"t\")"),
     ]);
@@ -740,6 +746,12 @@ fn error_paths() {
             "`Int::min` is a function, call it with `Int::min(...)`",
             0..10,
         ),
+        (
+            "None::<Int + 1",
+            "expected `>` after the type, found `+`",
+            11..12,
+        ),
+        ("f(None::<Map<Int>>, 1)", "expected `,`, found `>`", 16..17),
     ]);
 }
 
@@ -1528,6 +1540,11 @@ fn recovery_is_linear() {
         ": ".repeat(n),
         format!("{}{}", "{(".repeat(n), "}".repeat(n)),
         format!("{{{}}}", "1: 2: ".repeat(n)),
+        "None::<".repeat(n),
+        "None::<List<".repeat(n),
+        "None::<{\"".repeat(n),
+        "None::<Int ".repeat(n),
+        "x::<".repeat(n),
     ] {
         let (tree, errors) = recover_with(&source, &unlimited);
         check_tree(&source, &tree);

@@ -41,6 +41,15 @@ impl Diagnostic {
         }
     }
 
+    /// The diagnostic of text parsed on its own, moved to where the text
+    /// starts at `by` in a larger source.
+    pub(crate) fn shifted(mut self, by: u32) -> Self {
+        let start = self.span.start.saturating_add(by);
+        let end = self.span.end.saturating_add(by);
+        self.span = Span::new(start, end);
+        self
+    }
+
     /// The bytes of the input the error is about: the span of its primary
     /// label.
     ///
@@ -407,6 +416,13 @@ pub(crate) enum ErrorKind {
     ExpectedPathName(Found),
     /// A type's function used as a value, such as `Int::min + 1`.
     PathAsValue(String),
+    /// A type annotation `::<T>` after a name other than `None`.
+    AnnotatedName(String),
+    /// `None::<T>` where a structure is built from text, which has no
+    /// node for it.
+    AnnotationInStructure,
+    /// An annotation's type not followed by `>`.
+    ExpectedAnnotationEnd(Found),
     /// A group that was not closed at `close_span`, where it had to be.
     /// The diagnostic's span is its opener.
     Unclosed {
@@ -540,6 +556,9 @@ pub(crate) enum ErrorKind {
     /// `None` where no option type is expected, or where the type given
     /// is expected, which is not an option.
     NoneType(Option<Type>),
+    /// `None::<T>`, an `annotated` option, where another type is
+    /// `expected`.
+    AnnotatedNone { annotated: Type, expected: Type },
     /// A value whose type nests more than
     /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH) levels.
     TypeTooDeep,
@@ -787,6 +806,16 @@ impl fmt::Display for Diagnostic {
             ErrorKind::ExpectedPathName(found) => {
                 write!(f, "expected a function name after `::`, found {found}")
             }
+            ErrorKind::AnnotatedName(name) => write!(
+                f,
+                "only `None` takes a type in `::<..>`, such as `None::<Int>`, not `{name}`"
+            ),
+            ErrorKind::AnnotationInStructure => f.write_str(
+                "a structure cannot hold `None::<T>`, write `None` where its type is known from its context",
+            ),
+            ErrorKind::ExpectedAnnotationEnd(found) => {
+                write!(f, "expected `>` after the type, found {found}")
+            }
             ErrorKind::PathAsValue(name) | ErrorKind::FunctionAsValue(name) => {
                 write!(f, "`{name}` is a function, call it with `{name}(...)`")
             }
@@ -1006,8 +1035,16 @@ impl fmt::Display for Diagnostic {
                 write!(f, "`{{}}` is a map, but {a} {expected} is expected here")
             }
             ErrorKind::NoneType(None) => f.write_str(
-                "`None` needs a type from where it is used, such as beside `Some(...)` in a list or as an argument of an option",
+                "`None` needs a type from where it is used, such as beside `Some(...)` in a list or as an argument of an option, or written after it, such as `None::<Int>`",
             ),
+            ErrorKind::AnnotatedNone {
+                annotated,
+                expected,
+            } => {
+                let expected = expected.to_string();
+                let a = article(&expected);
+                write!(f, "this `None` is {annotated}, but {a} {expected} is expected here")
+            }
             ErrorKind::NoneType(Some(expected)) => {
                 let expected = expected.to_string();
                 let a = article(&expected);

@@ -2,10 +2,15 @@
 //! [`Structure::complete`]: the word under the cursor becomes a hole, and
 //! what fits that hole is offered, filtered by what was typed of it.
 
+use evalite::highlight::{Class, highlight};
 use evalite::{CompletionKind, Environment, Structure};
 
 /// The most offers the popup lists.
 const MAX_OFFERS: usize = 40;
+
+/// What a type annotation such as `None::<Int>` offers, each with holes for
+/// the types it holds.
+const TYPES: [&str; 6] = ["Int", "Bool", "String", "Option<_>", "List<_>", "Map<_, _>"];
 
 /// One thing the popup offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,13 +65,29 @@ pub(crate) fn offers(source: &str, cursor: usize, env: &Environment) -> Option<O
 
     let before = chars.get(..start)?.iter().collect::<String>();
     let after = chars.get(end..)?.iter().collect::<String>();
+    let prefix = prefix.to_lowercase();
+
+    if in_annotation(&before) {
+        let offers = TYPES
+            .iter()
+            .filter(|ty| ty.to_lowercase().starts_with(&prefix))
+            .map(|ty| Offer {
+                label: (*ty).to_owned(),
+                kind: CompletionKind::Type,
+                ty: None,
+                signature: None,
+            })
+            .collect::<Vec<_>>();
+
+        return (!offers.is_empty()).then_some(Offers { start, end, offers });
+    }
+
     let index = holes_in(&before);
 
     let structure = holed(&before, &after)?;
     let hole = *structure.holes().get(index)?;
     let completions = structure.complete(env, hole, None).ok()?;
 
-    let prefix = prefix.to_lowercase();
     let offers = completions
         .iter()
         .filter(|c| prefix.is_empty() || c.label().to_lowercase().starts_with(&prefix))
@@ -188,6 +209,39 @@ fn closers(before: &str, after: &str) -> String {
     open.into_iter().rev().collect()
 }
 
+/// Whether a type goes at the end of `before`, inside a type annotation such
+/// as `None::<Map<String, `: after its `<`, a `Map`'s `,` or a record
+/// field's `:`.
+fn in_annotation(before: &str) -> bool {
+    // The open `<` and `{` of the annotation, innermost last.
+    let mut open = Vec::new();
+    let mut after_path = false;
+    let mut last = None;
+
+    for token in highlight(before) {
+        let text = before.get(token.span.clone()).unwrap_or_default();
+
+        match (token.class, text) {
+            (Class::Whitespace, _) => continue,
+            (Class::Punctuation, "<") if after_path || !open.is_empty() => open.push('<'),
+            (Class::Punctuation, "{") if !open.is_empty() => open.push('{'),
+            (Class::Punctuation, ">" | "}") => {
+                open.pop();
+            }
+            (Class::Punctuation | Class::Type | Class::Member | Class::String, _) => {}
+            _ => open.clear(),
+        }
+
+        after_path = text == "::";
+        last = Some(text);
+    }
+
+    matches!(
+        (open.last(), last),
+        (Some('<'), Some("<" | ",")) | (Some('{'), Some(":"))
+    )
+}
+
 /// How many holes (`_` standing alone, outside strings) `text` has.
 fn holes_in(text: &str) -> usize {
     let mut count = 0usize;
@@ -254,6 +308,20 @@ mod tests {
         offers(source, cursor, &env())
             .map(|o| o.offers.into_iter().map(|o| o.label).collect())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn types_in_an_annotation() {
+        assert_eq!(
+            labels("None::<", 7),
+            ["Int", "Bool", "String", "Option<_>", "List<_>", "Map<_, _>"]
+        );
+        assert_eq!(labels("None::<Li", 9), ["List<_>"]);
+        assert_eq!(labels("[{boxes: None::<Li", 18), ["List<_>"]);
+        assert_eq!(labels("None::<Map<String, ", 19).len(), 6);
+        assert_eq!(labels("None::<{a: ", 11).len(), 6);
+        assert!(labels("None::<{a", 9).is_empty());
+        assert!(!labels("1 < wi", 6).iter().any(|l| l == "Int"));
     }
 
     #[test]

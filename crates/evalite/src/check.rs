@@ -10,6 +10,7 @@ use crate::debug::DebugInfo;
 use crate::env::{Environment, Overload};
 use crate::error::{Arity, Callee, Diagnostic, Diagnostics, ErrorKind, Reporter};
 use crate::lexer::parse_int;
+use crate::literal::type_prefix;
 use crate::message::Key;
 use crate::methods::{self, Associated, MethodSig, PathError};
 use crate::parser::{Options, Parsed, parse_with};
@@ -653,6 +654,7 @@ impl<'a> Compiler<'a> {
             Syntax::Name if self.text(node) == "None" => {
                 self.contextual(Blank::None, want, expect, span)?;
             }
+            Syntax::Annotated => self.annotated(node, want)?,
             Syntax::Name => {
                 let name = self.text(node);
                 let (at, ty) = self.global(name, span)?;
@@ -1005,6 +1007,33 @@ impl<'a> Compiler<'a> {
             Some(ty) => Expect::Type(ty),
             None => Expect::Nothing,
         }
+    }
+
+    /// `None::<T>`, an `Option<T>` whatever is expected, which is
+    /// reported if it is another type.
+    fn annotated(&mut self, node: N<'a>, want: Option<TypeId>) -> Result<(), Diagnostic> {
+        let span = *node.span();
+        let text = node
+            .children()
+            .find(|n| n.value() == Syntax::TypeToken)
+            .map(|n| self.text(n))
+            .ok_or_else(|| internal("an annotation without a type"))?;
+        let (inner, _) = type_prefix(text).map_err(|_| internal("an annotation of no type"))?;
+        let ty = self.intern(&Type::option(inner), span)?;
+
+        if let Some(want) = want.filter(|want| *want != ty) {
+            return Err(Diagnostic::new(
+                span,
+                ErrorKind::AnnotatedNone {
+                    annotated: self.ty(ty),
+                    expected: self.ty(want),
+                },
+            ));
+        }
+
+        self.emit(Instr::None(ty));
+        self.push(ty, span);
+        Ok(())
     }
 
     /// `shape` of the type `want` expects.
@@ -2453,6 +2482,7 @@ fn is_expr(kind: Syntax) -> bool {
             | Syntax::String
             | Syntax::Bool
             | Syntax::Name
+            | Syntax::Annotated
             | Syntax::Paren
             | Syntax::Unary
             | Syntax::Binary

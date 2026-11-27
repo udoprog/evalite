@@ -8,6 +8,7 @@ evalite-completion-literal = literal
 evalite-completion-operator = operator
 evalite-completion-unwrap = unwrap
 evalite-completion-key = key
+evalite-completion-type = type
 evalite-completion-other = other
 evalite-completion-typed = { $kind } · { $type }
 evalite-names-label = Names

@@ -33,7 +33,8 @@ pub enum Class {
     Keyword,
     /// A name: a value or a function.
     Ident,
-    /// A type's name before `::`, such as `Int` in `Int::min`.
+    /// A type's name before `::`, such as `Int` in `Int::min`, or in a type
+    /// annotation, such as `Int` in `None::<Int>`.
     Type,
     /// A name after a `.`, a method or a field, or before a `:`, a
     /// record literal's field.
@@ -84,20 +85,43 @@ pub struct Token {
 pub fn highlight(source: &str) -> impl Iterator<Item = Token> + '_ {
     let mut lexer = Lexer::new(source);
     let mut after_dot = false;
+    let mut after_path = false;
+    // How many `<` of a type annotation such as `None::<List<Int>>` are
+    // open.
+    let mut angles = 0usize;
 
     core::iter::from_fn(move || {
         let start = lexer.position();
 
         let (class, end) = match lexer.next() {
             Ok(Some(token)) => {
+                let typed = angles > 0 || (after_path && token.kind == Syntax::Lt);
+
+                if typed && token.kind != Syntax::Whitespace {
+                    angles = match token.kind {
+                        Syntax::Lt => angles.saturating_add(1),
+                        Syntax::Gt => angles.saturating_sub(1),
+                        Syntax::NameToken
+                        | Syntax::StringToken
+                        | Syntax::Comma
+                        | Syntax::Colon
+                        | Syntax::OpenBrace
+                        | Syntax::CloseBrace => angles,
+                        _ => 0,
+                    };
+                }
+
                 let class = match token.kind {
                     Syntax::Whitespace => Class::Whitespace,
+                    Syntax::Lt | Syntax::Gt if typed => Class::Punctuation,
+                    Syntax::NameToken if typed && before(&lexer, Syntax::Colon) => Class::Member,
+                    Syntax::NameToken if typed => Class::Type,
                     Syntax::IntegerToken => Class::Number,
                     Syntax::StringToken => Class::String,
                     Syntax::True | Syntax::False => Class::Keyword,
                     Syntax::NameToken if after_dot => Class::Member,
                     Syntax::NameToken if before(&lexer, Syntax::Colon) => Class::Member,
-                    Syntax::NameToken if before(&lexer, Syntax::ColonColon) => Class::Type,
+                    Syntax::NameToken if before_path(&lexer) => Class::Type,
                     Syntax::NameToken if is_option_literal(source.get(start..token.end)) => {
                         Class::Keyword
                     }
@@ -117,6 +141,7 @@ pub fn highlight(source: &str) -> impl Iterator<Item = Token> + '_ {
 
                 if token.kind != Syntax::Whitespace {
                     after_dot = token.kind == Syntax::Dot;
+                    after_path = token.kind == Syntax::ColonColon;
                 }
 
                 (class, token.end)
@@ -124,6 +149,8 @@ pub fn highlight(source: &str) -> impl Iterator<Item = Token> + '_ {
             Ok(None) => return None,
             Err(rejected) => {
                 after_dot = false;
+                after_path = false;
+                angles = 0;
                 (Class::Error, rejected.token.end)
             }
         };
@@ -141,15 +168,25 @@ fn is_option_literal(name: Option<&str>) -> bool {
     matches!(name, Some("Some" | "None"))
 }
 
+/// Whether `::` is the next token past whitespace, and no `<` of a type
+/// annotation after it.
+fn before_path(lexer: &Lexer<'_>) -> bool {
+    let mut lexer = lexer.clone();
+    next_kind(&mut lexer) == Some(Syntax::ColonColon) && next_kind(&mut lexer) != Some(Syntax::Lt)
+}
+
 /// Whether `kind` is the next token past whitespace.
 fn before(lexer: &Lexer<'_>, kind: Syntax) -> bool {
-    let mut lexer = lexer.clone();
+    next_kind(&mut lexer.clone()) == Some(kind)
+}
 
+/// The kind of the next token past whitespace.
+fn next_kind(lexer: &mut Lexer<'_>) -> Option<Syntax> {
     loop {
         match lexer.next() {
             Ok(Some(token)) if token.kind == Syntax::Whitespace => {}
-            Ok(Some(token)) => return token.kind == kind,
-            _ => return false,
+            Ok(Some(token)) => return Some(token.kind),
+            _ => return None,
         }
     }
 }

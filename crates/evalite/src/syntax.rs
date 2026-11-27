@@ -27,6 +27,8 @@ pub(crate) enum Syntax {
     /// A type's name, `::` and a function's name, such as `Int::min`, which
     /// only a `Call` holds.
     Path,
+    /// `None`, `::`, `<`, a `TypeToken` and `>`: `None` of the type given.
+    Annotated,
     /// A receiver, `.`, a `Name` and its `Args`.
     Method,
     /// A receiver, `.` and a `Name`.
@@ -81,6 +83,9 @@ pub(crate) enum Syntax {
     Dot,
     Colon,
     ColonColon,
+    /// The type of an `Annotated`, as [`Type::parse`](crate::Type::parse)
+    /// reads it.
+    TypeToken,
     /// Text the lexer rejected, already reported.
     Invalid,
 }
@@ -120,6 +125,7 @@ impl Syntax {
             Self::ColonColon => "`::`",
             Self::Whitespace => "whitespace",
             Self::Invalid => "text that is no token",
+            Self::TypeToken => "a type",
             Self::Root
             | Self::Bool
             | Self::Paren
@@ -127,6 +133,7 @@ impl Syntax {
             | Self::Binary
             | Self::Call
             | Self::Path
+            | Self::Annotated
             | Self::Method
             | Self::Field
             | Self::Index

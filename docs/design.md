@@ -128,7 +128,41 @@ is itself a sibling (`[[None], [Some(1)]]`, `[{a: None}, {a: Some(1)}]`, as
 the inner literal is typed by its own parts and the slot's type comes only
 after it; the reverse order checks), which would need a field or entry path
 per pending literal where `Some(...)` needs only a depth, and a program's declared result type, which the compile
-API does not have. An explicit annotation (`None::<T>`) is phase 4 (8838ea9b).
+API does not have. An explicit annotation, `None::<T>`, reaches those.
+
+**Annotated `None` (phase 4):** `None::<T>` is an `Option<T>` whatever its
+context. `T` is written in the type grammar of `Type::parse` (`Int`,
+`List<Int>`, `Map<String, Int>`, `{a: Int, "b c": Bool}`), read by the same
+code: the parser hands the source after `<` to `literal::type_prefix` (the
+`Cursor` of `Type::parse`, stopping after the type rather than requiring the
+end), so the type is one `TypeToken` inside an `Annotated` node (`None`,
+`::`, `<`, the type, `>`), nested at most `MAX_TYPE_DEPTH` levels as any
+type is. The checker parses the token again and interns `Option<T>`. Where an
+expected type also exists and differs, it is an error (`` this `None` is
+Option<Int>, but an Option<Bool> is expected here ``) and the expression is
+in error, so its consumer reports nothing more. A sibling slot with no type
+yet takes `Option<T>` from it, so `[None, None::<Bool>]` checks. `::<` after
+any other name is an error (`` only `None` takes a type in `::<..>` ``); a
+type the cursor refuses is reported at its place in the expression, and the
+tokens up to the `>` closing the annotation are skipped as one `Invalid`
+token (a token no type has, or the end, stops the skip), which keeps
+recovery linear (`tests::recovery_is_linear` has annotation inputs).
+Highlighting classes names inside `::<..>` as types (a record field's name as
+a member), with `<`/`>` as punctuation, and the playground's completion offers
+the type names after `::<`, a `Map`'s `,` and a record field's `:`.
+
+A `Structure` has no node for it: `Structure::from_text` refuses
+`None::<T>` (`` a structure cannot hold `None::<T>` ``), so the playground's
+completion offers nothing elsewhere in an expression holding one. A
+`Repr` variant for it needs a format bump; it is a follow-up.
+
+Not taken: the same turbofish on empty literals (`[]::<Int>`,
+`{}::<String, Int>`). They are primaries, so `::<` there would be a postfix in
+the operator position, a second path rather than this one, and `[]` takes
+the element type where `None` takes the option's, so the type grammar would
+differ (`T` and `K, V` rather than the whole type). Context covers them as it
+does `None`; an annotation for them can follow the same token approach if a
+case needs one.
 
 **Empty literals (phase 3):** `[]` is a `List<T>` and `{}` a `Map<K, V>` of
 the expected type, from the same places as `None` (`[[], [1]]`,
@@ -413,8 +447,8 @@ two have one checker and identical errors (section 9).
     substitution table, an occurs check and a second pass to emit typed code,
     for a language whose only unknowns are `None` and, later, `[]`/`{}`.
     Explicit-only annotations (`None::<Int>` everywhere) are simpler still,
-    but noisy for the common case where the context is plain; they come as
-    phase 4 for the cases context does not reach.
+    but noisy for the common case where the context is plain; `None::<T>`
+    is there for the cases context does not reach.
 - `finish` hands the parts to `Program::verify`. The compiler never states the
   program's memory: the verifier computes it, so compiled and stored programs
   are checked the same way.
@@ -1290,7 +1324,9 @@ only for the completion applied. A field that isn't a valid name becomes
 classified (keyword, ident, type, member, number, string, operator,
 punctuation, whitespace, error) over the whole source, with rejected text as
 `Error`. A name is a member after `.` or before a single `:` (a record
-literal's field), a type before `::`. It is linear.
+literal's field), a type before `::` (but not `::<`), and `Some`/`None`
+otherwise a keyword, so `None` in `None::<Int>` is one. Names inside the
+`::<..>` annotation are types. It is linear.
 
 ### 9.3 References (`references.rs`, landed in 5554ba4, b128c319)
 

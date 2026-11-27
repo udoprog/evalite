@@ -3041,7 +3041,7 @@ fn record_literal_errors() {
         ),
         (
             "{a: None}",
-            "`None` needs a type from where it is used, such as beside `Some(...)` in a list or as an argument of an option",
+            "`None` needs a type from where it is used, such as beside `Some(...)` in a list or as an argument of an option, or written after it, such as `None::<Int>`",
             "None",
         ),
         (
@@ -3721,7 +3721,7 @@ fn option_literals_from_host_functions() {
 
 #[test]
 fn option_literal_errors() {
-    let untyped = "`None` needs a type from where it is used, such as beside `Some(...)` in a list or as an argument of an option";
+    let untyped = "`None` needs a type from where it is used, such as beside `Some(...)` in a list or as an argument of an option, or written after it, such as `None::<Int>`";
 
     errors(&[
         ("None", untyped, "None"),
@@ -3793,6 +3793,63 @@ fn option_literal_errors() {
             "Some(1) + 1",
             "`+` takes Int and Int, found Option<Int> and Int, unwrap the optional value first with `.unwrap_or(...)`",
             "Some(1) + 1",
+        ),
+    ]);
+}
+
+#[test]
+fn annotated_none() {
+    types(&[
+        ("None::<Int>", "Option<Int>"),
+        ("None :: < List<Int> >", "Option<List<Int>>"),
+        (
+            "None::<{a: Int, \"b c\": Option<Bool>}>",
+            "Option<{a: Int, \"b c\": Option<Bool>}>",
+        ),
+        ("None::<Map<String, Int>>", "Option<Map<String, Int>>"),
+        ("[None, None::<Bool>]", "List<Option<Bool>>"),
+        ("[None::<Bool>, None]", "List<Option<Bool>>"),
+        ("[Some(1), None::<Int>]", "List<Option<Int>>"),
+        ("None::<Int>.unwrap_or(3)", "Int"),
+        ("None::<Int>.is_none() == true", "Bool"),
+    ]);
+
+    errors(&[
+        (
+            "[Some(true), None::<Int>]",
+            "this `None` is Option<Int>, but an Option<Bool> is expected here",
+            "None::<Int>",
+        ),
+        (
+            "wits.min(None::<Int>)",
+            "this `None` is Option<Int>, but an Int is expected here",
+            "None::<Int>",
+        ),
+        (
+            "None::<Float>",
+            "unknown type `Float`, expected Int, Bool, String, Option<T>, List<T>, Map<K, V> or {name: T}",
+            "Float",
+        ),
+        ("None::<Map<Int>>", "expected `,`, found `>`", ">"),
+        (
+            "None::<Int",
+            "expected `>` after the type, found the end of the expression",
+            "",
+        ),
+        (
+            "None::<Int Bool> + 1",
+            "expected `>` after the type, found a name",
+            "Bool",
+        ),
+        (
+            "Some::<Int>",
+            "only `None` takes a type in `::<..>`, such as `None::<Int>`, not `Some`",
+            "Some",
+        ),
+        (
+            "None::<Map<Bool, Int>>",
+            "a map's keys are Int or String, found Bool",
+            "Bool",
         ),
     ]);
 }

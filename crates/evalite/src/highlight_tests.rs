@@ -247,3 +247,36 @@ fn records() {
     );
     covers("{a: {b: c}}.a.b");
 }
+
+#[test]
+fn annotation() {
+    use Class::*;
+
+    assert_eq!(
+        texts("None::<Map<String, {a: Int}>> < 1"),
+        [
+            (Keyword, "None"),
+            (Punctuation, "::"),
+            (Punctuation, "<"),
+            (Type, "Map"),
+            (Punctuation, "<"),
+            (Type, "String"),
+            (Punctuation, ","),
+            (Whitespace, " "),
+            (Punctuation, "{"),
+            (Member, "a"),
+            (Punctuation, ":"),
+            (Whitespace, " "),
+            (Type, "Int"),
+            (Punctuation, "}"),
+            (Punctuation, ">"),
+            (Punctuation, ">"),
+            (Whitespace, " "),
+            (Operator, "<"),
+            (Whitespace, " "),
+            (Number, "1"),
+        ]
+    );
+
+    covers("None::<List<");
+}

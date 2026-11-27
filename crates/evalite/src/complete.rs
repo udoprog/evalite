@@ -49,6 +49,8 @@ pub enum CompletionKind {
     /// A field's name at a key of a record literal, such as `boxes` in
     /// `{boxes: 3}`.
     Key,
+    /// A type, in a type annotation such as `None::<Int>`.
+    Type,
 }
 
 /// How [`Structure::apply`] fills a hole with a [`Completion`].

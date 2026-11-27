@@ -56,6 +56,12 @@ impl<'a> Lexer<'a> {
         self.at
     }
 
+    /// Go on lexing at `at`, a character boundary past text another parser
+    /// has read.
+    pub(crate) fn seek(&mut self, at: usize) {
+        self.at = at.min(self.source.len());
+    }
+
     /// Skip past text the lexer rejected: the whole string literal if one
     /// starts here, leniently, otherwise one character. Returns the new
     /// position.

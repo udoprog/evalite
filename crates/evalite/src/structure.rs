@@ -2281,6 +2281,12 @@ fn from_tree(source: &str, tree: &Tree) -> Result<Structure, Diagnostic> {
             Syntax::Unwrap => Node(Repr::Unwrap {
                 operand: *parts.first().ok_or_else(|| internal("no operand"))?,
             }),
+            Syntax::Annotated => {
+                return Err(Diagnostic::new(
+                    *node.span(),
+                    ErrorKind::AnnotationInStructure,
+                ));
+            }
             _ => return Err(internal("not an expression")),
         };
 
@@ -2313,6 +2319,7 @@ fn is_expr(kind: Syntax) -> bool {
             | Syntax::String
             | Syntax::Bool
             | Syntax::Name
+            | Syntax::Annotated
             | Syntax::Paren
             | Syntax::Unary
             | Syntax::Binary

@@ -461,6 +461,10 @@ const CASES: &[(&str, &str)] = &[
     ("Some(bonus).unwrap_or(None)", "Some(2)"),
     ("[maybe_track, None].get(1)", "Some(None)"),
     ("[None, Some(3), None][1]! + 1", "4"),
+    ("None::<Int>", "None"),
+    ("None::<Int>.unwrap_or(5)", "5"),
+    ("[None::<List<Int>>, Some([1])]", "[None, Some([1])]"),
+    ("None::<{a: Int}>.is_none()", "true"),
     // Empty
     ("[[], [1]]", "[[], [1]]"),
     ("[[], levels][0].len()", "0"),

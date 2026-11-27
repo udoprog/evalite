@@ -2,6 +2,7 @@ use syntree::{Builder, EmptyVec, Span, TreeIndex};
 
 use crate::error::{Delimiter, Diagnostic, Diagnostics, ErrorKind, Found, Nesting, Reporter};
 use crate::lexer::{Lexer, Token, parse_int, span};
+use crate::literal::type_prefix;
 use crate::syntax::Syntax;
 
 syntree::flavor! {
@@ -535,6 +536,11 @@ impl Parser<'_> {
 
                 if self.peek_kind() == Some(Syntax::ColonColon) {
                     self.bump()?;
+
+                    if self.peek_kind() == Some(Syntax::Lt) {
+                        return self.annotation(c, token);
+                    }
+
                     let name = self.peek();
 
                     let Some(name) = name.filter(|t| t.kind == Syntax::NameToken) else {
@@ -570,6 +576,121 @@ impl Parser<'_> {
             }
             _ => Err(internal("an operand that starts no operand")),
         }
+    }
+
+    /// The `<T>` of `name::<T>`, at its `<`: `None` of the type `T`, read
+    /// by the same parser as [`Type::parse`](crate::Type::parse), so the
+    /// type is one token. In error, the tokens up to the `>` closing it
+    /// are skipped as one.
+    fn annotation(&mut self, c: Checkpoint, name: Token) -> Result<State, Diagnostic> {
+        self.bump()?;
+
+        let mut error = false;
+
+        if self.lexer_text(name) != "None" {
+            let text = self.lexer_text(name).to_owned();
+            self.report(name.span(), ErrorKind::AnnotatedName(text));
+            error = true;
+        }
+
+        let start = self.space()?;
+        let rest = self.lexer.text(start, self.lexer.len());
+        let by = u32::try_from(start).map_err(internal)?;
+
+        match type_prefix(rest) {
+            Ok((_, len)) => {
+                self.tree.token(Syntax::TypeToken, len).map_err(internal)?;
+                let end = start.saturating_add(len);
+                self.lexer.seek(end);
+                let at = self.space()?;
+
+                if self.lexer.text(at, at.saturating_add(1)) == ">" {
+                    self.tree.token(Syntax::Gt, 1).map_err(internal)?;
+                    self.lexer.seek(at.saturating_add(1));
+                } else {
+                    let next = match self.lexer.clone().next() {
+                        Ok(next) => next,
+                        Err(rejected) => Some(rejected.token),
+                    };
+                    let (found, at) = self.found(next);
+                    self.report(at, ErrorKind::ExpectedAnnotationEnd(found));
+                    self.skip_type(1)?;
+                    error = true;
+                }
+            }
+            Err(diagnostic) => {
+                self.reporter.report(diagnostic.shifted(by));
+                self.skip_type(1)?;
+                error = true;
+            }
+        }
+
+        let kind = if error {
+            Syntax::Error
+        } else {
+            Syntax::Annotated
+        };
+
+        self.close_at(&c, kind)?;
+        self.primary = Some(c);
+        Ok(State::Operator)
+    }
+
+    /// Add the whitespace at the lexer's position to the tree, giving
+    /// where it ends.
+    fn space(&mut self) -> Result<usize, Diagnostic> {
+        let start = self.lexer.position();
+        let rest = self.lexer.text(start, self.lexer.len());
+        let len = rest
+            .char_indices()
+            .find(|(_, c)| !c.is_whitespace())
+            .map_or(rest.len(), |(at, _)| at);
+
+        if len > 0 {
+            self.tree.token(Syntax::Whitespace, len).map_err(internal)?;
+        }
+
+        let end = start.saturating_add(len);
+        self.lexer.seek(end);
+        Ok(end)
+    }
+
+    /// Skip what can be part of a type, to past the `>` closing the `depth`
+    /// open `<`, as one `Invalid` token: its error is reported. A token no
+    /// type has, or the end, stops it first.
+    fn skip_type(&mut self, mut depth: usize) -> Result<(), Diagnostic> {
+        let start = self.lexer.position();
+        let mut lexer = self.lexer.clone();
+        let mut end = start;
+
+        while let Ok(Some(token)) = lexer.next() {
+            match token.kind {
+                Syntax::Lt => depth = depth.saturating_add(1),
+                Syntax::Gt => depth = depth.saturating_sub(1),
+                Syntax::Whitespace
+                | Syntax::NameToken
+                | Syntax::StringToken
+                | Syntax::Comma
+                | Syntax::Colon
+                | Syntax::OpenBrace
+                | Syntax::CloseBrace => {}
+                _ => break,
+            }
+
+            end = token.end;
+
+            if depth == 0 {
+                break;
+            }
+        }
+
+        if end > start {
+            let len = end.saturating_sub(start);
+            self.tree.token(Syntax::Invalid, len).map_err(internal)?;
+        }
+
+        self.lexer.seek(end);
+        Ok(())
     }
 
     /// Where an operand is expected, `token`, which starts none: report it,
