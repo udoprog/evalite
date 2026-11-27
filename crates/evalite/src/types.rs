@@ -1,4 +1,5 @@
 use crate::message::{Invalid, Message, StoreError};
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
@@ -408,6 +409,17 @@ pub(crate) struct Types {
     depths: Vec<usize>,
     /// The words a value of each type takes where it is held.
     widths: Vec<usize>,
+    /// The ids of `Int`, `Bool` and `String`, found without hashing.
+    leaves: [Option<TypeId>; 3],
+}
+
+fn leaf(node: &TypeNode) -> Option<usize> {
+    match node {
+        TypeNode::Int => Some(0),
+        TypeNode::Bool => Some(1),
+        TypeNode::String => Some(2),
+        _ => None,
+    }
 }
 
 impl Types {
@@ -424,7 +436,10 @@ impl Types {
     }
 
     pub(crate) fn find(&self, node: &TypeNode) -> Option<TypeId> {
-        self.ids.get(node).copied()
+        match leaf(node) {
+            Some(n) => self.leaves.get(n).copied().flatten(),
+            None => self.ids.get(node).copied(),
+        }
     }
 
     /// Whether a value of type `id` is one word that is never
@@ -488,8 +503,10 @@ impl Types {
     /// The id of `node`, adding it when new. `None` when the table is
     /// full or the type nests past [`MAX_TYPE_DEPTH`].
     pub(crate) fn add(&mut self, node: TypeNode) -> Option<TypeId> {
-        if let Some(id) = self.ids.get(&node) {
-            return Some(*id);
+        let leaf = leaf(&node);
+
+        if let Some(id) = leaf.and_then(|n| self.leaves.get(n).copied().flatten()) {
+            return Some(id);
         }
 
         let depth = match &node {
@@ -499,10 +516,6 @@ impl Types {
         }
         .saturating_add(1);
 
-        if depth > MAX_TYPE_DEPTH {
-            return None;
-        }
-
         let width = match &node {
             TypeNode::Option(inner) if !self.has_niche(*inner) => {
                 self.width(*inner).saturating_add(1)
@@ -510,11 +523,26 @@ impl Types {
             _ => 1,
         };
 
+        // One hash of the node, whether it is new or not.
+        let entry = match self.ids.entry(node) {
+            Entry::Occupied(entry) => return Some(*entry.get()),
+            Entry::Vacant(entry) => entry,
+        };
+
+        if depth > MAX_TYPE_DEPTH {
+            return None;
+        }
+
         let id = TypeId(u32::try_from(self.nodes.len()).ok()?);
-        self.nodes.push(node.clone());
+        self.nodes.push(entry.key().clone());
         self.depths.push(depth);
         self.widths.push(width);
-        self.ids.insert(node, id);
+        entry.insert(id);
+
+        if let Some(slot) = leaf.and_then(|n| self.leaves.get_mut(n)) {
+            *slot = Some(id);
+        }
+
         Some(id)
     }
 
@@ -590,7 +618,9 @@ impl Types {
             }
         }
 
-        let mut built = HashMap::<usize, Type>::new();
+        let mut built = Vec::<Option<Type>>::new();
+        built.resize_with(reach.len(), || None);
+        let part = |built: &[Option<Type>], t: TypeId| built.get(t.index())?.clone();
 
         for (at, reached) in reach.iter().enumerate() {
             if !reached {
@@ -601,23 +631,23 @@ impl Types {
                 TypeNode::Int => Type::int(),
                 TypeNode::Bool => Type::bool(),
                 TypeNode::String => Type::string(),
-                TypeNode::List(t) => Type::list(built.get(&t.index())?.clone()),
-                TypeNode::Option(t) => Type::option(built.get(&t.index())?.clone()),
+                TypeNode::List(t) => Type::list(part(&built, *t)?),
+                TypeNode::Option(t) => Type::option(part(&built, *t)?),
                 TypeNode::Record(fields) => {
                     let mut record = BTreeMap::new();
 
                     for field in fields {
-                        record.insert(field.name.clone(), built.get(&field.ty.index())?.clone());
+                        record.insert(field.name.clone(), part(&built, field.ty)?);
                     }
 
                     Type::record(record)
                 }
             };
 
-            built.insert(at, ty);
+            *built.get_mut(at)? = Some(ty);
         }
 
-        built.remove(&id.index())
+        built.get_mut(id.index())?.take()
     }
 
     /// Check a stored table: each part before what holds it, each node
@@ -650,12 +680,10 @@ impl Types {
                 _ => {}
             }
 
-            if types.find(&node).is_some() {
-                return Err(fail(Invalid::TypeRepeated));
-            }
-
-            if types.add(node).is_none() {
-                return Err(fail(Invalid::TypeTooDeep));
+            match types.add(node) {
+                None => return Err(fail(Invalid::TypeTooDeep)),
+                Some(id) if id.index() != at => return Err(fail(Invalid::TypeRepeated)),
+                Some(_) => {}
             }
         }
 
