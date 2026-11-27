@@ -822,6 +822,8 @@ fn random_updates_match_the_value() {
                 .set_at(&path.index(i64::try_from(i).unwrap()), &part)
                 .unwrap();
         }
+
+        assert_tidy(&globals);
     }
 
     assert_eq!(globals.get("m"), Some(value(&model)));
@@ -1003,16 +1005,171 @@ fn room_grows_and_shrinks() {
     );
     assert_eq!(globals.get("l"), Some(ints(&[])));
     assert_eq!(run_entries(&globals, "l.len()"), int(0));
+    // Nothing is left live, so the freed blocks are compacted away.
+    assert_eq!(globals.heap_words(), 0);
 
-    // Pushing again takes back freed blocks.
-    let heap = globals.heap_words();
+    // Growing and shrinking again takes no more than the first time.
+    for _ in 0..20 {
+        for n in 0..17 {
+            globals.push(&l, &int(n)).unwrap();
+            assert!(globals.heap_words() <= 5 + 9 + 17 + 33);
+        }
 
-    for n in 0..4 {
-        globals.push(&l, &int(n)).unwrap();
+        assert_eq!(run_entries(&globals, "l[16]"), int(16));
+
+        for _ in 0..17 {
+            globals.remove(&l.clone().index(0)).unwrap();
+            assert!(globals.heap_words() <= 5 + 9 + 17 + 33);
+        }
     }
 
-    assert_eq!(globals.heap_words(), heap);
-    assert_eq!(run_entries(&globals, "l[3]"), int(3));
+    assert_eq!(globals.heap_words(), 0);
+}
+
+/// Pushing a list long and removing it short, over and over, runs within
+/// a limit: the blocks it outgrows and the tails it frees as it shrinks
+/// are taken again, or compacted away. Exact-size free lists alone failed
+/// both: the first at its 30th cycle, the second taking about 1 025 words
+/// a cycle.
+#[test]
+fn push_and_remove_cycles_keep_within_the_limit() {
+    let env = entries_env();
+    let l = Path::value("l");
+
+    for (high, low, cycles) in [(100, 20, 200), (1000, 0, 50), (130, 31, 100)] {
+        let mut globals = Globals::with_limit(&env, 4096);
+        globals.set("l", &ints(&[])).unwrap();
+        let mut len = 0;
+
+        for cycle in 0..cycles {
+            while len < high {
+                globals
+                    .push(&l, &int(len))
+                    .unwrap_or_else(|e| panic!("{high}/{low}, cycle {cycle}, {len}: {e}"));
+                len += 1;
+            }
+
+            assert_tidy(&globals);
+
+            while len > low {
+                len -= 1;
+                assert_eq!(globals.remove(&l.clone().index(len)).unwrap(), int(len));
+            }
+
+            assert_tidy(&globals);
+        }
+
+        assert_eq!(globals.get("l"), Some(ints(&(0..low).collect::<Vec<_>>())));
+    }
+}
+
+/// A set that takes free blocks, splitting some, and then finds it does
+/// not fit undoes all of it: every word, free list and flag is as it was.
+#[test]
+fn a_plan_that_does_not_fit_is_undone() {
+    let mut env = Environment::new();
+    env.value("a", Type::string()).unwrap();
+    env.value("b", Type::list(Type::string())).unwrap();
+
+    let mut globals = Globals::with_limit(&env, 20);
+    // A header and 2 entries, then strings of 3 words and a word.
+    globals
+        .set("b", &Value::list([s(&"x".repeat(24)), s("y")]))
+        .unwrap();
+    globals.set("a", &s(&"z".repeat(40))).unwrap();
+    globals.set("a", &s("")).unwrap();
+    assert_eq!((globals.stats().heap(), globals.stats().free()), (12, 5));
+
+    // Its header and entries take the free 5 words, two strings of 2 words
+    // split the old 3-word ones, and the rest is 12 words past the end.
+    let before = format!("{globals:?}");
+    let two = || s(&"w".repeat(16));
+    let b = Value::list([two(), two(), two(), s(&"v".repeat(80))]);
+    let error = globals.set("b", &b).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "the value needs 12 words of memory, 8 are left"
+    );
+    assert_eq!(format!("{globals:?}"), before);
+
+    // Without the long one it fits in the free words alone.
+    let b = Value::list([two(), two(), s("u")]);
+    globals.set("b", &b).unwrap();
+    assert_eq!(globals.get("b"), Some(b));
+    assert_eq!(globals.stats().heap(), 12);
+    assert_tidy(&globals);
+}
+
+/// The store takes at most twice the words of its values, and loses none.
+fn assert_tidy(globals: &Globals) {
+    let stats = globals.stats();
+    assert_eq!(
+        stats.heap(),
+        stats.live() + stats.free(),
+        "no block is lost: {stats:?}"
+    );
+    assert!(stats.heap() <= 2 * stats.live(), "{stats:?}");
+    assert_eq!(stats.heap() as usize, globals.heap_words());
+}
+
+/// Compacting moves every part of every value, nested ones included, and
+/// rewrites each reference to them: every value reads back as it was set,
+/// runs read them, and updates by path work on the moved parts.
+#[test]
+fn compaction_keeps_every_value() {
+    let mut globals = store();
+    let small = globals.heap_words();
+
+    // A large value, then a small one: more than half the heap is free.
+    let tracks = sheet_path().field("tracks");
+    let many = Value::list((0..200).map(|n| track(n, &[true, false, true])));
+    globals.set_at(&tracks, &many).unwrap();
+    let large = globals.heap_words();
+    assert!(large > 4 * small);
+
+    globals
+        .set_at(&tracks, &Value::list([track(1, &[false])]))
+        .unwrap();
+    assert!(
+        globals.heap_words() < small + 10,
+        "{}",
+        globals.heap_words()
+    );
+    assert_tidy(&globals);
+
+    let mut sheet = sheet();
+    let Value(crate::value::Repr::Record(fields)) = &mut sheet else {
+        unreachable!()
+    };
+    fields.insert("tracks".into(), Value::list([track(1, &[false])]));
+    assert_eq!(globals.get("sheet"), Some(sheet.clone()));
+    assert_eq!(globals.get("n"), Some(int(1)));
+    assert_eq!(
+        run(
+            &globals,
+            r#"sheet.tracks[0].boxes + sheet.skills["occult"].dots"#
+        ),
+        int(4)
+    );
+    assert_eq!(
+        run(&globals, r#"sheet.skills["occult"].specialties[1]"#),
+        s("rituals")
+    );
+
+    // Updates find the moved parts, and take freed words again.
+    let occult = sheet_path().field("skills").string_key("occult");
+    globals
+        .push(&occult.clone().field("specialties"), &s("wards"))
+        .unwrap();
+    globals
+        .set_at(&sheet_path().field("name"), &s("Ada Lovelace"))
+        .unwrap();
+    assert_eq!(
+        globals.get_at(&occult),
+        Some(skill(3, &["ghosts", "rituals", "wards"]))
+    );
+    assert_eq!(run(&globals, "sheet.name"), s("Ada Lovelace"));
+    assert_tidy(&globals);
 }
 
 /// Inserting fails past the limit, leaving the store as it was; removing
@@ -1379,6 +1536,7 @@ fn random_entries_match_the_model() {
         assert_room(&globals, &l_path);
         assert_room(&globals, &m_path);
         assert_room(&globals, &tags_path);
+        assert_tidy(&globals);
 
         if step % 100 == 0 {
             assert_eq!(globals.get("l"), Some(ints(&list)), "{step}");

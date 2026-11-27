@@ -359,7 +359,9 @@
 //! program over the store reads it where it is: loading a program copies no
 //! values, however large they are, so a sheet of a thousand formulas over one
 //! large map pays for the map once, not once a formula. Setting a value again
-//! replaces it, freeing the words of the old one for values of the same size.
+//! replaces it, freeing the words of the old one for the values set after it,
+//! and a store moves its values together when most of its words are free, so
+//! it takes at most twice the words its values do.
 //! [`Globals::set_at`] replaces one part of a value in place, a field, a list
 //! entry or a map key's value, found by a [`Path`], so updating one entry of a
 //! large map costs the entry, not the map. [`Globals::insert`],
@@ -757,7 +759,7 @@ pub use self::complete::{CompleteError, Completion, CompletionKind};
 pub use self::debug::DebugInfo;
 pub use self::env::{DeclareError, Environment};
 pub use self::error::{Diagnostic, Diagnostics, MAX_DIAGNOSTICS};
-pub use self::globals::{DEFAULT_GLOBALS, Globals, GlobalsError};
+pub use self::globals::{DEFAULT_GLOBALS, Globals, GlobalsError, GlobalsStats};
 pub use self::message::{Label, Labels, RunError, StoreError};
 pub use self::parser::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_LEN, Options};
 #[cfg(test)]

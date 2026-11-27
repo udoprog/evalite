@@ -27,8 +27,11 @@ pub const DEFAULT_GLOBALS: u32 = 1 << 20;
 /// its parts (a string's bytes, a list's entries, a record's fields, a
 /// map's entries) after the slots. Setting a value checks it against its
 /// declared type, and replaces the value before it, whose parts are freed
-/// to be taken again by a part of the same size. A run reads the store and
-/// never writes to it, so loading a program copies none of its values.
+/// to be taken again. When more than half the words its parts take are
+/// free, the store moves its values' parts together, so it takes at most
+/// twice the words its values do ([`stats`](Self::stats)). A run reads the
+/// store and never writes to it, so loading a program copies none of its
+/// values.
 ///
 /// ```
 /// use evalite::{Environment, Globals, Machine, Type, Value};
@@ -75,8 +78,12 @@ struct Heap {
     /// The words the parts may take, kept inside what a reference can
     /// address.
     room: usize,
-    /// Freed blocks of parts, by their size in words.
+    /// Freed blocks of parts, by their size in words. A block is taken
+    /// from the smallest size that holds it, and what it leaves of a larger
+    /// one is freed again.
     free: BTreeMap<usize, Vec<usize>>,
+    /// The words of the free blocks.
+    free_words: usize,
 }
 
 impl Heap {
@@ -186,6 +193,7 @@ impl Globals {
                 slot_words,
                 room,
                 free: BTreeMap::new(),
+                free_words: 0,
             },
             set: vec![false; slot_words],
             limit: words,
@@ -195,6 +203,50 @@ impl Globals {
     /// The words its values' parts may take.
     pub fn limit(&self) -> u32 {
         self.limit
+    }
+
+    /// The words its values' parts take, and those it has freed. It takes
+    /// as long as its values are large.
+    ///
+    /// ```
+    /// use evalite::{Environment, Globals, Path, Type, Value};
+    ///
+    /// let mut env = Environment::new();
+    /// env.value("names", Type::list(Type::string()))?;
+    ///
+    /// let mut globals = Globals::new(&env);
+    /// globals.set("names", &Value::list([Value::string("Ada Lovelace")]))?;
+    ///
+    /// // A header, an entry, and the name's 2 words.
+    /// let stats = globals.stats();
+    /// assert_eq!((stats.live(), stats.spare(), stats.free()), (4, 0, 0));
+    ///
+    /// // Pushing moves the list to room for 4 entries, freeing its 2 words,
+    /// // and the new name takes one of them.
+    /// globals.push(&Path::value("names"), &Value::string("Bea"))?;
+    /// let stats = globals.stats();
+    /// assert_eq!((stats.live(), stats.spare(), stats.free()), (8, 2, 1));
+    /// assert_eq!(stats.heap(), 9);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn stats(&self) -> GlobalsStats {
+        let (mut live, mut spare) = (0usize, 0usize);
+
+        for (at, id) in self.roots() {
+            let _ = memory::each_block(&self.heap, &self.layout.types, at, id, |_, n, s| {
+                live = live.saturating_add(n);
+                spare = spare.saturating_add(s);
+            });
+        }
+
+        let words = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+
+        GlobalsStats {
+            live: words(live),
+            spare: words(spare),
+            free: words(self.heap.free_words),
+            heap: words(self.heap.used()),
+        }
     }
 
     /// The [`fingerprint`](Environment::fingerprint) of the environment it
@@ -225,7 +277,9 @@ impl Globals {
     /// It takes the words `value`'s parts need, reusing those of the value
     /// it replaces and of values replaced before; only what they cannot
     /// give counts against the [`limit`](Self::limit). It takes as long as
-    /// `value` and the value it replaces are large.
+    /// `value` and the value it replaces are large, plus, when it leaves
+    /// more than half the store's words free, as its values are large, to
+    /// move them together.
     ///
     /// # Errors
     ///
@@ -263,7 +317,9 @@ impl Globals {
         let (id, at) = (held.id, held.at);
 
         self.set_slot(n, id, at, value)
-            .map_err(|e| self.error(&e.context(Message::Setting { global })))
+            .map_err(|e| self.error(&e.context(Message::Setting { global })))?;
+        self.tidy();
+        Ok(())
     }
 
     fn set_slot(
@@ -311,27 +367,22 @@ impl Globals {
             Vec::new()
         };
 
-        // What the free blocks and the old value's cannot give is taken
-        // past the parts: found before anything is changed, so a value
-        // that does not fit leaves the store as it was.
-        let needed = self.bump(&sizes, &old);
-        let left = self.heap.room.saturating_sub(self.heap.used());
-
-        if needed > left {
-            return Err(RunError::new(Message::TooLarge {
-                needed: count(needed),
-                left: count(left),
-            }));
-        }
+        // The old parts are freed and the new ones' blocks taken before a
+        // word is written, so a value that does not fit is undone and
+        // leaves the store as it was.
+        let mut plan = Plan::default();
 
         for (start, words) in old {
-            self.heap.free(start, words);
+            self.heap.give(&mut plan, start, words);
         }
+
+        let pool = self.heap.take_all(&mut plan, sizes);
+        self.heap.settle(plan)?;
 
         // Measured, so it is a fault for the write to fail. The old parts
         // are freed by then, so the value is left unset rather than
         // pointing at them, never to be freed twice.
-        let written = memory::write(&mut self.heap, types, value, id, at);
+        let written = self.heap.write(pool, types, value, id, at);
 
         if written.is_err() {
             let slot = usize::try_from(global)
@@ -345,38 +396,6 @@ impl Globals {
         }
 
         written
-    }
-
-    /// The words that blocks of `sizes` take past the parts, once the free
-    /// blocks and `old` give what they can of the same sizes.
-    fn bump(&self, sizes: &[usize], old: &[(usize, usize)]) -> usize {
-        // Of each size: the blocks there are to take, then those taken.
-        let mut blocks = BTreeMap::<usize, (usize, usize)>::new();
-
-        for (_, words) in old {
-            let (there, _) = blocks.entry(*words).or_insert_with(|| {
-                let free = self.heap.free.get(words).map_or(0, Vec::len);
-                (free, 0)
-            });
-            *there = there.saturating_add(1);
-        }
-
-        let mut needed = 0usize;
-
-        for words in sizes {
-            let (there, taken) = blocks.entry(*words).or_insert_with(|| {
-                let free = self.heap.free.get(words).map_or(0, Vec::len);
-                (free, 0)
-            });
-
-            if *taken < *there {
-                *taken = taken.saturating_add(1);
-            } else {
-                needed = needed.saturating_add(*words);
-            }
-        }
-
-        needed
     }
 
     /// The value `name`, or `None` when it is not declared or not set.
@@ -485,7 +504,9 @@ impl Globals {
         result.map_err(|e| {
             let path = path.to_string().into_boxed_str();
             self.error(&e.context(Message::SettingAt { path }))
-        })
+        })?;
+        self.tidy();
+        Ok(())
     }
 
     /// The part at `path` of a value, as [`set_at`](Self::set_at) finds it,
@@ -577,7 +598,9 @@ impl Globals {
         self.insert_at(path, value).map_err(|e| {
             let path = path.to_string().into_boxed_str();
             self.error(&e.context(Message::InsertingAt { path }))
-        })
+        })?;
+        self.tidy();
+        Ok(())
     }
 
     /// Push `value` onto the list at `path`, as [`insert`](Self::insert)
@@ -607,18 +630,22 @@ impl Globals {
         self.push_at(path, value).map_err(|e| {
             let path = path.to_string().into_boxed_str();
             self.error(&e.context(Message::PushingOnto { path }))
-        })
+        })?;
+        self.tidy();
+        Ok(())
     }
 
     /// Remove the entry at `path`, a list's index or a map's key, moving
     /// the entries after it back, and give its value.
     ///
     /// Its parts are freed. A list or map that falls below a quarter of its
-    /// room gives back the second half of it, keeping at least 4 entries'
-    /// room, and one left empty gives back its block, so a store's memory
-    /// follows its data. A remove takes no words, so it never fails for
-    /// want of them. It takes as long as the path, a binary search for a
-    /// key, the removed value, and moving the entries after it.
+    /// room frees the second half of it, keeping at least 4 entries' room,
+    /// and one left empty frees its block. The words freed are taken again
+    /// by blocks they hold, or compacted away when more than half the
+    /// store's are free, so its memory follows its data. A remove takes no
+    /// words, so it never fails for want of them. It takes as long as the
+    /// path, a binary search for a key, the removed value, and moving the
+    /// entries after it, plus a compaction's work when there is one.
     ///
     /// # Errors
     ///
@@ -645,10 +672,12 @@ impl Globals {
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn remove(&mut self, path: &Path) -> Result<Value, GlobalsError> {
-        self.remove_at(path).map_err(|e| {
+        let removed = self.remove_at(path).map_err(|e| {
             let path = path.to_string().into_boxed_str();
             self.error(&e.context(Message::RemovingAt { path }))
-        })
+        })?;
+        self.tidy();
+        Ok(removed)
     }
 
     fn insert_at(&mut self, path: &Path, value: &Value) -> Result<(), RunError> {
@@ -904,7 +933,8 @@ impl Globals {
         let new_len = len.saturating_add(1);
         memory::check_len(new_len)?;
 
-        // A full one moves to a block of twice its room, freeing its own.
+        // A full one moves to a block of twice its room, taken before its
+        // own is freed, as its entries are copied out of it.
         let grown = if new_len > cap {
             let new_cap = cap
                 .checked_mul(2)
@@ -912,25 +942,25 @@ impl Globals {
                 .max(MIN_CAPACITY);
             let words =
                 memory::entries_block(new_cap, stride).ok_or_else(|| fault(Fault::ListTooLarge))?;
-            sizes.push(words);
             Some((new_cap, words, self.block(start, cap, stride)?))
         } else {
             None
         };
 
-        let old = grown
-            .iter()
-            .filter_map(|(_, _, old)| *old)
-            .collect::<Vec<_>>();
-        let needed = self.bump(&sizes, &old);
-        let left = self.heap.room.saturating_sub(self.heap.used());
+        let mut plan = Plan::default();
 
-        if needed > left {
-            return Err(RunError::new(Message::TooLarge {
-                needed: count(needed),
-                left: count(left),
-            }));
-        }
+        let grown = grown.map(|(new_cap, words, old)| {
+            let block = self.heap.take(&mut plan, words);
+
+            if let Some((start, words)) = old {
+                self.heap.give(&mut plan, start, words);
+            }
+
+            (new_cap, block)
+        });
+
+        let pool = self.heap.take_all(&mut plan, sizes);
+        self.heap.settle(plan)?;
 
         let before = n
             .checked_mul(stride)
@@ -945,6 +975,7 @@ impl Globals {
 
         let opening = Opening {
             grown,
+            pool,
             before,
             after,
             from,
@@ -969,6 +1000,7 @@ impl Globals {
         } = *entries;
         let Opening {
             grown,
+            pool,
             before,
             after,
             from,
@@ -977,8 +1009,7 @@ impl Globals {
         let types = &self.layout.types;
 
         let start = match grown {
-            Some((new_cap, words, old)) => {
-                let block = self.heap.alloc(words)?;
+            Some((new_cap, block)) => {
                 let new_start = self.heap.header(block, new_cap)?;
                 self.heap.copy(start, before, new_start)?;
                 let to = new_start
@@ -986,11 +1017,6 @@ impl Globals {
                     .and_then(|to| to.checked_add(stride))
                     .ok_or_else(|| fault(Fault::OutsideMemory))?;
                 self.heap.copy(from, after, to)?;
-
-                if let Some((block, words)) = old {
-                    self.heap.free(block, words);
-                }
-
                 new_start
             }
             None => {
@@ -1006,15 +1032,25 @@ impl Globals {
             .checked_add(before)
             .ok_or_else(|| fault(Fault::OutsideMemory))?;
 
-        for (offset, (value, ty, _)) in parts.iter().enumerate() {
-            let dest = entry
-                .checked_add(offset)
-                .ok_or_else(|| fault(Fault::OutsideMemory))?;
-            memory::write(&mut self.heap, types, value, *ty, dest)?;
-        }
+        let mut planned = Planned {
+            heap: &mut self.heap,
+            pool,
+        };
 
+        let written = parts
+            .iter()
+            .enumerate()
+            .try_for_each(|(offset, (value, ty, _))| {
+                let dest = entry
+                    .checked_add(offset)
+                    .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                memory::write(&mut planned, types, value, *ty, dest)
+            });
+
+        planned.finish();
+        written?;
         let reference = Word::reference(start, new_len)?;
-        memory::put(&mut self.heap, Some(place.at), reference)
+        self.heap.put(place.at, reference)
     }
 
     /// `result`, leaving the value `global` unset when it failed: checked
@@ -1122,7 +1158,7 @@ impl Globals {
         }
 
         let reference = Word::reference(start, new_len)?;
-        memory::put(&mut self.heap, Some(place.at), reference)
+        self.heap.put(place.at, reference)
     }
 
     /// The block, from its header, of a list's or map's room for `cap`
@@ -1308,6 +1344,34 @@ impl Globals {
         }
     }
 
+    /// The slot word and type of each value set.
+    fn roots(&self) -> Vec<(usize, TypeId)> {
+        self.layout
+            .slots
+            .iter()
+            .filter_map(|held| {
+                let at = usize::try_from(held.at).ok()?;
+                let set = self.set.get(at).copied().unwrap_or(false);
+                set.then_some((at, held.id?))
+            })
+            .collect()
+    }
+
+    /// Move the values' parts together when more than half the words they
+    /// take are free, so the store takes at most twice the words of its
+    /// values. A fault leaves it as it was.
+    fn tidy(&mut self) {
+        if self.heap.free_words.saturating_mul(2) <= self.heap.used() {
+            return;
+        }
+
+        if let Ok(words) = self.heap.compacted(&self.layout.types, self.roots()) {
+            self.heap.words = words;
+            self.heap.free.clear();
+            self.heap.free_words = 0;
+        }
+    }
+
     /// The value `name` and where it is among the slots.
     fn held(&self, name: &str) -> Option<(usize, &Held)> {
         let n = *self.layout.names.get(name)?;
@@ -1374,57 +1438,278 @@ impl Words for Heap {
     }
 }
 
-impl WordsMut for Heap {
-    fn set_word(&mut self, at: usize, word: Word) -> Option<()> {
-        *self.words.get_mut(at)? = word;
-        Some(())
-    }
-
-    fn alloc(&mut self, n: usize) -> Result<usize, RunError> {
-        if n == 0 {
-            return Ok(self.words.len());
-        }
-
-        if let Some(at) = self.free.get_mut(&n).and_then(Vec::pop) {
-            return Ok(at);
-        }
-
-        let at = self.words.len();
-        let heap = self.used().checked_add(n).filter(|heap| *heap <= self.room);
-        let end = heap.and_then(|_| at.checked_add(n));
-        let end = end.ok_or_else(|| fault(Fault::StorePastLimit))?;
-        self.words.resize(end, Word::int(0));
-        Ok(at)
-    }
-
-    fn alloc_entries(&mut self, len: usize, stride: usize) -> Result<usize, RunError> {
-        if len == 0 {
-            return Ok(self.words.len());
-        }
-
-        let n = memory::entries_block(len, stride).ok_or_else(|| fault(Fault::ListTooLarge))?;
-        let block = self.alloc(n)?;
-        self.header(block, len)
-    }
-}
-
 impl Heap {
+    fn put(&mut self, at: usize, word: Word) -> Result<(), RunError> {
+        let slot = self
+            .words
+            .get_mut(at)
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+        *slot = word;
+        Ok(())
+    }
+
     /// Write the header of a block of `cap` entries from `block`, giving
     /// where its entries start.
     fn header(&mut self, block: usize, cap: usize) -> Result<usize, RunError> {
         let cap = i64::try_from(cap).map_err(|_| fault(Fault::ListTooLarge))?;
-        memory::put(self, Some(block), Word::int(cap))?;
+        self.put(block, Word::int(cap))?;
         block
             .checked_add(memory::HEADER)
             .ok_or_else(|| fault(Fault::OutsideMemory))
     }
 
-    /// Free the `words` words from `start`, for a block of that size to
-    /// take.
+    /// Free the `words` words from `start`, for a block to take.
     fn free(&mut self, start: usize, words: usize) {
         if words > 0 {
             self.free.entry(words).or_default().push(start);
+            self.free_words = self.free_words.saturating_add(words);
         }
+    }
+
+    /// As [`free`](Self::free), as part of `plan`.
+    fn give(&mut self, plan: &mut Plan, start: usize, words: usize) {
+        if words > 0 {
+            self.free(start, words);
+            plan.changes.push(Change::Freed(words, start));
+        }
+    }
+
+    /// Take a block of `n` words as part of `plan`: the free block of the
+    /// smallest size that holds it, freeing what it leaves, or else past
+    /// the heap's end, where it is taken only when `plan` is
+    /// [`settle`](Self::settle)d. A log per size of free blocks.
+    fn take(&mut self, plan: &mut Plan, n: usize) -> usize {
+        let fit = self.free.range_mut(n..).next().map(|(size, starts)| {
+            let start = starts.pop();
+            (*size, start, starts.is_empty())
+        });
+
+        if let Some((size, Some(start), empty)) = fit {
+            if empty {
+                self.free.remove(&size);
+            }
+
+            self.free_words = self.free_words.saturating_sub(size);
+            plan.changes.push(Change::Took(size, start));
+            // Both inside the block, so neither overflows.
+            let rest = start.saturating_add(n);
+            self.give(plan, rest, size.saturating_sub(n));
+            return start;
+        }
+
+        // A plan past what the heap can address is refused by `settle`
+        // before any of it is used.
+        let at = self.words.len().saturating_add(plan.past);
+        plan.past = plan.past.saturating_add(n);
+        at
+    }
+
+    /// Take a block of each of `sizes` as part of `plan`, the largest
+    /// first, so that smaller ones take what they leave.
+    fn take_all(&mut self, plan: &mut Plan, mut sizes: Vec<usize>) -> Pool {
+        sizes.sort_unstable_by(|a, b| b.cmp(a));
+        let mut pool = Pool::new();
+
+        for n in sizes {
+            let at = self.take(plan, n);
+            pool.entry(n).or_default().push(at);
+        }
+
+        pool
+    }
+
+    /// Keep `plan` when what it takes past the heap's end fits in the words
+    /// left, taking them; else undo it, leaving the free blocks as they
+    /// were.
+    fn settle(&mut self, plan: Plan) -> Result<(), RunError> {
+        let left = self.room.saturating_sub(self.used());
+
+        if plan.past > left {
+            let needed = plan.past;
+            self.undo(plan);
+
+            return Err(RunError::new(Message::TooLarge {
+                needed: count(needed),
+                left: count(left),
+            }));
+        }
+
+        let end = self.words.len().saturating_add(plan.past);
+        self.words.resize(end, Word::int(0));
+        Ok(())
+    }
+
+    /// Undo the changes of `plan` to the free blocks, the last first.
+    fn undo(&mut self, plan: Plan) {
+        for change in plan.changes.into_iter().rev() {
+            match change {
+                Change::Took(size, start) => {
+                    self.free.entry(size).or_default().push(start);
+                    self.free_words = self.free_words.saturating_add(size);
+                }
+                Change::Freed(size, start) => {
+                    let Some(starts) = self.free.get_mut(&size) else {
+                        continue;
+                    };
+
+                    // The last freed, as it is undone first.
+                    if let Some(n) = starts.iter().rposition(|s| *s == start) {
+                        starts.remove(n);
+                        self.free_words = self.free_words.saturating_sub(size);
+                    }
+
+                    if starts.is_empty() {
+                        self.free.remove(&size);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Write `value`, measured against `ty`, at `dest`, its parts taking the
+    /// blocks of `pool`.
+    fn write(
+        &mut self,
+        pool: Pool,
+        types: &Types,
+        value: &Value,
+        ty: TypeId,
+        dest: usize,
+    ) -> Result<(), RunError> {
+        let mut planned = Planned { heap: self, pool };
+        let written = memory::write(&mut planned, types, value, ty, dest);
+        planned.finish();
+        written
+    }
+
+    /// The words of the slots and of each part of the values of `roots`
+    /// (each a slot's word and type), the parts moved together after the
+    /// slots, in the order they are reached, and the references to them
+    /// rewritten. Lists and maps keep their room. O(live words), with an
+    /// explicit work list.
+    fn compacted(
+        &self,
+        types: &Types,
+        mut work: Vec<(usize, TypeId)>,
+    ) -> Result<Vec<Word>, RunError> {
+        let mut out = self
+            .words
+            .get(..self.slot_words)
+            .ok_or_else(|| fault(Fault::OutsideMemory))?
+            .to_vec();
+        out.reserve(self.used().saturating_sub(self.free_words));
+
+        // Values share no parts, so each block is copied once and the
+        // words copied are at most the heap's; more is a fault, and the
+        // store is left as it was.
+        let most = self.words.len();
+
+        let copy = |out: &mut Vec<Word>, start: usize, n: usize| {
+            let end = start.checked_add(n);
+            let block = end.and_then(|end| self.words.get(start..end));
+            let to = out.len();
+
+            match block {
+                Some(block) if to.checked_add(n).is_some_and(|end| end <= most) => {
+                    out.extend_from_slice(block);
+                    Ok(to)
+                }
+                _ => Err(fault(Fault::OutsideMemory)),
+            }
+        };
+
+        let put = |out: &mut Vec<Word>, at: usize, word: Word| {
+            let slot = out.get_mut(at).ok_or_else(|| fault(Fault::OutsideMemory))?;
+            *slot = word;
+            Ok::<_, RunError>(())
+        };
+
+        let step = |at: usize, by: usize| {
+            at.checked_add(by)
+                .ok_or_else(|| fault(Fault::OutsideMemory))
+        };
+
+        while let Some((at, ty)) = work.pop() {
+            let word = *out.get(at).ok_or_else(|| fault(Fault::OutsideMemory))?;
+
+            match types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))? {
+                TypeNode::Int | TypeNode::Bool => {}
+                TypeNode::Option(inner) => {
+                    if types.tagged(ty).is_some() {
+                        if word.as_bool()? {
+                            work.push((step(at, 1)?, *inner));
+                        }
+                    } else if !word.is_none() {
+                        work.push((at, *inner));
+                    }
+                }
+                TypeNode::String => {
+                    let (start, len) = word.as_reference()?;
+                    let to = copy(&mut out, start, len.div_ceil(8))?;
+                    put(&mut out, at, Word::reference(to, len)?)?;
+                }
+                TypeNode::Record(fields) => {
+                    let (start, len) = word.as_reference()?;
+
+                    if len != types.record_words(fields) {
+                        return Err(fault(Fault::RecordWrongSize));
+                    }
+
+                    let to = copy(&mut out, start, len)?;
+                    put(&mut out, at, Word::reference(to, len)?)?;
+
+                    for (offset, field) in types.field_offsets(fields) {
+                        work.push((step(to, offset)?, field.ty));
+                    }
+                }
+                node @ (TypeNode::List(_) | TypeNode::Map { .. }) => {
+                    let (start, len) = word.as_reference()?;
+
+                    let (stride, parts) = match node {
+                        TypeNode::Map { key, value } => {
+                            let stride = types.width(*value).saturating_add(1);
+                            (stride, [Some((0, *key)), Some((1, *value))])
+                        }
+                        TypeNode::List(entry) => (types.width(*entry), [Some((0, *entry)), None]),
+                        _ => return Err(fault(Fault::ValueChangedType)),
+                    };
+
+                    if len == 0 {
+                        let to = out.len();
+                        put(&mut out, at, Word::reference(to, 0)?)?;
+                        continue;
+                    }
+
+                    let cap = memory::capacity(self, start, len)?;
+                    let block = start
+                        .checked_sub(memory::HEADER)
+                        .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                    let words = memory::entries_block(cap, stride)
+                        .ok_or_else(|| fault(Fault::ListTooLarge))?;
+                    let to = step(copy(&mut out, block, words)?, memory::HEADER)?;
+                    put(&mut out, at, Word::reference(to, len)?)?;
+
+                    for (offset, ty) in parts.into_iter().flatten() {
+                        if !holds_parts(types, ty) {
+                            continue;
+                        }
+
+                        work.reserve(len);
+
+                        for n in 0..len {
+                            let entry = n
+                                .checked_mul(stride)
+                                .and_then(|at| at.checked_add(to))
+                                .and_then(|at| at.checked_add(offset))
+                                .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                            work.push((entry, ty));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(out)
     }
 
     /// Copy the `n` words from `from` to `to`, which may overlap.
@@ -1450,21 +1735,137 @@ impl Heap {
 /// past what it holds, and that it keeps when it shrinks.
 const MIN_CAPACITY: usize = 4;
 
-/// What [`Globals::open`] found it is to change: the list's or map's new
-/// block when it grows (its room, its words, and the block it frees), the
-/// words of the entries before the one opened and from it, where those
-/// start, and the new length.
+/// What [`Globals::open`] found it is to change: the list's or map's room
+/// and new block when it grows, the blocks taken for the parts written,
+/// the words of the entries before the one opened and from it, where
+/// those start, and the new length.
 struct Opening {
-    grown: Option<Grown>,
+    grown: Option<(usize, usize)>,
+    pool: Pool,
     before: usize,
     after: usize,
     from: usize,
     new_len: usize,
 }
 
-/// A grown list's or map's room, the words of its new block, and its old
-/// block, (start, words), when it had one.
-type Grown = (usize, usize, Option<(usize, usize)>);
+/// The blocks a [`Plan`] took for the parts of values, by their size in
+/// words, for the write of those values to take.
+type Pool = BTreeMap<usize, Vec<usize>>;
+
+/// The changes an operation makes to a store's free blocks, made before it
+/// writes a word, so that one which does not fit is undone and leaves the
+/// store as it was.
+#[derive(Default)]
+struct Plan {
+    /// In the order they were made.
+    changes: Vec<Change>,
+    /// The words it takes past the heap's end.
+    past: usize,
+}
+
+/// A change to the free blocks, by size and start.
+enum Change {
+    Took(usize, usize),
+    Freed(usize, usize),
+}
+
+/// A store's heap as a write takes its blocks, from those planned.
+struct Planned<'a> {
+    heap: &'a mut Heap,
+    pool: Pool,
+}
+
+impl Planned<'_> {
+    /// Free the blocks the write did not take, which it takes all of but
+    /// for a fault, so none is lost.
+    fn finish(self) {
+        for (words, starts) in self.pool {
+            for start in starts {
+                self.heap.free(start, words);
+            }
+        }
+    }
+}
+
+impl Words for Planned<'_> {
+    #[inline]
+    fn word(&self, at: usize) -> Option<Word> {
+        self.heap.word(at)
+    }
+
+    fn end(&self) -> usize {
+        self.heap.end()
+    }
+}
+
+impl WordsMut for Planned<'_> {
+    fn set_word(&mut self, at: usize, word: Word) -> Option<()> {
+        *self.heap.words.get_mut(at)? = word;
+        Some(())
+    }
+
+    fn alloc(&mut self, n: usize) -> Result<usize, RunError> {
+        if n == 0 {
+            return Ok(self.heap.words.len());
+        }
+
+        self.pool
+            .get_mut(&n)
+            .and_then(Vec::pop)
+            .ok_or_else(|| fault(Fault::StorePastLimit))
+    }
+
+    fn alloc_entries(&mut self, len: usize, stride: usize) -> Result<usize, RunError> {
+        if len == 0 {
+            return Ok(self.heap.words.len());
+        }
+
+        let n = memory::entries_block(len, stride).ok_or_else(|| fault(Fault::ListTooLarge))?;
+        let block = self.alloc(n)?;
+        self.heap.header(block, len)
+    }
+}
+
+/// Whether a value of type `ty` may have parts, for a walk to visit.
+fn holds_parts(types: &Types, ty: TypeId) -> bool {
+    !matches!(types.get(ty), Some(TypeNode::Int | TypeNode::Bool))
+}
+
+/// The words a [`Globals`] store's values take, as
+/// [`Globals::stats`] gives them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalsStats {
+    live: u32,
+    spare: u32,
+    free: u32,
+    heap: u32,
+}
+
+impl GlobalsStats {
+    /// The words the parts of the values set take, the headers and room of
+    /// their lists and maps included.
+    pub fn live(&self) -> u32 {
+        self.live
+    }
+
+    /// Of [`live`](Self::live), the room of lists and maps past their
+    /// entries.
+    pub fn spare(&self) -> u32 {
+        self.spare
+    }
+
+    /// The words freed and not yet taken again.
+    pub fn free(&self) -> u32 {
+        self.free
+    }
+
+    /// The words the parts take, free ones included: what counts against
+    /// the [`limit`](Globals::limit), and at most twice
+    /// [`live`](Self::live).
+    pub fn heap(&self) -> u32 {
+        self.heap
+    }
+}
 
 /// A list or a map held in a store.
 struct Entries {

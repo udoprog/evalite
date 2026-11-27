@@ -754,34 +754,50 @@ pub(crate) fn blocks(
     at: usize,
     ty: TypeId,
 ) -> Result<Vec<(usize, usize)>, RunError> {
-    let mut work = vec![(at, ty)];
     let mut out = Vec::new();
+    each_block(words, types, at, ty, |start, n, _| out.push((start, n)))?;
+    Ok(out)
+}
 
-    let mut block = |start: Option<usize>, n: Option<usize>| -> Result<(), RunError> {
-        let (Some(start), Some(n)) = (start, n) else {
-            return Err(fault(Fault::OutsideMemory));
+/// As [`blocks`], giving `f` each block's start and words, and the words of
+/// a list's or a map's room past its entries.
+pub(crate) fn each_block(
+    words: &(impl Words + ?Sized),
+    types: &Types,
+    at: usize,
+    ty: TypeId,
+    mut f: impl FnMut(usize, usize, usize),
+) -> Result<(), RunError> {
+    let mut work = vec![(at, ty)];
+
+    let mut block =
+        |start: Option<usize>, n: Option<usize>, spare: usize| -> Result<(), RunError> {
+            let (Some(start), Some(n)) = (start, n) else {
+                return Err(fault(Fault::OutsideMemory));
+            };
+
+            inside(words, start, Some(n))?;
+
+            if n > 0 {
+                f(start, n, spare);
+            }
+
+            Ok(())
         };
 
-        inside(words, start, Some(n))?;
-
-        if n > 0 {
-            out.push((start, n));
-        }
-
-        Ok(())
-    };
-
     // The block of a list's or a map's entries: from its header to the end
-    // of its capacity, none when it is empty.
+    // of its capacity, none when it is empty; and the words of its room
+    // past them.
     let entries = |start: usize, len: usize, stride: usize| {
         inside(words, start, len.checked_mul(stride))?;
 
         if len == 0 {
-            return Ok((Some(start), Some(0)));
+            return Ok((Some(start), Some(0), 0));
         }
 
         let cap = capacity(words, start, len)?;
-        Ok::<_, RunError>((start.checked_sub(HEADER), entries_block(cap, stride)))
+        let spare = cap.saturating_sub(len).saturating_mul(stride);
+        Ok::<_, RunError>((start.checked_sub(HEADER), entries_block(cap, stride), spare))
     };
 
     while let Some((at, ty)) = work.pop() {
@@ -803,13 +819,13 @@ pub(crate) fn blocks(
             }
             TypeNode::String => {
                 let (start, len) = word.as_reference()?;
-                block(Some(start), Some(len.div_ceil(8)))?;
+                block(Some(start), Some(len.div_ceil(8)), 0)?;
             }
             TypeNode::List(entry) => {
                 let (start, len) = word.as_reference()?;
                 let width = types.width(*entry);
-                let (from, n) = entries(start, len, width)?;
-                block(from, n)?;
+                let (from, n, spare) = entries(start, len, width)?;
+                block(from, n, spare)?;
 
                 for n in 0..len {
                     work.push((n.saturating_mul(width).saturating_add(start), *entry));
@@ -818,8 +834,8 @@ pub(crate) fn blocks(
             TypeNode::Map { key, value } => {
                 let (start, len) = word.as_reference()?;
                 let stride = types.width(*value).saturating_add(1);
-                let (from, n) = entries(start, len, stride)?;
-                block(from, n)?;
+                let (from, n, spare) = entries(start, len, stride)?;
+                block(from, n, spare)?;
 
                 for n in 0..len {
                     let at = n.saturating_mul(stride).saturating_add(start);
@@ -834,7 +850,7 @@ pub(crate) fn blocks(
                     return Err(fault(Fault::RecordWrongSize));
                 }
 
-                block(Some(start), Some(len))?;
+                block(Some(start), Some(len), 0)?;
 
                 for (offset, field) in types.field_offsets(fields) {
                     work.push((start.saturating_add(offset), field.ty));
@@ -843,7 +859,7 @@ pub(crate) fn blocks(
         }
     }
 
-    Ok(out)
+    Ok(())
 }
 
 /// Where the entry of `key`, an `Int` or a `String`, starts in the map of

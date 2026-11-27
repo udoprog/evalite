@@ -1125,9 +1125,10 @@ fn replacing_frees() {
         .unwrap();
     assert_eq!(outcome.value, int(19 + 2 + 19));
 
-    // A smaller value leaves blocks free, which a larger one takes back.
+    // A smaller value leaves blocks free, which are compacted away once
+    // more than half the heap is.
     globals.set("tracks", &Value::list([])).unwrap();
-    assert_eq!(globals.heap_words(), 16);
+    assert_eq!(globals.heap_words(), 0);
     globals.set("tracks", &tracks(7)).unwrap();
     assert_eq!(globals.heap_words(), 16);
     assert_eq!(globals.get("tracks"), Some(tracks(7)));

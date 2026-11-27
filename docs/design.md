@@ -645,7 +645,9 @@ Globals 1 (da3c369c) gave the `Environment` the layout. Globals 2
 (5885897e) holds the values in a `Globals` store that runs read in place
 (section 10). Globals 3 (8823970e) updates a part of a value in place by
 path. Globals 4 (e5e312bd) inserts and removes the entries of lists and
-maps, which have room to grow.
+maps, which have room to grow. Globals 5 (ae875cb2) reuses freed words
+across sizes and compacts the store, so it takes at most twice the words
+of its values.
 
 **Slots.** `Environment` keeps `slots: Vec<Slot { name, ty, at }>` in
 declaration order, plus a name-ordered index (`names`) for lookup and for
@@ -710,7 +712,8 @@ it, and a program reading it is refused at load. Its memory:
   `Message::Unset`, naming the program's global with that slot, as an
   error of the instruction (decision 7: only a read fails, so `ready &&
   rank > 2` runs with `rank` unset when `ready` is false);
-- `free`: freed blocks by exact size (`BTreeMap<usize, Vec<usize>>`).
+- `free`: freed blocks by size (`BTreeMap<usize, Vec<usize>>`), and
+  `free_words`, their total (Globals 5, below).
 
 `set(name, &value)`:
 
@@ -719,18 +722,18 @@ it, and a program reading it is refused at load. Its memory:
 2. `measure`s the value against the slot's type (path-named mismatch);
 3. lists the block sizes the value's parts need (`parts`), and the blocks
    the old value's parts hold (`blocks`, when set);
-4. works out the words that must be taken past the heap's end: each needed
-   block is matched against free blocks and the old value's of its exact
-   size, and the rest bump. If that is past the limit it is `TooLarge`,
-   before anything changed, so a failed set leaves the old value;
-5. frees the old blocks onto the free lists, then `write`s the new value at
-   the slot, allocating from the free list of a block's size, else by bump;
-6. sets the flag.
+4. plans the blocks (a `Plan`, below): frees the old blocks, then takes a
+   block for each needed size, from the free lists or past the heap's end.
+   If what it takes past the end is past the limit it is `TooLarge`, and
+   the plan is undone, before any word changed, so a failed set leaves the
+   store as it was;
+5. `write`s the new value at the slot, its parts taking the planned blocks
+   by size;
+6. sets the flag, and compacts when more than half the heap is free.
 
 So replacing a value with one of the same shape reuses its blocks and the
-store does not grow (`replacing_frees`). The cost is O(old value + new
-value), plus a log per block for the free-list map. Freed blocks are only
-reused at their exact size; size classes and compaction are Globals 5.
+store does not grow (`replacing_a_part_frees`). The cost is O(old value +
+new value), plus a log per block for the free-list map.
 
 `get(name)` reads a set value back (`None` when unset or not declared).
 
@@ -807,10 +810,10 @@ options to the list or map (`locate_entries`). `push`'s path is to the list.
   is at most `max(4, 4 × len)`, and 0 exactly when empty.
 - **Checks first.** Every operation finds the step, checks the value (and
   key) against the entry's type with the path named, refuses a length past
-  what a reference holds (`memory::check_len`, as `set` does), and works
-  out the words it takes (the value's blocks and, when it grows, the new
-  block, against the free blocks and the old block, as `replace` does)
-  before it changes anything. So a failed insert leaves the store as it
+  what a reference holds (`memory::check_len`, as `set` does), and plans
+  the blocks it takes (when it grows, the new block first, then the old one
+  freed, then the value's blocks, as `replace` does) before it changes a
+  word. So a failed insert leaves the store as it
   was, and a remove takes no words and cannot fail for want of them. A
   fault after the first change (a bug) leaves the value unset, as
   `replace` does, rather than pointing at freed blocks.
@@ -835,6 +838,56 @@ one entry changed and setting it whole takes 79 ms an update.
 The limit counts the heap, freed blocks and capacity headers and spare
 room included, and not the slots. It is kept inside 2^32 minus the slot
 area, so every store address fits a reference.
+
+**Reuse and compaction** (Globals 5). Exact-size free lists alone leak: a
+list pushed to 100 entries and removed to 20, over and over, asks for a
+129-word block as it grows and frees a 64-word tail as it shrinks, sizes
+it never asks for again, so at a limit of 4 096 words a push failed at
+the 30th cycle with 65 words live.
+
+- **Taking a block** (`Heap::take`): the free block of the smallest size
+  that holds it (`free.range(n..)`, a log in the sizes there are), so a
+  block of the size asked for first. What it leaves of a larger one is
+  freed as a block of its own. With none, the block is taken past the
+  heap's end.
+- **Plans.** An operation's changes to the free lists are made before it
+  writes a word, and logged (`Plan`: blocks taken and freed, in order,
+  and the words taken past the end). `settle` keeps the plan when what is
+  taken past the end fits in the words left, growing the heap, and
+  otherwise undoes it from the log, last first, so the free lists are as
+  they were, and is `TooLarge`. So the limit check is the allocation
+  itself, never an estimate of it. The blocks a value's parts are given
+  are kept by size (`Pool`), and its `write` takes them as it reaches each
+  part (`Planned`, the heap as `WordsMut`); a block left over, a fault,
+  is freed. A plan takes the largest blocks first, so smaller ones take
+  what larger ones leave; a growing list's or map's new block is taken
+  before its old block is freed, as its entries are copied out of it.
+- **Compaction** (`Heap::compacted`), after any update that leaves more
+  than half the heap free (`free_words × 2 > heap`): from each set slot,
+  with an explicit work list, every block is copied after the slots in the
+  order it is reached, and the reference word to it is rewritten in the
+  copy; lists and maps keep their header and room, and their entries are
+  visited when their type may hold parts. Values are trees, so each block
+  is copied once, and the copy is O(live words); a copy past the old
+  heap's words, which sharing would need, is a fault. It is built in a new
+  word vector and swapped in whole, so a fault leaves the store as it was.
+  An empty string, list or map's reference is rewritten too, as its start
+  may lie past the new end. It runs only when the free words outnumber the
+  live ones, and none are free after it, so it copies fewer words than
+  were freed since the one before: amortized O(1) a word freed.
+- **What it keeps.** After every update the store takes at most twice the
+  words of its values (`heap ≤ 2 × live`), and no block is lost
+  (`heap = live + free`), which the random update tests check after every
+  step. Shrinking stays in place (Globals 4): its freed tail is taken
+  again, or compacted away, and a remove takes no words.
+- **Stats.** `Globals::stats()` gives `GlobalsStats`: `live` (the words of
+  the set values' parts, headers and room included), `spare` (of those,
+  lists' and maps' room past their entries), `free` and `heap` (live and
+  free, what the limit counts). It walks the values, O(live words).
+
+The limit still counts free words: a store with free words but none
+holding a block may refuse a set that compacting would make room for.
+Compaction only runs once more than half the heap is free.
 ## 8. Stored formats and verification
 
 All stored forms are encoded with musli `storage` and start with a
@@ -1112,7 +1165,8 @@ compatibility check. Globals 2 is built (sections 6.1 and 7): the store,
 `set`/`get`, set flags, the store limit, runs reading the store in place,
 and `Run::bind` removed. Globals 3 is built (section 7): `set_at`/`get_at`
 by path. Globals 4 is built (sections 5 and 7): capacity, growth and
-shrinking, `insert`/`push`/`remove`. The rest is not built yet. Breaking changes are
+shrinking, `insert`/`push`/`remove`. Globals 5 is built (section 7):
+reuse across sizes, compaction, `stats()`. The rest is not built yet. Breaking changes are
 allowed (board rule, 2026-11-27).
 
 ### 10.1 Why
@@ -1174,8 +1228,9 @@ the sheet's values persistent:
 - **Store limits.** The store has a word limit (part of `Limits` or its own),
   which counts the heap including free blocks. `set` and growth fail cleanly
   past it.
-- **Reuse and compaction.** Freed blocks go onto power-of-two size-class free
-  lists. When free words exceed half the heap, the store compacts:
+- **Reuse and compaction** (built). Freed blocks are taken again by any
+  block they hold, the smallest first. When free words exceed half the
+  heap, the store compacts:
   - it walks the live values from the slots with an explicit work list
     (they're trees, so each block is reached once);
   - it copies them densely and rewrites the references;
@@ -1208,7 +1263,7 @@ Store memory:
 | 5885897e | Globals 2 (built) | `Globals` store with `set`/`get`, set flags, a word limit, runs reading the store read-only, `Run::bind` removed. Updates cli, compare, sockel, playground, benches (a one-store, many-formulas bench modelled on characterize) and docs. |
 | 8823970e | Globals 3 (built) | `set_at`/`get_at` by path, reusing the references path type. Literal steps only, existing keys and indexes only. O(path + new value), plus O(log n) per map step. |
 | e5e312bd | Globals 4 (built) | Capacity, growth and shrink. Map `insert`/`remove` (binary search plus a `copy_within` shift). List `push`/`insert`/`remove`. Bench: 1 000 single-entry updates on a 100 000-entry map versus a whole-map set. |
-| ae875cb2 | Globals 5 | Size-class free lists, compaction at more than half free, `stats()` (live, free, capacity). |
+| ae875cb2 | Globals 5 (built) | Best-fit reuse of freed blocks, compaction at more than half free, `stats()` (live, spare, free, heap). |
 | fbaa6f18 | Globals 6 | `to_bytes`/`from_bytes` of values, `migrate` between layouts. |
 
 They wait on each other in order. Globals 1 waited on this document, map
@@ -1273,6 +1328,18 @@ decisions):
 | Where a grown block comes from | A new block, taken from the free lists or by bump, before the old one is freed | Growing in place when the block ends the heap: faster for the last list written, but a second path for little gain before Globals 5's compaction. |
 | A missing key or index on `remove` | `NoSuchKey`/`IndexOutOfRange`, as `set_at` | Ignoring it (`Option`): a host removing what is not there has a stale view. |
 | A path through an option to the list or map | Stepped through when present, as `set_at`'s steps are | Refusing it: `Path` has no unwrap step, so a list in an `Option` could not be pushed onto. |
+
+**Taken while building Globals 5** (worker, 2026-11-27, within the card's
+decisions):
+
+| Question | Picked | Alternatives and why not |
+|---|---|---|
+| Size classes | A free list per exact size, a block taken from the smallest size that holds it (best fit, a `BTreeMap` range), the rest freed again | Power-of-two classes as the card sketched: a class holds blocks smaller than some requests in it, so a request either searches its class or is rounded up to the next one (up to twice the words, or a same-shaped replace no longer reusing its own blocks). A map keyed by size finds the best fit in a log. |
+| How the limit is checked | The allocation itself, planned and logged before any word is written, undone when it does not fit | An estimate of it, as Globals 2's exact-size count was: with splitting, what fits depends on the order blocks are taken, and an estimate below it would fail mid-write, a fault. |
+| When to compact | After an update that leaves more than half the heap free | When an operation hits the limit: it would move the values of an operation that then fails, and needs the path found again. |
+| Compacting lists and maps | Keep their room | Trimming it to their length: the next insert would move them again. |
+| Shrinking | In place, as Globals 4 does | Moving to a fresh block of half the room: it takes words, so a remove could fail at the limit; best fit and compaction take the freed tail again. |
+| `stats()` | `live`, `spare`, `free` and `heap` words, by walking the values | Counters kept as values change: a walk is a check that no block is lost, which the tests use. |
 
 ### 10.5 Questions raised while writing this
 
