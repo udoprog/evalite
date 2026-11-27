@@ -1565,8 +1565,10 @@ impl<'a> Compiler<'a> {
     /// The value of the map key `node`.
     fn key(&self, node: N<'_>) -> MapKey {
         // A key with a syntax error inside is reported already, not as
-        // other than a literal as well.
-        if node.walk().any(|n| n.value() == Syntax::Error) {
+        // other than a literal as well. Only the key is looked into: a walk
+        // goes on past its node, which made each key cost the rest of the
+        // input.
+        if node.walk().inside().any(|n| n.value() == Syntax::Error) {
             return MapKey::Broken;
         }
 

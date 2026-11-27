@@ -2574,6 +2574,34 @@ fn several_errors_in_order() {
     assert_eq!(diagnostics_in("wits[-flag]", &env).len(), 2);
 }
 
+/// A syntax error after a map does not hide the map's own errors: only a
+/// key's own text is looked into for syntax errors.
+#[test]
+fn map_errors_before_a_syntax_error() {
+    let env = env();
+
+    let found = diagnostics_in("[{1: true, 2: 3}, {wits: 1}, (]", &env);
+    let found = found
+        .iter()
+        .map(|(m, at)| (m.as_str(), at.as_str()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        found,
+        [
+            (
+                "the value of entry 2 of this map is Int, but the first is Bool, a map's values have one type",
+                "3",
+            ),
+            (
+                "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
+                "wits",
+            ),
+            ("expected an expression, found `]`", "]"),
+        ]
+    );
+}
+
 #[test]
 fn one_error_is_reported_once() {
     let env = env();

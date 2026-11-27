@@ -1540,6 +1540,41 @@ fn recovery_is_linear() {
     }
 }
 
+/// Checking map literals is linear in their size: each key is looked into
+/// for syntax errors on its own, not with the rest of the input after it.
+#[test]
+fn checking_maps_is_linear() {
+    use std::time::Instant;
+
+    let unlimited = Options::new().max_depth(usize::MAX).max_len(usize::MAX);
+    let env = Environment::new();
+
+    let shapes: [fn(usize) -> String; 3] = [
+        |n| "{1: ".repeat(n),
+        |n| format!("{}1{}", "{1: ".repeat(n), "}".repeat(n)),
+        |n| {
+            let entries = (0..n).map(|i| format!("{i}: 1")).collect::<Vec<_>>();
+            format!("{{{}}}", entries.join(", "))
+        },
+    ];
+
+    for shape in shapes {
+        let mut times = Vec::new();
+
+        for n in [5_000usize, 20_000] {
+            let source = shape(n);
+            let parsed = crate::parse_with(&source, &unlimited).unwrap();
+
+            let start = Instant::now();
+            let _ = crate::check::compile_parsed(&source, parsed, &env);
+            times.push(start.elapsed().as_secs_f64());
+        }
+
+        // Four times the input takes four times as long, not sixteen.
+        assert!(times[1] < times[0] * 10.0 + 0.05, "{times:?}");
+    }
+}
+
 #[test]
 fn unescapes() {
     assert_eq!(unescape(r#""""#).as_deref(), Some(""));
