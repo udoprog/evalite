@@ -449,13 +449,17 @@ impl Program {
 
         let ids: Vec<TypeId> = globals.iter().map(|g| g.ty).collect();
 
-        // The globals' types are held written out, so they are bounded
-        // together, not only one by one.
+        // The globals' types are held written out, and building them holds
+        // every type they reach too, so both are bounded together, not only
+        // one by one.
         let nodes = ids
             .iter()
             .fold(0usize, |n, id| n.saturating_add(types.size(*id)));
+        let reached = types
+            .reached_size(&ids)
+            .ok_or_else(|| StoreError::from(Invalid::BadGlobal))?;
 
-        if nodes > MAX_GLOBAL_TYPE_NODES {
+        if nodes > MAX_GLOBAL_TYPE_NODES || reached > MAX_GLOBAL_TYPE_NODES {
             return Err(Invalid::TypeTooLarge.into());
         }
 

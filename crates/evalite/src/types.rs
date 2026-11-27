@@ -758,9 +758,29 @@ impl Types {
             .collect()
     }
 
-    /// The types of `ids` and what they reach, at their own ids.
-    fn build(&self, ids: &[TypeId]) -> Option<Vec<Option<Type>>> {
-        // The ids `ids` reach, which are all at or below the greatest.
+    /// The nodes written out for everything `ids` reach, each counted once:
+    /// what [`Types::to_types`] holds while it builds.
+    pub(crate) fn reached_size(&self, ids: &[TypeId]) -> Option<usize> {
+        if ids.is_empty() {
+            return Some(0);
+        }
+
+        let reach = self.reach(ids)?;
+
+        Some(
+            reach
+                .iter()
+                .enumerate()
+                .filter(|(_, reached)| **reached)
+                .fold(0usize, |n, (at, _)| {
+                    n.saturating_add(self.sizes.get(at).copied().unwrap_or(usize::MAX))
+                }),
+        )
+    }
+
+    /// Which ids `ids` reach, themselves included; all at or below the
+    /// greatest.
+    fn reach(&self, ids: &[TypeId]) -> Option<Vec<bool>> {
         let top = ids.iter().map(|id| id.index()).max()?;
         let mut reach = vec![false; top.checked_add(1)?];
 
@@ -777,6 +797,13 @@ impl Types {
                 *reach.get_mut(part.index())? = true;
             }
         }
+
+        Some(reach)
+    }
+
+    /// The types of `ids` and what they reach, at their own ids.
+    fn build(&self, ids: &[TypeId]) -> Option<Vec<Option<Type>>> {
+        let reach = self.reach(ids)?;
 
         let mut built = Vec::<Option<Type>>::new();
         built.resize_with(reach.len(), || None);

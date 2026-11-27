@@ -1632,6 +1632,49 @@ fn tampered_programs() {
             "the type is too large: while verifying the program",
         ),
         (
+            // Each global is small, and so are all of them together, but
+            // four chains of 20 records over one large type (32767 nodes)
+            // are 20 large types each to hold while building.
+            "1",
+            Box::new(|s| {
+                for n in 0..14 {
+                    let part = TypeId(n + 1);
+                    s.types.push(TypeNode::Record(vec![
+                        FieldNode {
+                            name: "a".into(),
+                            ty: part,
+                        },
+                        FieldNode {
+                            name: "b".into(),
+                            ty: part,
+                        },
+                    ]));
+                }
+
+                let base = u32::try_from(s.types.len()).unwrap_or(u32::MAX) - 1;
+                let mut next = base + 1;
+
+                for chain in 0..4 {
+                    let mut part = TypeId(base);
+
+                    for _ in 0..20 {
+                        s.types.push(TypeNode::Record(vec![FieldNode {
+                            name: format!("c{chain}"),
+                            ty: part,
+                        }]));
+                        part = TypeId(next);
+                        next += 1;
+                    }
+
+                    s.globals.push(Global {
+                        name: format!("g{chain}"),
+                        ty: part,
+                    });
+                }
+            }),
+            "the type is too large: while verifying the program",
+        ),
+        (
             "1",
             Box::new(|s| s.types.clear()),
             "a type is not in the type table: while verifying the program",
