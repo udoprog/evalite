@@ -185,7 +185,7 @@ fn every_message_with_and_without_a_program() {
         ),
         (
             Message::Unbound { global: strength },
-            "`strength` is not bound, bind a Int before running",
+            "`strength` is not bound, bind an Int before running",
             "a value the program reads is not bound",
         ),
         (
@@ -675,7 +675,7 @@ fn load_and_unbound_errors_have_context() {
     assert_eq!(
         messages(&error, &program),
         [
-            "`strength` is not bound, bind a Int before running",
+            "`strength` is not bound, bind an Int before running",
             "while running the program",
         ]
     );

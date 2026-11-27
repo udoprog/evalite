@@ -2328,7 +2328,7 @@ fn maps() {
     for (source, message, at) in [
         (
             "ids[\"a\"]",
-            "a Map<Int, {dice: Int}> is indexed by its key, a Int, found String",
+            "a Map<Int, {dice: Int}> is indexed by its key, an Int, found String",
             "\"a\"",
         ),
         (

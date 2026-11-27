@@ -854,7 +854,9 @@ impl fmt::Display for Diagnostic {
                 write!(f, "a {list} is indexed by an Int, found {found}")
             }
             ErrorKind::KeyType { map, key, found } => {
-                write!(f, "a {map} is indexed by its key, a {key}, found {found}")
+                let key = key.to_string();
+                let a = article(&key);
+                write!(f, "a {map} is indexed by its key, {a} {key}, found {found}")
             }
             ErrorKind::RecordIndex => f.write_str(
                 "a record is indexed by a string literal naming its field, such as `m[\"name\"]`",
@@ -960,4 +962,12 @@ fn list<S: AsRef<str>>(items: impl IntoIterator<Item = S>, last: &str) -> String
     }
 
     out
+}
+
+/// The indefinite article for a type's name as written: `an Int`, `a Bool`.
+pub(crate) fn article(name: &str) -> &'static str {
+    match name.chars().next() {
+        Some('A' | 'E' | 'I' | 'O' | 'U' | 'a' | 'e' | 'i' | 'o' | 'u') => "an",
+        _ => "a",
+    }
 }

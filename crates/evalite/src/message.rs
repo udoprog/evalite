@@ -505,7 +505,9 @@ impl fmt::Display for Shown<'_> {
             Message::Unbound { global } => match (global_name(p, *global), global_type(p, *global))
             {
                 (Some(name), Some(ty)) => {
-                    write!(f, "`{name}` is not bound, bind a {ty} before running")
+                    let ty = ty.to_string();
+                    let a = crate::error::article(&ty);
+                    write!(f, "`{name}` is not bound, bind {a} {ty} before running")
                 }
                 _ => f.write_str("a value the program reads is not bound"),
             },

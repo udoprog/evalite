@@ -899,7 +899,7 @@ fn binding_errors() {
     run.bind("wits", &int(1)).unwrap();
     assert_eq!(
         chain(&run.run_with(&mut test_host).unwrap_err(), &program),
-        "`bonus` is not bound, bind a Option<Int> before running: while running the program"
+        "`bonus` is not bound, bind an Option<Int> before running: while running the program"
     );
 
     // A failed binding leaves the value unbound, and a good one binds.
