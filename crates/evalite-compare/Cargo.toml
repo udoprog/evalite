@@ -24,7 +24,7 @@ harness = false
 
 [dependencies]
 evalexpr = "14.0.0"
-evalite = { version = "0.2.0", path = "../evalite" }
+evalite = { version = "0.3.0", path = "../evalite" }
 fasteval = "0.2.4"
 jiff = "1.0.3"
 serde = { version = "1.0.229", features = ["derive"] }

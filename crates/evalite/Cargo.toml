@@ -1,6 +1,6 @@
 [package]
 name = "evalite"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "evalite-cli"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition.workspace = true
 rust-version.workspace = true
@@ -21,4 +21,4 @@ workspace = true
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
-evalite = { version = "0.2.0", path = "../evalite" }
+evalite = { version = "0.3.0", path = "../evalite" }
