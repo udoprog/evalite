@@ -128,6 +128,7 @@ impl Diagnostic {
                     open, close_span, ..
                 },
             ) => Some((ParseText::Expected(*open), *close_span)),
+            (1, ErrorKind::RepeatedKey { first, .. }) => Some((ParseText::FirstKey, *first)),
             _ => None,
         }
     }
@@ -141,7 +142,7 @@ impl Diagnostic {
     /// How many labels it has.
     pub(crate) fn label_count(&self) -> usize {
         match &*self.kind {
-            ErrorKind::Unclosed { .. } => 2,
+            ErrorKind::Unclosed { .. } | ErrorKind::RepeatedKey { .. } => 2,
             _ => 1,
         }
     }
@@ -357,6 +358,8 @@ pub(crate) enum ParseText<'a> {
     Primary(&'a Diagnostic),
     /// Where a group that was not closed had to be closed.
     Expected(Delimiter),
+    /// Where a map key given twice is given first.
+    FirstKey,
 }
 
 impl fmt::Display for ParseText<'_> {
@@ -364,6 +367,7 @@ impl fmt::Display for ParseText<'_> {
         match self {
             Self::Primary(error) => error.fmt(f),
             Self::Expected(open) => write!(f, "expected `{}` here", closer(*open)),
+            Self::FirstKey => f.write_str("given first here"),
         }
     }
 }
@@ -391,6 +395,8 @@ pub(crate) enum ErrorKind {
         found: Found,
         open: Option<Delimiter>,
     },
+    /// A map's key followed by other than an operator or `:`.
+    ExpectedKeyEnd(Found),
     /// A `.` not followed by a name.
     ExpectedName(Found),
     /// No function name after a type's `::`.
@@ -490,6 +496,27 @@ pub(crate) enum ErrorKind {
     },
     /// `[]`, whose entry type is unknown.
     EmptyList,
+    /// A map key other than an integer or string literal.
+    MapKeyLiteral,
+    /// A map key of another type than the first key, counting entries
+    /// from 1.
+    MapKeyMixed {
+        index: usize,
+        expected: Type,
+        found: Type,
+    },
+    /// A map key given twice, `key` as its value is written in messages;
+    /// `first` is where it is first given.
+    RepeatedKey { key: String, first: Span<u32> },
+    /// A map value of another type than the first value, counting entries
+    /// from 1.
+    MapValue {
+        index: usize,
+        expected: Type,
+        found: Type,
+    },
+    /// `{}`, whose key and value types are unknown.
+    EmptyMap,
     /// A value whose type nests more than
     /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH) levels.
     TypeTooDeep,
@@ -583,6 +610,8 @@ pub(crate) enum Delimiter {
     List,
     /// An index `value[ expr ]`.
     Index,
+    /// A map `{ key: value, ... }`.
+    Map,
 }
 
 impl Delimiter {
@@ -590,6 +619,7 @@ impl Delimiter {
         match self {
             Self::Paren | Self::Args => Syntax::CloseParen,
             Self::List | Self::Index => Syntax::CloseBracket,
+            Self::Map => Syntax::CloseBrace,
         }
     }
 
@@ -597,12 +627,13 @@ impl Delimiter {
         match self {
             Self::Paren | Self::Args => "`(`",
             Self::List | Self::Index => "`[`",
+            Self::Map => "`{`",
         }
     }
 
     /// Whether `,` separates its entries.
     pub(crate) fn separated(self) -> bool {
-        matches!(self, Self::Args | Self::List)
+        matches!(self, Self::Args | Self::List | Self::Map)
     }
 }
 
@@ -613,6 +644,7 @@ pub(crate) enum Nesting {
     Args,
     List,
     Index,
+    Map,
     /// A prefix operator, `-` or `!`.
     Unary(Syntax),
 }
@@ -633,6 +665,7 @@ impl fmt::Display for Nesting {
             Self::Args => f.write_str("this call"),
             Self::List => f.write_str("this list"),
             Self::Index => f.write_str("this index"),
+            Self::Map => f.write_str("this map"),
             Self::Unary(op) => write!(f, "this {}", op.describe()),
         }
     }
@@ -679,6 +712,9 @@ impl fmt::Display for Diagnostic {
                     "expected an operator or the end of the expression, found {found}"
                 ),
             },
+            ErrorKind::ExpectedKeyEnd(found) => {
+                write!(f, "expected an operator or `:` after this map key, found {found}")
+            }
             ErrorKind::ExpectedName(found) => {
                 write!(
                     f,
@@ -872,6 +908,31 @@ impl fmt::Display for Diagnostic {
             ErrorKind::EmptyList => {
                 f.write_str("an empty list `[]` has no entry type, give it at least one entry")
             }
+            ErrorKind::MapKeyLiteral => f.write_str(
+                "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
+            ),
+            ErrorKind::MapKeyMixed {
+                index,
+                expected,
+                found,
+            } => write!(
+                f,
+                "key {index} of this map is {found}, but the first is {expected}, a map's keys have one type"
+            ),
+            ErrorKind::RepeatedKey { key, .. } => {
+                write!(f, "the key {key} is given twice in this map")
+            }
+            ErrorKind::MapValue {
+                index,
+                expected,
+                found,
+            } => write!(
+                f,
+                "the value of entry {index} of this map is {found}, but the first is {expected}, a map's values have one type"
+            ),
+            ErrorKind::EmptyMap => f.write_str(
+                "an empty map `{}` has no key or value type, give it at least one entry",
+            ),
             ErrorKind::TypeTooDeep => write!(
                 f,
                 "this value's type nests more than {}",
@@ -923,6 +984,7 @@ impl fmt::Display for Diagnostic {
 fn closer(open: Delimiter) -> char {
     match open.close() {
         Syntax::CloseBracket => ']',
+        Syntax::CloseBrace => '}',
         _ => ')',
     }
 }

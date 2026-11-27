@@ -7,7 +7,7 @@ use crate::message::{Invalid, Message, StoreError};
 use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 4;
+pub(crate) const FORMAT: u32 = 5;
 
 /// How many nodes the globals' types may have together, each written out
 /// in full.
@@ -102,6 +102,13 @@ pub(crate) enum Instr {
     /// `map.get(key)` of this map type: an `Option` of its value type,
     /// absent when the key is missing.
     MapGet(TypeId),
+    /// Make a map of this map type on the heap, of the keys of the constant
+    /// list `keys`, which the verifier checks are in key order and each
+    /// given once, and a value of each, popped in that order.
+    Map {
+        keys: u32,
+        map: TypeId,
+    },
 }
 
 /// A value in a constant list.
@@ -398,6 +405,7 @@ impl Program {
     ) -> Result<Self, StoreError> {
         let mut verifier = Verifier {
             types: &types,
+            constants: &constants,
             constant_types: Vec::new(),
         };
 
@@ -506,6 +514,7 @@ fn count(at: usize) -> u32 {
 
 struct Verifier<'a> {
     types: &'a Types,
+    constants: &'a [Constant],
     constant_types: Vec<TypeId>,
 }
 
@@ -698,6 +707,22 @@ impl Verifier<'_> {
                     heap = heap.saturating_add(n.saturating_mul(self.types.width(entry)));
                     self.find(TypeNode::List(entry))?
                 }
+                Instr::Map { keys, map } => {
+                    let Some(TypeNode::Map { key, value }) = self.types.get(map) else {
+                        return Err(fail(Invalid::MakeNonMap));
+                    };
+
+                    let n = self.map_keys(keys, *key).map_err(fail)?;
+
+                    for _ in 0..n {
+                        need(stack.pop(), Some(*value))
+                            .map_err(|_| fail(Invalid::MapEntriesMissing))?;
+                    }
+
+                    let stride = self.types.width(*value).saturating_add(1);
+                    heap = heap.saturating_add(n.saturating_mul(stride));
+                    map
+                }
                 Instr::Min(n) | Instr::Max(n) => {
                     if n == 0 {
                         return Err(fail(Invalid::NoOperands));
@@ -806,6 +831,44 @@ impl Verifier<'_> {
             constants: 0,
             globals: 0,
         })
+    }
+
+    /// How many keys the constant `keys` holds, a list of `key`s in key
+    /// order, each once, as a map's lookup needs them: `Int`s by value,
+    /// strings by their bytes.
+    fn map_keys(&self, keys: u32, key: TypeId) -> Result<usize, Invalid> {
+        let list = index(&self.constant_types, keys).ok_or(Invalid::NoSuchConstant)?;
+
+        let (Some(Constant::List { items, .. }), true) =
+            (index(self.constants, keys), self.entry(*list) == Some(key))
+        else {
+            return Err(Invalid::MapKeysMistyped);
+        };
+
+        // Only `Int`s and strings are keys, a map type's key is one of them.
+        let text = |c: u32| match index(self.constants, c) {
+            Some(Constant::String(s)) => Some(s.as_bytes()),
+            _ => None,
+        };
+
+        let sorted = items.windows(2).all(|pair| match *pair {
+            [Scalar::Int(a), Scalar::Int(b)] => a < b,
+            [Scalar::Const(a), Scalar::Const(b)] => matches!(
+                (text(a), text(b)),
+                (Some(a), Some(b)) if a < b
+            ),
+            _ => false,
+        });
+
+        if items.is_empty() {
+            return Err(Invalid::EmptyMap);
+        }
+
+        if !sorted {
+            return Err(Invalid::MapKeysUnsorted);
+        }
+
+        Ok(items.len())
     }
 
     fn entry(&self, list: TypeId) -> Option<TypeId> {

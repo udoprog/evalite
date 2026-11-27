@@ -125,6 +125,7 @@ const ANY: &[&str] = &[
     "false",
     r#""""#,
     "[_]",
+    "{_: _}",
     "_ + _",
     "_ - _",
     "_ * _",
@@ -273,7 +274,7 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
             "_[_]",
             0,
             None,
-            vec!["dots", "health", "m", "broken(_)", "[_]", "_!"],
+            vec!["dots", "health", "m", "broken(_)", "[_]", "{_: _}", "_!"],
         ),
         (r#"_["Brawl (bar)"]"#, 0, None, vec!["m", "_!"]),
         // List entries, by a sibling or the list's own type.
@@ -298,6 +299,39 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         ),
         ("_[0]", 0, Some(Type::bool()), vec!["[_]", "_!"]),
         ("[_][0]", 0, Some(Type::bool()), BOOL.to_vec()),
+        // Map values, by a sibling or the map's own type; keys are literals
+        // of a sibling key's type.
+        ("{1: _}", 0, None, ANY.to_vec()),
+        ("{1: dead, 2: _}", 0, None, BOOL.to_vec()),
+        (
+            "{1: _}",
+            0,
+            Some(Type::map(Type::int(), Type::int())),
+            INT.to_vec(),
+        ),
+        (
+            "[{1: _}]",
+            0,
+            Some(Type::list(Type::map(Type::string(), Type::bool()))),
+            BOOL.to_vec(),
+        ),
+        ("{1: _}.len()", 0, None, ANY.to_vec()),
+        ("{1: _}", 0, Some(Type::int()), vec![]),
+        ("{_: 1}", 0, None, vec!["0", r#""""#]),
+        ("{1: 2, _: 3}", 0, None, vec!["0"]),
+        (r#"{"a": 2, _: 3}"#, 0, None, vec![r#""""#]),
+        (
+            "{_: dead}",
+            0,
+            Some(Type::map(Type::string(), Type::bool())),
+            vec![r#""""#],
+        ),
+        (
+            "_",
+            0,
+            Some(Type::map(Type::int(), Type::bool())),
+            vec!["{_: _}", "_!"],
+        ),
         // Member holes, by the receiver's type and what the place takes.
         (
             "bonus._",
@@ -376,7 +410,7 @@ fn int_or_bool_sorted() -> Vec<&'static str> {
                 "m.brawl.unwrap_or(_)",
                 "m.flags.frenzy",
             ],
-            "table" | "broken(_)" | r#""""# | "[_]" => vec![],
+            "table" | "broken(_)" | r#""""# | "[_]" | "{_: _}" => vec![],
             a => vec![a],
         })
         .collect()

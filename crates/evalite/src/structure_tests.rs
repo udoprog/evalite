@@ -849,7 +849,7 @@ fn random_node(rng: &mut Rng, b: &mut Structure, depth: u32) -> NodeId {
             _ => Node(Repr::Name(rng.pick(NAMES).to_string())),
         }
     } else {
-        match rng.below(8) {
+        match rng.below(9) {
             0 => Node(Repr::Unary {
                 op: *rng.pick(&[UnaryOp::Neg, UnaryOp::Not]),
                 operand: kids(rng, b, 1)[0],
@@ -889,11 +889,28 @@ fn random_node(rng: &mut Rng, b: &mut Structure, depth: u32) -> NodeId {
                     index: k[1],
                 })
             }
-            _ => {
+            7 => {
                 let n = rng.below(4);
                 Node(Repr::List {
                     entries: kids(rng, b, n),
                 })
+            }
+            _ => {
+                // Keys are mostly literals, some repeated, some not.
+                let n = rng.below(3) + 1;
+                let entries = (0..n)
+                    .map(|_| {
+                        let key = match rng.below(4) {
+                            0 => Node(Repr::Int(rng.below(3) as i64 - 1)),
+                            1 => Node(Repr::Hex(rng.below(3) as i64)),
+                            2 => Node(Repr::String(rng.pick(&["a", "b"]).to_string())),
+                            _ => Node(Repr::Hole),
+                        };
+                        let key = b.add(key).unwrap();
+                        (key, kids(rng, b, 1)[0])
+                    })
+                    .collect();
+                Node(Repr::Map { entries })
             }
         }
     };
@@ -948,17 +965,17 @@ fn stored_form_is_stable() {
         97, 100, 5, 2, 0, 1, 1, 30, 2, 1, 0, 1, 6, 3, 0, 11, 1, 31, 2, 32, 6, 3, 0, 2, 1, 29, 2,
         33, 6, 3, 0, 0, 1, 25, 2, 34, 2, 35,
     ];
-    // These bytes are format 1's. Format 2 writes the same nodes after its
+    // These bytes are format 1's. Format 3 writes the same nodes after its
     // number, and still reads format 1.
     assert_eq!(bytes[..2], golden[..2]);
-    assert_eq!((golden[2], bytes[2]), (1, 2));
+    assert_eq!((golden[2], bytes[2]), (1, 3));
     assert_eq!(bytes[3..], golden[3..]);
     assert_eq!(Structure::from_bytes(golden).unwrap(), structure);
     assert_eq!(Structure::from_bytes(&bytes).unwrap(), structure);
 
     // A hexadecimal integer is a node of its own, after the others.
     let hex = s("0x1F").to_bytes().unwrap();
-    assert_eq!(hex, [3, 0, 2, 1, 1, 13, 1, 0, 62, 2, 0]);
+    assert_eq!(hex, [3, 0, 3, 1, 1, 13, 1, 0, 62, 2, 0]);
 }
 
 #[test]
@@ -1027,16 +1044,158 @@ fn hexadecimal_integers_are_stored() {
 
     // Format 1 is still read, and holds decimal integers alone.
     let mut old = stored_with(vec![Node(Repr::Int(7))], 0);
-    assert_eq!(old[2], 2);
+    assert_eq!(old[2], 3);
     old[2] = 1;
     let old = Structure::from_bytes(&old).unwrap();
     assert_eq!(old.to_text(), "7");
 
+    // Format 2, which added them, is too.
+    let mut old = stored_with(vec![Node(Repr::Hex(7))], 0);
+    old[2] = 2;
+    assert_eq!(Structure::from_bytes(&old).unwrap().to_text(), "0x7");
+
     // A format after this one is not.
     let mut new = stored_with(vec![Node(Repr::Hex(7))], 0);
-    new[2] = 3;
+    new[2] = 4;
     assert!(matches!(
         Structure::from_bytes(&new).map_err(|e| e.message().clone()),
-        Err(Message::WrongFormat { found: 3, reads: 2 })
+        Err(Message::WrongFormat { found: 4, reads: 3 })
     ));
+}
+
+/// A map is a node of its entries, each a key node and a value node; its
+/// text is written back as given, hexadecimal keys too.
+#[test]
+fn maps_are_nodes() {
+    let map = s(r#"{0x2A: wits, -1: 2 + 3, 0x0: {"a": [dead]}}"#);
+    assert_eq!(
+        map.to_text(),
+        r#"{0x2A: wits, -1: 2 + 3, 0x0: {"a": [dead]}}"#
+    );
+
+    let entries = map.get(map.root()).and_then(Node::as_map).unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(map.get(entries[0].0), Some(&Node(Repr::Hex(42))));
+    assert_eq!(map.get(entries[1].0), Some(&Node(Repr::Int(-1))));
+    assert_eq!(map.text_of(entries[1].1), "2 + 3");
+    assert_eq!(map.parent(entries[2].1), Some(map.root()));
+
+    // Its parts are each key and value, in the order written.
+    let parts = map
+        .get(map.root())
+        .unwrap()
+        .children()
+        .into_iter()
+        .map(|id| map.text_of(id))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        parts,
+        ["0x2A", "wits", "-1", "2 + 3", "0x0", r#"{"a": [dead]}"#]
+    );
+
+    // Written with or without spaces, the same structure.
+    assert_eq!(s("{ 1 :2,3: 4 }"), s("{1: 2, 3: 4}"));
+    assert_ne!(s("{1: 2}"), s("{1: 2, 3: 4}"));
+    assert_ne!(s("{1: 2}"), s("{0x1: 2}"));
+
+    // As a receiver it needs no parentheses.
+    assert_eq!(s("{1: 2}[1]").to_text(), "{1: 2}[1]");
+    assert_eq!(s("{1: 2}.len()").to_text(), "{1: 2}.len()");
+
+    // Holes in either place.
+    let holes = s("{_: _}");
+    assert_eq!(holes.holes().len(), 2);
+    assert_eq!(holes.to_text(), "{_: _}");
+}
+
+/// A map built of nodes compiles as its text does: keys must be literals,
+/// of one type, each given once.
+#[test]
+fn maps_compile() {
+    let env = env();
+    let mut b = Structure::new();
+    let one = b.add(Node::int(1)).unwrap();
+    let wits = b.add(Node::name("wits")).unwrap();
+    let two = b.add(Node::int(2)).unwrap();
+    let three = b.add(Node::int(3)).unwrap();
+    b.replace(b.root(), Node::map([(two, three), (one, wits)]))
+        .unwrap();
+    assert_eq!(b.to_text(), "{2: 3, 1: wits}");
+    assert_eq!(
+        b.compile(&env).unwrap().result_type(),
+        Type::map(Type::int(), Type::int())
+    );
+    same_as_text(&b, &env);
+
+    // A node can be part of a map once.
+    let mut c = Structure::new();
+    let key = c.add(Node::int(1)).unwrap();
+    assert!(matches!(
+        c.replace(c.root(), Node::map([(key, key)]))
+            .map_err(|e| e.to_string()),
+        Err(message) if message == format!("node {key} is already part of another node")
+    ));
+
+    for text in [
+        "{wits: 1}",
+        "{1: 1, 0x1: 2}",
+        r#"{1: 1, "a": 2}"#,
+        "{1: true, 2: 3}",
+        "{_: 1}",
+        "{1: _}",
+    ] {
+        same_as_text(&s(text), &env);
+        assert!(s(text).compile(&env).is_err(), "{text}");
+    }
+
+    let errors = s("{1: 2, 0x1: 3}").compile(&env).unwrap_err();
+    let error = errors.iter().next().unwrap();
+    let s = s("{1: 2, 0x1: 3}");
+    assert_eq!(s.text_of(error.node()), "0x1");
+    assert_eq!(error.to_string(), "the key 1 is given twice in this map");
+}
+
+/// Format 3 stores a map as its own node, after the others; formats 1 and
+/// 2, which have none, are still read.
+#[test]
+fn maps_are_stored() {
+    let structure = s(r#"{0x1F: "a", -2: wits}"#);
+    let bytes = structure.to_bytes().unwrap();
+    let back = Structure::from_bytes(&bytes).unwrap();
+    assert_eq!(back, structure);
+    assert_eq!(back.to_text(), r#"{0x1F: "a", -2: wits}"#);
+
+    // The bytes of `{1: 2}` are pinned.
+    let map = s("{1: 2}").to_bytes().unwrap();
+    assert_eq!(map[2], 3);
+    assert_eq!(Structure::from_bytes(&map).unwrap(), s("{1: 2}"));
+    assert_eq!(
+        map,
+        [
+            3, 0, 3, 1, 3, 1, 1, 0, 2, 1, 1, 0, 4, 14, 1, 0, 1, 2, 0, 1, 2, 2
+        ]
+    );
+
+    // A map's parts are checked as any node's are.
+    let tampered = stored_with(
+        vec![
+            Node(Repr::Int(1)),
+            Node(Repr::Map {
+                entries: vec![(id(0), id(0))],
+            }),
+        ],
+        1,
+    );
+    assert!(matches!(
+        Structure::from_bytes(&tampered).map_err(|e| e.message().clone()),
+        Err(Message::Invalid(_))
+    ));
+
+    let past = stored_with(
+        vec![Node(Repr::Map {
+            entries: vec![(id(1), id(2))],
+        })],
+        0,
+    );
+    assert!(Structure::from_bytes(&past).is_err());
 }

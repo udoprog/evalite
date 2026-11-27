@@ -37,6 +37,11 @@ pub(crate) enum Syntax {
     Unwrap,
     /// `[` entries separated by `,` `]`.
     List,
+    /// `{` `Entry` nodes separated by `,` `}`. One whose key lacks its
+    /// `:` is an `Error` node in an entry's place, already reported.
+    Map,
+    /// A map's key, `:` and value.
+    Entry,
     /// `(` arguments separated by `,` `)`.
     Args,
     /// What the parser recovered from a syntax error in: the expressions
@@ -70,8 +75,11 @@ pub(crate) enum Syntax {
     CloseParen,
     OpenBracket,
     CloseBracket,
+    OpenBrace,
+    CloseBrace,
     Comma,
     Dot,
+    Colon,
     ColonColon,
     /// Text the lexer rejected, already reported.
     Invalid,
@@ -104,6 +112,9 @@ impl Syntax {
             Self::CloseParen => "`)`",
             Self::OpenBracket => "`[`",
             Self::CloseBracket => "`]`",
+            Self::OpenBrace => "`{`",
+            Self::CloseBrace => "`}`",
+            Self::Colon => "`:`",
             Self::Comma => "`,`",
             Self::Dot => "`.`",
             Self::ColonColon => "`::`",
@@ -121,6 +132,8 @@ impl Syntax {
             | Self::Index
             | Self::Unwrap
             | Self::List
+            | Self::Map
+            | Self::Entry
             | Self::Args
             | Self::Error => "an expression",
         }

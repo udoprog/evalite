@@ -189,3 +189,34 @@ fn hexadecimal_integers() {
     covers("0xg + 0x1F");
     covers("-0x10");
 }
+
+#[test]
+fn maps() {
+    use Class::*;
+
+    assert_eq!(
+        texts(r#"{0x1: a, "b": 2}"#),
+        [
+            (Punctuation, "{"),
+            (Number, "0x1"),
+            (Punctuation, ":"),
+            (Whitespace, " "),
+            (Ident, "a"),
+            (Punctuation, ","),
+            (Whitespace, " "),
+            (String, r#""b""#),
+            (Punctuation, ":"),
+            (Whitespace, " "),
+            (Number, "2"),
+            (Punctuation, "}"),
+        ]
+    );
+
+    // `:` and `::` are different tokens.
+    assert_eq!(
+        texts("Int::min"),
+        [(Type, "Int"), (Punctuation, "::"), (Ident, "min")]
+    );
+    covers("{1: {2: a}}[1][2]");
+    covers("{: } :: : {");
+}

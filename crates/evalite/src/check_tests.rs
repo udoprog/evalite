@@ -1714,7 +1714,7 @@ fn stored_bytes_errors() {
 
     assert_eq!(
         format!("{:#}", load(&stored).unwrap_err()),
-        "it was stored in format 5, this evalite reads format 4: while reading a stored program"
+        "it was stored in format 6, this evalite reads format 5: while reading a stored program"
     );
 
     let error = Program::from_bytes(&[]).unwrap_err();
@@ -1807,7 +1807,7 @@ pub(crate) fn generate(rng: &mut Rng, ty: &str, budget: usize) -> String {
         "Int" => {
             let b = budget - 1;
 
-            match rng.below(14) {
+            match rng.below(15) {
                 0 => {
                     let op = rng.pick(&["+", "-", "*", "/", "%"]);
                     let a = generate(rng, "Int", b / 2);
@@ -1855,6 +1855,23 @@ pub(crate) fn generate(rng: &mut Rng, ty: &str, budget: usize) -> String {
                 10 => format!("({}).len()", generate(rng, "List<Int>", b)),
                 11 => format!("count(health, {})", generate(rng, "Int", b)),
                 12 => format!(r#"chart({}, "Essence")"#, generate(rng, "Int", b)),
+                13 => {
+                    // Keys in any order, distinct, decimal or hex.
+                    let n = 1 + rng.below(3);
+                    let start = rng.below(4) as i64 - 2;
+                    let entries = (0..n)
+                        .map(|k| {
+                            let key = start + 3 * k as i64 * if rng.below(2) == 0 { 1 } else { -1 };
+                            let key = match rng.below(2) {
+                                0 if key >= 0 => format!("0x{key:X}"),
+                                _ => key.to_string(),
+                            };
+                            format!("{key}: {}", generate(rng, "Int", b / (n + 1)))
+                        })
+                        .collect::<Vec<_>>();
+                    let at = generate(rng, "Int", b / (n + 1));
+                    format!("{{{}}}.get({at}).unwrap_or(0)", entries.join(", "))
+                }
                 _ => rng
                     .pick(&["count(health)", "boxes(health)", r#"boxes(m["a b"])"#])
                     .to_owned(),
@@ -2004,6 +2021,11 @@ fn random_ill_typed() {
         "\"a b\"",
         "true",
         " ",
+        "{",
+        "}",
+        ":",
+        "0x1",
+        "-0x1",
     ];
 
     let mut rng = Rng(0xbad);
@@ -2407,4 +2429,367 @@ fn map_keys_are_int_or_string() {
         Type::map(Type::int(), Type::map(Type::string(), Type::int())),
     )
     .unwrap();
+}
+
+/// A map literal: keys are integer or string literals, of one type and
+/// each given once; values are of one type.
+#[test]
+fn map_literals() {
+    types(&[
+        ("{1: wits}", "Map<Int, Int>"),
+        ("{1: wits, 0x2A: 2, -3: -0x4}", "Map<Int, Int>"),
+        (r#"{"a": flag, "b c": true}"#, "Map<String, Bool>"),
+        (r#"{1: "x"}[1]"#, "String"),
+        ("{1: health}[1].boxes", "Int"),
+        ("{1: [1, 2]}.get(1)", "Option<List<Int>>"),
+        ("{1: {\"a\": bonus}}", "Map<Int, Map<String, Option<Int>>>"),
+        ("{1: 2}.len()", "Int"),
+        ("Map::len({1: 2})", "Int"),
+        ("[{1: 2}, {3: 4}]", "List<Map<Int, Int>>"),
+        (
+            "{9223372036854775807: 1, -9223372036854775807: 2}",
+            "Map<Int, Int>",
+        ),
+    ]);
+
+    errors(&[
+        (
+            "{}",
+            "an empty map `{}` has no key or value type, give it at least one entry",
+            "{}",
+        ),
+        (
+            "{1: {}}",
+            "an empty map `{}` has no key or value type, give it at least one entry",
+            "{}",
+        ),
+        (
+            "{wits: 1}",
+            "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
+            "wits",
+        ),
+        (
+            "{1 + 2: 1}",
+            "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
+            "1 + 2",
+        ),
+        (
+            "{(1): 1}",
+            "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
+            "(1)",
+        ),
+        (
+            "{--1: 1}",
+            "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
+            "--1",
+        ),
+        (
+            "{true: 1}",
+            "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
+            "true",
+        ),
+        (
+            "{-\"a\": 1}",
+            "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
+            "-\"a\"",
+        ),
+        (
+            "{1: 2, \"a\": 3}",
+            "key 2 of this map is String, but the first is Int, a map's keys have one type",
+            "\"a\"",
+        ),
+        (
+            "{\"a\": 2, 1: 3, 2: 4}",
+            "key 2 of this map is Int, but the first is String, a map's keys have one type\nkey 3 of this map is Int, but the first is String, a map's keys have one type",
+            "1",
+        ),
+        (
+            "{1: 2, 0x1: 3}",
+            "the key 1 is given twice in this map",
+            "0x1",
+        ),
+        (
+            "{16: 2, 3: 4, 0x10: 5}",
+            "the key 16 is given twice in this map",
+            "0x10",
+        ),
+        (
+            "{-1: 2, -0x1: 3}",
+            "the key -1 is given twice in this map",
+            "-0x1",
+        ),
+        (
+            r#"{"a": 1, "b": 2, "a": 3}"#,
+            "the key \"a\" is given twice in this map",
+            "\"a\"",
+        ),
+        (
+            "{1: 1, 1: 2, 1: 3}",
+            "the key 1 is given twice in this map\nthe key 1 is given twice in this map",
+            "1",
+        ),
+        (
+            "{1: true, 2: 3}",
+            "the value of entry 2 of this map is Int, but the first is Bool, a map's values have one type",
+            "3",
+        ),
+        // In error by key order or not, the first written is the first.
+        (
+            "{2: true, 1: 3, 3: 4}",
+            "the value of entry 2 of this map is Int, but the first is Bool, a map's values have one type\nthe value of entry 3 of this map is Int, but the first is Bool, a map's values have one type",
+            "3",
+        ),
+        (
+            "{1: 2}[\"a\"]",
+            "a Map<Int, Int> is indexed by its key, an Int, found String",
+            "\"a\"",
+        ),
+        (
+            "{1: 2} == {1: 2}",
+            "`==` takes two Ints or two Bools, found Map<Int, Int> and Map<Int, Int>",
+            "{1: 2} == {1: 2}",
+        ),
+        // Values are checked when keys are wrong, keys only when literal.
+        (
+            "{wits: nope, 1: 2}",
+            "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`\nunknown name `nope`",
+            "wits",
+        ),
+        (
+            "{nope: 1}",
+            "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
+            "nope",
+        ),
+        (
+            "{1: nope, 1: 2}",
+            "unknown name `nope`\nthe key 1 is given twice in this map",
+            "nope",
+        ),
+        // A syntax error is not reported again.
+        (
+            "{1, 2: x}",
+            "expected an operator or `:` after this map key, found `,`\nunknown name `x`",
+            ",",
+        ),
+        (
+            "{9223372036854775808: 1}",
+            "this integer is too large, the largest is 9223372036854775807",
+            "9223372036854775808",
+        ),
+        (
+            "{-9223372036854775808: 1}",
+            "this integer is too large, the largest is 9223372036854775807",
+            "9223372036854775808",
+        ),
+    ]);
+}
+
+/// A repeated key points at itself and at where it is first given.
+#[test]
+fn map_literal_repeated_key_labels() {
+    let source = "{0x10: 1, 2: 3, 16: 4}";
+    let errors = compile(source, &env()).unwrap_err();
+    let error = errors.iter().next().unwrap();
+    assert_eq!(
+        error.kind(),
+        &ErrorKind::RepeatedKey {
+            key: "16".to_owned(),
+            first: crate::lexer::span(1, 5),
+        }
+    );
+
+    let labels = error
+        .labels()
+        .map(|l| {
+            let at = l.span().map(|s| &source[s.range()]);
+            (l.message().to_string(), at, l.is_primary())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labels,
+        [
+            (
+                "the key 16 is given twice in this map".to_owned(),
+                Some("16"),
+                true
+            ),
+            ("given first here".to_owned(), Some("0x10"), false),
+        ]
+    );
+}
+
+/// A map literal's values are compiled in key order, then made into the
+/// map with its keys, a constant list in key order.
+#[test]
+fn map_literal_code() {
+    use Instr::*;
+
+    let program = compile("{2: wits, 0x1: 3, -5: 4}", &env()).unwrap();
+    let map = program.result;
+    assert_eq!(
+        program.types.get(map),
+        Some(&TypeNode::Map {
+            key: TypeId(0),
+            value: TypeId(0)
+        })
+    );
+    assert_eq!(
+        program.code,
+        [
+            Int(4),
+            Int(3),
+            Global {
+                at: 0,
+                ty: TypeId(0)
+            },
+            Map { keys: 0, map },
+        ]
+    );
+    assert_eq!(
+        program.constants,
+        [Constant::List {
+            entry: TypeId(0),
+            items: vec![Scalar::Int(-5), Scalar::Int(1), Scalar::Int(2)],
+        }]
+    );
+    // Each entry takes its key's word and its value's words.
+    assert_eq!(program.memory().heap, 6);
+    assert_eq!(program.memory().constants, 3);
+
+    // String keys are ordered by their bytes.
+    let program = compile(r#"{"b": bonus, "ab": bonus, "a": bonus}"#, &env()).unwrap();
+    let Some(Map { keys, .. }) = program.code.last() else {
+        panic!("{:?}", program.code);
+    };
+    let Constant::List { items, .. } = &program.constants[*keys as usize] else {
+        panic!("{:?}", program.constants);
+    };
+    let keys = items
+        .iter()
+        .map(|item| match item {
+            Scalar::Const(c) => match &program.constants[*c as usize] {
+                Constant::String(s) => s.as_str(),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(keys, ["a", "ab", "b"]);
+    // An `Option<Int>` is two words, so three words an entry.
+    assert_eq!(program.memory().heap, 9);
+}
+
+/// The verifier checks a map's instruction against its type, its keys and
+/// the stack.
+#[test]
+fn tampered_map_literals() {
+    let source = "{1: wits, 2: 3}";
+    assert!(load(&stored(source)).is_ok());
+
+    type Tamper = Box<dyn Fn(&mut Stored)>;
+
+    fn map(s: &Stored) -> TypeId {
+        match s.code.last() {
+            Some(Instr::Map { map, .. }) => *map,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn keys(s: &mut Stored) -> &mut Vec<Scalar> {
+        match &mut s.constants[0] {
+            Constant::List { items, .. } => items,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    let at = "at instruction 2: while verifying the program";
+
+    let cases: Vec<(Tamper, String)> = vec![
+        (
+            Box::new(|s| *keys(s) = vec![Scalar::Int(2), Scalar::Int(1)]),
+            format!("the instruction makes a map of keys that are not sorted and unique: {at}"),
+        ),
+        (
+            Box::new(|s| *keys(s) = vec![Scalar::Int(1), Scalar::Int(1)]),
+            format!("the instruction makes a map of keys that are not sorted and unique: {at}"),
+        ),
+        (
+            Box::new(|s| keys(s).push(Scalar::Int(3))),
+            format!("the instruction makes a map of entries it does not find: {at}"),
+        ),
+        (
+            Box::new(|s| {
+                keys(s).pop();
+            }),
+            "it ends with 2 values on the stack, not one of its result type: while verifying the program"
+                .to_owned(),
+        ),
+        (
+            Box::new(|s| {
+                let map = map(s);
+                *s.code.last_mut().unwrap() = Instr::Map { keys: 1, map };
+            }),
+            format!("the instruction names a constant there is not: {at}"),
+        ),
+        (
+            Box::new(|s| {
+                *s.code.last_mut().unwrap() = Instr::Map {
+                    keys: 0,
+                    map: TypeId(0),
+                };
+            }),
+            format!("the instruction makes a map of other than a map type: {at}"),
+        ),
+        (
+            Box::new(|s| s.code[1] = Instr::Bool(true)),
+            format!("the instruction makes a map of entries it does not find: {at}"),
+        ),
+        (
+            Box::new(|s| s.memory.heap -= 1),
+            "it declares 8 words of memory but uses 9: while verifying the program".to_owned(),
+        ),
+    ];
+
+    for (n, (tamper, expected)) in cases.into_iter().enumerate() {
+        let mut s = stored(source);
+        tamper(&mut s);
+        assert_eq!(invalid(&s), expected, "case {n}");
+    }
+
+    // String keys are checked by their bytes, and must be strings.
+    let source = r#"{"a": 1, "b": 2}"#;
+    assert!(load(&stored(source)).is_ok());
+
+    let mut s = stored(source);
+    let Constant::List { items, .. } = &mut s.constants[2] else {
+        panic!("{:?}", s.constants);
+    };
+    items.reverse();
+    assert_eq!(
+        invalid(&s),
+        format!("the instruction makes a map of keys that are not sorted and unique: {at}")
+    );
+
+    // Keys that are no list of the map's key type.
+    let mut s = stored(source);
+    let map = map(&s);
+    *s.code.last_mut().unwrap() = Instr::Map { keys: 0, map };
+    assert_eq!(
+        invalid(&s),
+        format!(
+            "the instruction makes a map of keys that are no constant list of its key type: {at}"
+        )
+    );
+}
+
+/// A long string key given twice is cut short where it is named.
+#[test]
+fn map_literal_long_repeated_key() {
+    let long = "k".repeat(100);
+    let source = format!("{{{long:?}: 1, {long:?}: 2}}");
+    let (message, _) = error(&source);
+    assert_eq!(
+        message,
+        format!("the key \"{}…\" is given twice in this map", "k".repeat(64))
+    );
 }

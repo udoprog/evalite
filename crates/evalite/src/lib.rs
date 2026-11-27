@@ -103,10 +103,14 @@
 //! - Records, such as `{boxes: Int, count: List<Int>}`: a field is read with
 //!   `.boxes`, or with `["Brawl (bar)"]` when its name is not a plain name.
 //! - `Map<K, V>`: values by key, the key an `Int` or a `String`, which come
-//!   from a name or a function declared with one. `m[k]` is the value of key
-//!   `k`, an error when it is missing, and `m.get(k)` an `Option<V>`, `none`
-//!   when it is missing. A lookup is a binary search of the keys, which are
-//!   held sorted.
+//!   from a name or a function declared with one, or from a literal such as
+//!   `{1: "a", 0x2A: "b"}` or `{"x": wits}`. `m[k]` is the value of key `k`,
+//!   an error when it is missing, and `m.get(k)` an `Option<V>`, `none` when
+//!   it is missing. A lookup is a binary search of the keys, which are held
+//!   sorted. A literal's keys are integers, decimal or hexadecimal and
+//!   optionally negated, or strings, all of one type and each given once
+//!   (`0x10` and `16` are the same key); its values are of one type, and
+//!   evaluated in key order. Like `[]`, `{}` is an error.
 //! - `Option<T>`: a value that may be absent, which comes from a name or a
 //!   function declared with it, or from `list.get(i)`. It is never used as a `T`:
 //!   unwrap it with `x.unwrap_or(0)`, which gives `0` when it is absent, or

@@ -16,7 +16,7 @@ use std::mem::discriminant;
 
 use crate::check_tests::{env, generate};
 use crate::message::Message;
-use crate::program::{Instr, Memory, Stored};
+use crate::program::{Constant, Instr, Memory, Stored};
 use crate::tests::Rng;
 use crate::types::{TypeId, TypeNode, Types};
 use crate::*;
@@ -1629,7 +1629,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
     let n = |rng: &mut Rng| rng.below(5) as u32;
     let ty = |rng: &mut Rng| TypeId(rng.below(types as usize + 2) as u32);
 
-    match rng.below(35) {
+    match rng.below(36) {
         0 => Instr::Int([0, 1, -1, i64::MIN, i64::MAX][rng.below(5)]),
         1 => Instr::Bool(rng.below(2) == 0),
         2 => Instr::Const(n(rng)),
@@ -1673,6 +1673,10 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
         31 => Instr::Unwrap(ty(rng)),
         32 => Instr::MapIndex(ty(rng)),
         33 => Instr::MapGet(ty(rng)),
+        34 => Instr::Map {
+            keys: n(rng),
+            map: ty(rng),
+        },
         _ => Instr::Call(n(rng)),
     }
 }
@@ -1710,6 +1714,11 @@ fn nudge(rng: &mut Rng, instr: Instr) -> Instr {
         Instr::Unwrap(ty) => Instr::Unwrap(TypeId(d(ty.0))),
         Instr::MapIndex(ty) => Instr::MapGet(TypeId(d(ty.0))),
         Instr::MapGet(ty) => Instr::MapIndex(TypeId(d(ty.0))),
+        Instr::Map { keys, map } if keys % 2 == 0 => Instr::Map { keys: d(keys), map },
+        Instr::Map { keys, map } => Instr::Map {
+            keys,
+            map: TypeId(d(map.0)),
+        },
         Instr::Call(f) => Instr::Call(d(f)),
         Instr::Int(n) => Instr::Int(n.wrapping_add(1)),
         Instr::Bool(b) => Instr::Bool(!b),
@@ -1723,10 +1732,25 @@ fn tamper(rng: &mut Rng, stored: &mut Stored) {
     let types = stored.types.len() as u32;
     let len = stored.code.len();
 
-    match rng.below(10) {
+    match rng.below(11) {
         0..=2 if len > 0 => {
             let at = rng.below(len);
             stored.code[at] = nudge(rng, stored.code[at]);
+        }
+        9 if !stored.constants.is_empty() => {
+            // A constant list's entries reordered or repeated, which a map's
+            // keys must not be.
+            let at = rng.below(stored.constants.len());
+
+            if let Constant::List { items, .. } = &mut stored.constants[at] {
+                match rng.below(2) {
+                    0 => items.reverse(),
+                    _ => {
+                        let first = items[0];
+                        items.push(first);
+                    }
+                }
+            }
         }
         3 | 4 if len > 0 => {
             let at = rng.below(len);
@@ -2211,4 +2235,58 @@ fn tampered_map_programs_never_fault() {
 
     assert!(refused > 500, "only {refused} were refused");
     assert!(ran > 100, "only {ran} ran");
+}
+
+/// A map literal evaluates to its entries in key order, which its keys,
+/// decimal or hexadecimal, find.
+#[test]
+fn map_literals_evaluate() {
+    assert_eq!(eval("{1: 10, 0x2A: 20}[42]").as_int(), Some(20));
+    assert_eq!(eval("{0x2A: 20, 1: 10}[1]").as_int(), Some(10));
+    assert_eq!(eval("{-1: 1, -0x10: 2, 3: 3}[-16]").as_int(), Some(2));
+    assert_eq!(eval("{1: wits + 1}[1]").as_int(), Some(3));
+    assert_eq!(eval(r#"{"b": 2, "a": 1, "ab": 3}["ab"]"#).as_int(), Some(3));
+    assert_eq!(eval(r#"{"b": 2, "": 1}[""]"#).as_int(), Some(1));
+    assert_eq!(eval("{3: 1, 1: 2, 2: 3}.len()").as_int(), Some(3));
+    assert_eq!(eval("Map::len({3: 1})").as_int(), Some(1));
+    assert_eq!(eval("{1: true}.get(2).is_none()").as_bool(), Some(true));
+    // Values of every width: tagged options take two words, records many.
+    assert_eq!(eval("{2: bonus, 1: label(1)}[2]"), eval("bonus"));
+    assert_eq!(eval("{2: bonus, 1: label(1)}[1]"), eval("label(1)"));
+    assert_eq!(
+        eval("{2: health, 1: health}[1].boxes"),
+        eval("health.boxes")
+    );
+    assert_eq!(
+        eval(r#"{"x": {1: [1, 2]}, "y": {2: [3]}}["y"][2][0]"#).as_int(),
+        Some(3)
+    );
+
+    // In key order, however written.
+    assert_eq!(
+        eval("{3: 30, -0x1: 10, 2: 20}").to_string(),
+        "{-1: 10, 2: 20, 3: 30}"
+    );
+    assert_eq!(
+        eval(r#"{"b": true, "a": false}"#),
+        Value::map([
+            (Value::from("a"), Value::bool(false)),
+            (Value::from("b"), Value::bool(true)),
+        ])
+    );
+
+    assert_eq!(fails("{1: 2}[3]"), "the map has no key 3");
+    assert_eq!(fails(r#"{"a": 2}["b"]"#), r#"the map has no key "b""#);
+    assert_eq!(
+        fails_chain("{1: 2, 0x10: 3}[wits]"),
+        "the map has no key 2: while running instruction 4: while running the program"
+    );
+}
+
+/// A map literal's values are evaluated in key order: the failing call,
+/// at key 1, runs before the division by zero, at key 2.
+#[test]
+fn map_literal_values_in_key_order() {
+    assert_eq!(fails("{2: 1 / 0, 1: fail()}[1]"), "the function failed");
+    assert_eq!(fails("{1: 1 / 0, 2: fail()}[1]"), fails("1 / 0"));
 }

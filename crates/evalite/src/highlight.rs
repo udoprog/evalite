@@ -100,8 +100,11 @@ pub fn highlight(source: &str) -> impl Iterator<Item = Token> + '_ {
                     | Syntax::CloseParen
                     | Syntax::OpenBracket
                     | Syntax::CloseBracket
+                    | Syntax::OpenBrace
+                    | Syntax::CloseBrace
                     | Syntax::Comma
                     | Syntax::Dot
+                    | Syntax::Colon
                     | Syntax::ColonColon => Class::Punctuation,
                     _ => Class::Operator,
                 };

@@ -24,9 +24,9 @@ use crate::types::{is_field_name, is_value_name};
 type N<'a> = TreeNode<'a, Syntax, Flavor>;
 
 /// What a stored structure starts with, so later versions can tell. Format 2
-/// adds [`Repr::Hex`]; format 1 is read as well, since its nodes are all
-/// format 2's.
-const FORMAT: u32 = 2;
+/// adds [`Repr::Hex`] and format 3 [`Repr::Map`]; formats 1 and 2 are read
+/// as well, since their nodes are all format 3's.
+const FORMAT: u32 = 3;
 
 /// The oldest format [`Structure::from_bytes`] reads.
 const OLDEST_FORMAT: u32 = 1;
@@ -422,6 +422,29 @@ impl Node {
         })
     }
 
+    /// `{key: value, ...}`, from each entry's key and value. A key must be
+    /// an integer or a string, all of one type and each given once, for
+    /// the map to compile.
+    ///
+    /// ```
+    /// use evalite::{Environment, Node, Structure};
+    ///
+    /// let mut s = Structure::new();
+    /// let one = s.add(Node::int(1))?;
+    /// let a = s.add(Node::string("a"))?;
+    /// let key = s.add(Node::int(0x2A))?;
+    /// let b = s.add(Node::string("b"))?;
+    /// s.replace(s.root(), Node::map([(one, a), (key, b)]))?;
+    /// assert_eq!(s.to_text(), r#"{1: "a", 42: "b"}"#);
+    /// assert_eq!(s.compile(&Environment::new())?.result_type().to_string(), "Map<Int, String>");
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn map(entries: impl IntoIterator<Item = (NodeId, NodeId)>) -> Self {
+        Self(Repr::Map {
+            entries: entries.into_iter().collect(),
+        })
+    }
+
     /// `operand!`: the value of an option, which fails the run when it is
     /// absent.
     ///
@@ -682,6 +705,25 @@ impl Node {
         }
     }
 
+    /// The entries, each its key and value, if it is a map.
+    ///
+    /// ```
+    /// use evalite::{Node, Structure};
+    ///
+    /// let s = Structure::from_text("{0x10: true, 2: false}")?;
+    /// let entries = s.get(s.root()).and_then(Node::as_map).ok_or("not a map")?;
+    /// let keys = entries.iter().map(|(k, _)| s.text_of(*k)).collect::<Vec<_>>();
+    /// assert_eq!(keys, ["0x10", "2"]);
+    /// assert_eq!(Node::int(1).as_map(), None);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn as_map(&self) -> Option<&[(NodeId, NodeId)]> {
+        match &self.0 {
+            Repr::Map { entries } => Some(entries),
+            _ => None,
+        }
+    }
+
     /// Its parts, in the order they are written.
     ///
     /// ```
@@ -767,6 +809,11 @@ pub(crate) enum Repr {
     /// An integer written in hexadecimal, such as `0x1F`, or `-0x1F` when
     /// negative. Added in format 2.
     Hex(i64),
+    /// `{key: value, ...}`, each entry its key and value, as written. Added
+    /// in format 3.
+    Map {
+        entries: Vec<(NodeId, NodeId)>,
+    },
 }
 
 impl Repr {
@@ -790,6 +837,7 @@ impl Repr {
             }
             Self::Field { receiver, .. } => vec![*receiver],
             Self::Index { receiver, index } => vec![*receiver, *index],
+            Self::Map { entries } => entries.iter().flat_map(|(k, v)| [*k, *v]).collect(),
         }
     }
 
@@ -1595,6 +1643,12 @@ impl Repr {
             Self::Unwrap { operand } => Self::Unwrap {
                 operand: f(operand)?,
             },
+            Self::Map { entries } => Self::Map {
+                entries: entries
+                    .into_iter()
+                    .map(|(k, v)| Some((f(k)?, f(v)?)))
+                    .collect::<Option<Vec<_>>>()?,
+            },
             leaf => leaf,
         })
     }
@@ -1626,6 +1680,7 @@ impl Repr {
             (Self::Index { .. }, Self::Index { .. }) => true,
             (Self::Unwrap { .. }, Self::Unwrap { .. }) => true,
             (Self::List { entries: x }, Self::List { entries: y }) => x.len() == y.len(),
+            (Self::Map { entries: x }, Self::Map { entries: y }) => x.len() == y.len(),
             (a, b) => a == b,
         }
     }
@@ -1982,6 +2037,21 @@ fn render(nodes: &[Node], root: NodeId) -> (String, Vec<(NodeId, Span<u32>)>) {
                 then.push(Emit::Node(*operand, power(*operand) < ATOM));
                 then.push(Emit::Text("!"));
             }
+            Node(Repr::Map { entries }) => {
+                out.push('{');
+
+                for (n, (key, value)) in entries.iter().enumerate() {
+                    if n > 0 {
+                        then.push(Emit::Text(", "));
+                    }
+
+                    then.push(Emit::Node(*key, false));
+                    then.push(Emit::Text(": "));
+                    then.push(Emit::Node(*value, false));
+                }
+
+                then.push(Emit::Text("}"));
+            }
         }
 
         if paren {
@@ -2166,6 +2236,19 @@ fn from_tree(source: &str, tree: &Tree) -> Result<Structure, Diagnostic> {
                 })
             }
             Syntax::List => Node(Repr::List { entries: parts }),
+            Syntax::Map => {
+                let mut parts = parts.into_iter();
+                let mut entries = Vec::with_capacity(parts.len() / 2);
+
+                while let Some(key) = parts.next() {
+                    let value = parts
+                        .next()
+                        .ok_or_else(|| internal("a map entry without a value"))?;
+                    entries.push((key, value));
+                }
+
+                Node(Repr::Map { entries })
+            }
             Syntax::Unwrap => Node(Repr::Unwrap {
                 operand: *parts.first().ok_or_else(|| internal("no operand"))?,
             }),
@@ -2210,12 +2293,14 @@ fn is_expr(kind: Syntax) -> bool {
             | Syntax::Index
             | Syntax::Unwrap
             | Syntax::List
+            | Syntax::Map
     )
 }
 
 /// The expressions of the structure directly inside `node`, in the order
 /// they are written: not a call's function name nor a method's or field's
-/// name, which are part of the node itself.
+/// name, which are part of the node itself. A map's are each entry's key
+/// and value.
 fn exprs<'a>(node: N<'a>) -> impl Iterator<Item = N<'a>> {
     let kind = node.value();
 
@@ -2230,7 +2315,7 @@ fn exprs<'a>(node: N<'a>) -> impl Iterator<Item = N<'a>> {
 
     let args = node
         .children()
-        .filter(|n| n.value() == Syntax::Args)
+        .filter(|n| matches!(n.value(), Syntax::Args | Syntax::Entry))
         .flat_map(|args| args.children().filter(|n| is_expr(n.value())));
 
     direct.chain(args)

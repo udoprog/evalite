@@ -151,7 +151,7 @@ written once as `sig::Shape` with one type variable `T`:
   `Value::map` sorts its entries and keeps the last of a repeated key.
 - `Value::parse` reads `Int`s in decimal only: `0x1A` is refused there.
 
-**In progress:** map literals (f3b53baf, decided by the user):
+**Map literals** (f3b53baf, landed; decided by the user):
 
 - Syntax is `{k: v, ...}`.
 - Keys are literals only: an integer (decimal or hex, optionally negated) or a
@@ -161,8 +161,17 @@ written once as `sig::Shape` with one type variable `T`:
   `16` count as duplicates.
 - All values have one type. `{}` is an error.
 - Braces nest against `max_depth`.
-- The literal compiles to the map layout of section 5, with keys sorted at
-  compile time.
+- The literal compiles to the map layout of section 5. The checker sorts the
+  keys once (O(n log n), finding repeats in the same pass) into a constant
+  `List<K>`, and `Instr::Map { keys, map }` pops one value per key. The
+  verifier checks that the keys constant is a non-empty, strictly ascending
+  `List<K>`, so no verified program can build an unsorted map.
+- **Values are evaluated in key order, not source order.** This is observable
+  only through which run error or host call comes first. The alternative,
+  checking key order at run time, would let a tampered but verified program
+  fault. The stored program `FORMAT` is 5.
+- An all-constant map literal is not folded into one constant (lists are);
+  it is built at run time.
 - Structures get a map node (with a structure `FORMAT` bump), and completion
   offers `{_: _}`.
 

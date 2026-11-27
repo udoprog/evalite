@@ -191,6 +191,9 @@ impl<'a> Lexer<'a> {
                 (')', _) => (Syntax::CloseParen, 1),
                 ('[', _) => (Syntax::OpenBracket, 1),
                 (']', _) => (Syntax::CloseBracket, 1),
+                ('{', _) => (Syntax::OpenBrace, 1),
+                ('}', _) => (Syntax::CloseBrace, 1),
+                (':', _) => (Syntax::Colon, 1),
                 (',', _) => (Syntax::Comma, 1),
                 ('.', _) => (Syntax::Dot, 1),
                 _ => {

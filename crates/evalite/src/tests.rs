@@ -86,7 +86,9 @@ fn nesting(node: N<'_>) -> usize {
     let max = |nodes: &[N<'_>]| nodes.iter().map(|n| nesting(*n)).max().unwrap_or(0);
 
     match node.value() {
-        Syntax::Paren | Syntax::List | Syntax::Unary | Syntax::Args => 1 + max(&children),
+        Syntax::Paren | Syntax::List | Syntax::Map | Syntax::Unary | Syntax::Args => {
+            1 + max(&children)
+        }
         Syntax::Index => max(&children[..1]).max(1 + max(&children[1..])),
         _ => max(&children),
     }
@@ -121,8 +123,11 @@ fn render(source: &str, node: N<'_>) -> String {
                     | Syntax::CloseParen
                     | Syntax::OpenBracket
                     | Syntax::CloseBracket
+                    | Syntax::OpenBrace
+                    | Syntax::CloseBrace
                     | Syntax::Comma
                     | Syntax::Dot
+                    | Syntax::Colon
                     | Syntax::ColonColon
             )
         })
@@ -138,6 +143,11 @@ fn render(source: &str, node: N<'_>) -> String {
         Syntax::Unary => format!("({} {})", parts[0], parts[1]),
         Syntax::Paren => format!("(paren {})", parts[0]),
         Syntax::List => format!("[{}]", parts.join(" ")),
+        Syntax::Map => format!("{{{}}}", parts.join(" ")),
+        Syntax::Entry => {
+            assert_eq!(parts.len(), 2);
+            format!("(: {} {})", parts[0], parts[1])
+        }
         Syntax::Path => parts.join("::"),
         Syntax::Args => parts.join(" "),
         Syntax::Call => format!("(call {})", parts.join(" ").trim_end()),
@@ -907,6 +917,11 @@ fn error_too_deep() {
     assert_eq!(error(&deep("-", "", 33)), (message("`-`", 32), 32..33));
     assert_eq!(error(&deep("!", "", 33)), (message("`!`", 32), 32..33));
     assert_eq!(error(&deep("[", "]", 33)), (message("list", 32), 32..33));
+    assert_eq!(
+        error(&deep("{1: ", "}", 33)),
+        (message("map", 32), 128..129)
+    );
+    assert!(parse(&deep("{1: ", "}", 32)).is_ok());
     assert_eq!(error(&deep("f(", ")", 33)), (message("call", 32), 65..66));
     assert_eq!(error(&deep("a[", "]", 33)), (message("index", 32), 65..66));
     assert_eq!(
@@ -937,6 +952,7 @@ fn error_too_deep() {
     assert_eq!(error_with("-a", &zero), (message("`-`", 0), 0..1));
     assert_eq!(error_with("f()", &zero), (message("call", 0), 1..2));
     assert_eq!(error_with("[]", &zero), (message("list", 0), 0..1));
+    assert_eq!(error_with("{}", &zero), (message("map", 0), 0..1));
 
     assert_eq!(
         parse(&deep("(", ")", 40)).unwrap_err().kind(),
@@ -995,6 +1011,10 @@ fn very_deep() {
     assert!(parse_with(&sum, &unlimited).is_ok());
     let list = format!("[{}1]", "1, ".repeat(n));
     assert!(parse_with(&list, &unlimited).is_ok());
+    let map = format!("{{{}1: 1}}", "1: 1, ".repeat(n));
+    assert!(parse_with(&map, &unlimited).is_ok());
+    let maps = format!("{}1{}", "{1: ".repeat(n), "}".repeat(n));
+    assert!(parse_with(&maps, &unlimited).is_ok());
 }
 
 #[test]
@@ -1501,6 +1521,13 @@ fn recovery_is_linear() {
         "a.".repeat(n),
         "# ".repeat(n),
         "(".repeat(n),
+        "{".repeat(n),
+        "{1 ".repeat(n),
+        "{1, ".repeat(n),
+        "{1: ".repeat(n),
+        ": ".repeat(n),
+        format!("{}{}", "{(".repeat(n), "}".repeat(n)),
+        format!("{{{}}}", "1: 2: ".repeat(n)),
     ] {
         let (tree, errors) = recover_with(&source, &unlimited);
         check_tree(&source, &tree);
@@ -1835,4 +1862,134 @@ fn random_expressions() {
 
     // Both outcomes are exercised.
     assert!(deep > 100, "{deep}");
+}
+
+#[test]
+fn maps() {
+    table(&[
+        ("{1: a}", "{(: 1 a)}"),
+        ("{1: a, 0x2A: b}", "{(: 1 a) (: 0x2A b)}"),
+        (r#"{"x": 1 + 2, -1: c}"#, r#"{(: "x" (+ 1 2)) (: (- 1) c)}"#),
+        ("{1: a || b, 2: !c}", "{(: 1 (|| a b)) (: 2 (! c))}"),
+        // Any expression parses as a key; the checker wants a literal.
+        ("{a + b: c}", "{(: (+ a b) c)}"),
+        ("{1: {2: x}}", "{(: 1 {(: 2 x)})}"),
+        ("{1: [a]}[1]", "(index {(: 1 [a])} 1)"),
+        ("{1: f(a, b), 2: c}", "{(: 1 (call f a b)) (: 2 c)}"),
+        (" { 1 : a , 2 : b } ", "{(: 1 a) (: 2 b)}"),
+        ("{1: a}.len() + 1", "(+ (method {(: 1 a)} len) 1)"),
+        // The checker reports it.
+        ("{}", "{}"),
+    ]);
+}
+
+#[test]
+fn recover_maps() {
+    recovers(&[
+        (
+            "{1, 2}",
+            "{(error 1) (error 2)}",
+            &[
+                (
+                    "expected an operator or `:` after this map key, found `,`",
+                    2..3,
+                ),
+                (
+                    "expected an operator or `:` after this map key, found `}`",
+                    5..6,
+                ),
+            ],
+        ),
+        (
+            "{1 2: 3}",
+            "{(: (error 1 2) 3)}",
+            &[(
+                "expected an operator or `:` after this map key, found an integer",
+                3..4,
+            )],
+        ),
+        (
+            "{1: 2: 3}",
+            "{(: 1 (error 2 : 3))}",
+            &[("expected an operator, `,` or `}`, found `:`", 5..6)],
+        ),
+        (
+            "{1: 2 3}",
+            "{(: 1 (error 2 3))}",
+            &[("expected an operator, `,` or `}`, found an integer", 6..7)],
+        ),
+        (
+            "{1: 2,}",
+            "{(: 1 2) (error (error))}",
+            &[("expected an expression, found `}`", 6..7)],
+        ),
+        (
+            "{: 1}",
+            "{(: (error) 1)}",
+            &[("expected an expression, found `:`", 1..2)],
+        ),
+        (
+            "{1:}",
+            "{(: 1 (error))}",
+            &[("expected an expression, found `}`", 3..4)],
+        ),
+        (
+            "{1: 2",
+            "{(: 1 2)}",
+            &[(
+                "expected `}` to close the `{` at byte 0, found the end of the expression",
+                0..1,
+            )],
+        ),
+        (
+            "{1",
+            "{(error 1)}",
+            &[(
+                "expected `}` to close the `{` at byte 0, found the end of the expression",
+                0..1,
+            )],
+        ),
+        (
+            "{1: 2]",
+            "{(: 1 2)}",
+            &[("expected `}` to close the `{` at byte 0, found `]`", 0..1)],
+        ),
+        (
+            "{1: (2}",
+            "{(: 1 (paren 2))}",
+            &[("expected `)` to close the `(` at byte 4, found `}`", 4..5)],
+        ),
+        (
+            "{1: 2}}",
+            "(error {(: 1 2)} })",
+            &[("unmatched `}`, there is no group open to close", 6..7)],
+        ),
+        // A `:` is only a map's.
+        (
+            "[1: 2]",
+            "[(error 1 : 2)]",
+            &[("expected an operator, `,` or `]`, found `:`", 2..3)],
+        ),
+        (
+            "{f(1: 2): 3}",
+            "{(: (call f (error 1 : 2)) 3)}",
+            &[("expected an operator, `,` or `)`, found `:`", 4..5)],
+        ),
+        (
+            "a : b",
+            "(error a : b)",
+            &[(
+                "expected an operator or the end of the expression, found `:`",
+                2..3,
+            )],
+        ),
+        (
+            "{1: 2} {3: 4}",
+            "(error {(: 1 2)} { 3 : 4 })",
+            &[(
+                "expected an operator or the end of the expression, found `{`",
+                7..8,
+            )],
+        ),
+    ]);
 }

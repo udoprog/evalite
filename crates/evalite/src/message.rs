@@ -183,6 +183,11 @@ pub(crate) enum Invalid {
     LenNonList,
     IndexNonMap,
     GetNonMap,
+    MakeNonMap,
+    EmptyMap,
+    MapKeysMistyped,
+    MapKeysUnsorted,
+    MapEntriesMissing,
     NoSuchFunction,
     EndStackDisagrees,
     JumpIntoNothing,
@@ -236,6 +241,15 @@ impl fmt::Display for Invalid {
             Self::LenNonList => "the instruction takes the length of other than a list or a map",
             Self::IndexNonMap => "the instruction looks up a key in other than a map of its type",
             Self::GetNonMap => "the instruction gets a key from other than a map of its type",
+            Self::MakeNonMap => "the instruction makes a map of other than a map type",
+            Self::EmptyMap => "the instruction makes a map of no entries",
+            Self::MapKeysMistyped => {
+                "the instruction makes a map of keys that are no constant list of its key type"
+            }
+            Self::MapKeysUnsorted => {
+                "the instruction makes a map of keys that are not sorted and unique"
+            }
+            Self::MapEntriesMissing => "the instruction makes a map of entries it does not find",
             Self::NoSuchFunction => "the instruction calls a function there is not",
             Self::EndStackDisagrees => "a jump lands at the end with another stack",
             Self::JumpIntoNothing => "a jump lands inside nothing",

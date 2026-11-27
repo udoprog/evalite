@@ -649,6 +649,58 @@ impl<'a> Run<'a> {
                 self.sp = top;
                 Word::reference(at, n)?
             }
+            Instr::Map { keys, map } => {
+                let Some(TypeNode::Map { value, .. }) = types.get(map) else {
+                    return Err(fault(Fault::NoSuchType));
+                };
+
+                // The keys are in key order, as the verifier checks, and the
+                // values above each other on the stack in that order.
+                let (keys, n) = self.constant(keys)?.as_reference()?;
+                self.spend(n)?;
+
+                let width = types.width(*value);
+                let stride = width
+                    .checked_add(1)
+                    .ok_or_else(|| fault(Fault::ListTooLarge))?;
+                let words = n
+                    .checked_mul(stride)
+                    .ok_or_else(|| fault(Fault::ListTooLarge))?;
+                let values = n
+                    .checked_mul(width)
+                    .ok_or_else(|| fault(Fault::ListTooLarge))?;
+                let top = self
+                    .sp
+                    .checked_sub(values)
+                    .ok_or_else(|| fault(Fault::ListPastStack))?;
+                let from = self
+                    .stack_base
+                    .checked_add(top)
+                    .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
+                self.heap = self
+                    .heap
+                    .checked_sub(words)
+                    .ok_or_else(|| fault(Fault::UndeclaredHeap))?;
+                let at = self.alloc(words)?;
+
+                for n in 0..n {
+                    let entry = n.checked_mul(stride).and_then(|e| e.checked_add(at));
+                    let key = self.get(keys.checked_add(n))?;
+                    self.put(entry, key)?;
+
+                    for w in 0..width {
+                        let word = n
+                            .checked_mul(width)
+                            .and_then(|v| v.checked_add(from)?.checked_add(w));
+                        let dest = entry.and_then(|e| e.checked_add(1)?.checked_add(w));
+                        let word = self.get(word)?;
+                        self.put(dest, word)?;
+                    }
+                }
+
+                self.sp = top;
+                Word::reference(at, n)?
+            }
             Instr::Min(n) | Instr::Max(n) => {
                 self.spend(size(n)?)?;
                 let mut best = self.pop_int()?;

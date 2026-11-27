@@ -278,6 +278,18 @@ enum Pattern {
 }
 
 impl Pattern {
+    /// Whether every `Map<K, V>` fits it, whatever its `V`.
+    fn takes_any_map(&self) -> bool {
+        match self {
+            Self::Map => true,
+            // A map's methods are generic over its `K` and `V`.
+            Self::Method(name) => {
+                methods::find(&Type::map(Type::int(), Type::bool()), name).is_some()
+            }
+            _ => false,
+        }
+    }
+
     /// Whether every `List<T>` fits it, whatever its `T`.
     fn takes_any_list(&self) -> bool {
         match self {
@@ -293,6 +305,10 @@ impl Pattern {
 enum Up {
     /// An entry of a list.
     Entry,
+    /// A value of a map.
+    MapValue,
+    /// A key of a map.
+    MapKey,
     /// A list indexed by an `Int`.
     ListOf,
     /// An option unwrapped with `!`.
@@ -422,6 +438,47 @@ impl Want {
                     .into_iter()
                     .filter_map(|p| match p {
                         Pattern::Type(Type(Kind::List(t))) => Some(Pattern::Type(*t)),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The values of the maps this takes.
+    fn map_value(self) -> Self {
+        match self {
+            Self::Any => Self::Any,
+            Self::OneOf(patterns) if patterns.iter().any(Pattern::takes_any_map) => Self::Any,
+            Self::OneOf(patterns) => Self::OneOf(
+                patterns
+                    .into_iter()
+                    .filter_map(|p| match p {
+                        Pattern::Type(Type(Kind::Map(_, v))) => Some(Pattern::Type(*v)),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The keys of the maps this takes: an `Int` or a `String`.
+    fn map_key(self) -> Self {
+        let any = || {
+            Self::OneOf(vec![
+                Pattern::Type(Type::int()),
+                Pattern::Type(Type::string()),
+            ])
+        };
+
+        match self {
+            Self::Any => any(),
+            Self::OneOf(patterns) if patterns.iter().any(Pattern::takes_any_map) => any(),
+            Self::OneOf(patterns) => Self::OneOf(
+                patterns
+                    .into_iter()
+                    .filter_map(|p| match p {
+                        Pattern::Type(Type(Kind::Map(k, _))) => Some(Pattern::Type(*k)),
                         _ => None,
                     })
                     .collect(),
@@ -743,12 +800,31 @@ impl Structure {
                         }
                     }
                 }
+                Node(Repr::Map { entries }) => {
+                    let key = entries.iter().any(|(k, _)| *k == at);
+                    let sibling = entries
+                        .iter()
+                        .map(|(k, v)| if key { *k } else { *v })
+                        .filter(|e| *e != at)
+                        .find_map(|e| self.type_of(env, e));
+
+                    match sibling {
+                        Some(ty) => Want::exactly(ty),
+                        None => {
+                            steps_up.push(if key { Up::MapKey } else { Up::MapValue });
+                            at = parent;
+                            continue;
+                        }
+                    }
+                }
                 _ => Want::Any,
             };
         };
 
         steps_up.into_iter().rev().fold(want, |want, up| match up {
             Up::Entry => want.entry(),
+            Up::MapValue => want.map_value(),
+            Up::MapKey => want.map_key(),
             Up::ListOf => want.list_of(),
             Up::OptionOf => want.option_of(),
         })
@@ -841,6 +917,30 @@ impl Structure {
             }
             _ => None,
         };
+
+        // A map's key: a literal.
+        let key = matches!(
+            self.parent(at).and_then(|p| self.get(p)),
+            Some(Node(Repr::Map { entries })) if entries.iter().any(|(k, _)| *k == at)
+        );
+
+        if key {
+            let literals = [
+                ("0", Repr::Int(0), Type::int()),
+                ("\"\"", Repr::String(String::new()), Type::string()),
+            ];
+
+            for (label, repr, ty) in literals {
+                if want.fits(&ty) {
+                    let (label, ty) = (label.to_owned(), Some(ty));
+                    offer(&mut out, label, CompletionKind::Literal, ty, None, || {
+                        Expr::Literal(repr)
+                    });
+                }
+            }
+
+            return out;
+        }
 
         if let Some(fields) = &record {
             for name in fields.keys() {
@@ -945,6 +1045,22 @@ impl Structure {
             });
         }
 
+        let map = match want {
+            Want::Any => Some(None),
+            Want::OneOf(patterns) => patterns.iter().find_map(|p| match p {
+                Pattern::Type(ty @ Type(Kind::Map(..))) => Some(Some(ty.clone())),
+                Pattern::Map => Some(None),
+                _ => None,
+            }),
+        };
+
+        if let Some(ty) = map {
+            let label = format!("{{{HOLE}: {HOLE}}}");
+            offer(&mut out, label, CompletionKind::Literal, ty, None, || {
+                Expr::Map
+            });
+        }
+
         let operators = [
             (
                 Type::int(),
@@ -1036,6 +1152,8 @@ pub(crate) enum Expr {
     Literal(Repr),
     /// `[_]`.
     List,
+    /// `{_: _}`.
+    Map,
     /// `_ op _`.
     Binary(BinaryOp),
     /// `op _`.
@@ -1065,6 +1183,9 @@ impl Expr {
             Self::Literal(repr) => repr.clone(),
             Self::List => Repr::List {
                 entries: vec![hole(s)?],
+            },
+            Self::Map => Repr::Map {
+                entries: vec![(hole(s)?, hole(s)?)],
             },
             Self::Binary(op) => Repr::Binary {
                 op: *op,

@@ -138,6 +138,7 @@ pub(crate) fn parse_with(source: &str, options: &Options) -> Result<Parsed, Diag
         groups: Vec::new(),
         parens: 0,
         brackets: 0,
+        braces: 0,
         depth: 0,
         max_depth: options.max_depth,
         too_deep: false,
@@ -186,6 +187,7 @@ fn starts_operand(kind: Syntax) -> bool {
             | Syntax::Bang
             | Syntax::OpenParen
             | Syntax::OpenBracket
+            | Syntax::OpenBrace
             | Syntax::IntegerToken
             | Syntax::StringToken
             | Syntax::True
@@ -208,6 +210,11 @@ enum Frame {
     },
     /// An open group, the last of `groups`.
     Group,
+    /// A map's entry, which starts at `start`: its key, then once `colon`
+    /// is passed its value. It binds more loosely than any operator, so
+    /// only a `,`, a closer or the end closes it, into an `Entry` node, or
+    /// an `Error` node without its `:`.
+    Entry { start: Checkpoint, colon: bool },
 }
 
 struct Group {
@@ -256,9 +263,11 @@ struct Parser<'a> {
     frames: Vec<Frame>,
     /// The open groups, innermost last.
     groups: Vec<Group>,
-    /// How many of `groups` a `)` closes, and how many a `]` does.
+    /// How many of `groups` a `)` closes, how many a `]` does and how
+    /// many a `}` does.
     parens: usize,
     brackets: usize,
+    braces: usize,
     /// The prefix and group frames on the stack.
     depth: usize,
     max_depth: usize,
@@ -404,22 +413,24 @@ impl Parser<'_> {
     }
 
     /// Skip tokens to where the expression can go on: a `,` that fits the
-    /// innermost group, a `)` or `]`, a binary operator or the end, outside
-    /// any group the skipped tokens open.
+    /// innermost group, a `:` after a map's key, a closer, a binary
+    /// operator or the end, outside any group the skipped tokens open.
     fn skip(&mut self) -> Result<(), Diagnostic> {
         let separated = self
             .innermost()
             .is_some_and(|group| group.delimiter.separated());
+        let key = self.entry() == Some(false);
         let mut depth = 0usize;
 
         while let Some(token) = self.peek() {
             match token.kind {
-                Syntax::OpenParen | Syntax::OpenBracket => depth = depth.saturating_add(1),
-                Syntax::CloseParen | Syntax::CloseBracket => match depth.checked_sub(1) {
+                kind if opens(kind) => depth = depth.saturating_add(1),
+                kind if closes(kind) => match depth.checked_sub(1) {
                     Some(d) => depth = d,
                     None => break,
                 },
                 Syntax::Comma if depth == 0 && separated => break,
+                Syntax::Colon if depth == 0 && key => break,
                 kind if depth == 0 && binary(kind).is_some() => break,
                 _ => {}
             }
@@ -430,14 +441,14 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// Skip what a group holds, up to the `)` or `]` closing it or the end.
+    /// Skip what a group holds, up to the closer closing it or the end.
     fn skip_group(&mut self) -> Result<(), Diagnostic> {
         let mut depth = 0usize;
 
         while let Some(token) = self.peek() {
             match token.kind {
-                Syntax::OpenParen | Syntax::OpenBracket => depth = depth.saturating_add(1),
-                Syntax::CloseParen | Syntax::CloseBracket => match depth.checked_sub(1) {
+                kind if opens(kind) => depth = depth.saturating_add(1),
+                kind if closes(kind) => match depth.checked_sub(1) {
                     Some(d) => depth = d,
                     None => break,
                 },
@@ -501,6 +512,7 @@ impl Parser<'_> {
             }
             Syntax::OpenParen => self.open(Delimiter::Paren, c, None, token),
             Syntax::OpenBracket => self.open(Delimiter::List, c, None, token),
+            Syntax::OpenBrace => self.open(Delimiter::Map, c, None, token),
             Syntax::IntegerToken => {
                 if parse_int(self.lexer_text(token), false).is_none() {
                     self.report(token.span(), ErrorKind::IntegerTooLarge);
@@ -563,10 +575,9 @@ impl Parser<'_> {
         self.report(at, ErrorKind::ExpectedExpression(found));
 
         let skip = token.is_some_and(|token| {
-            !matches!(
-                token.kind,
-                Syntax::Comma | Syntax::CloseParen | Syntax::CloseBracket
-            ) && binary(token.kind).is_none()
+            !matches!(token.kind, Syntax::Comma | Syntax::Colon)
+                && !closes(token.kind)
+                && binary(token.kind).is_none()
         });
 
         // An empty node goes before any whitespace, so the node it is part
@@ -615,6 +626,7 @@ impl Parser<'_> {
             Delimiter::Args => Nesting::Args,
             Delimiter::List => Nesting::List,
             Delimiter::Index => Nesting::Index,
+            Delimiter::Map => Nesting::Map,
         };
 
         let fits = self.nest(nesting, open.span());
@@ -647,13 +659,39 @@ impl Parser<'_> {
             return self.close_group(closed);
         }
 
-        if matches!(delimiter, Delimiter::Args | Delimiter::List)
-            && self.peek_kind() == Some(delimiter.close())
+        if matches!(
+            delimiter,
+            Delimiter::Args | Delimiter::List | Delimiter::Map
+        ) && self.peek_kind() == Some(delimiter.close())
         {
             return self.close_group(true);
         }
 
+        if delimiter == Delimiter::Map {
+            self.open_entry()?;
+        }
+
         Ok(State::Operand)
+    }
+
+    /// Start a map's entry at the next token.
+    fn open_entry(&mut self) -> Result<(), Diagnostic> {
+        let start = self.checkpoint()?;
+        self.frames.push(Frame::Entry {
+            start,
+            colon: false,
+        });
+        Ok(())
+    }
+
+    /// The map entry being parsed, if the innermost group is a map: whether
+    /// its `:` is passed.
+    fn entry(&self) -> Option<bool> {
+        self.frames.iter().rev().find_map(|frame| match frame {
+            Frame::Entry { colon, .. } => Some(Some(*colon)),
+            Frame::Group => Some(None),
+            _ => None,
+        })?
     }
 
     /// Close the group on top of the stack, at the peeked token if
@@ -680,6 +718,7 @@ impl Parser<'_> {
             (Delimiter::Paren, _) => self.close_at(&group.start, Syntax::Paren)?,
             (Delimiter::List, _) => self.close_at(&group.start, Syntax::List)?,
             (Delimiter::Index, _) => self.close_at(&group.start, Syntax::Index)?,
+            (Delimiter::Map, _) => self.close_at(&group.start, Syntax::Map)?,
             (Delimiter::Args, None) => return Err(internal("arguments without a node")),
         }
 
@@ -712,6 +751,10 @@ impl Parser<'_> {
                     };
                     (start.clone(), kind)
                 }
+                Some(Frame::Entry { start, colon }) if power == 0 => {
+                    let kind = if *colon { Syntax::Entry } else { Syntax::Error };
+                    (start.clone(), kind)
+                }
                 _ => break,
             };
 
@@ -736,6 +779,7 @@ impl Parser<'_> {
     fn count(&mut self, close: Syntax) -> &mut usize {
         match close {
             Syntax::CloseParen => &mut self.parens,
+            Syntax::CloseBrace => &mut self.braces,
             _ => &mut self.brackets,
         }
     }
@@ -815,11 +859,31 @@ impl Parser<'_> {
                 Ok(Some(State::Operator))
             }
             Syntax::Comma => self.comma(token).map(Some),
-            Syntax::CloseParen | Syntax::CloseBracket => self.closer(token).map(Some),
+            Syntax::Colon if self.entry() == Some(false) => {
+                // The key is complete; the entry stays open for its value.
+                self.reduce(OR)?;
+
+                if let Some(Frame::Entry { colon, .. }) = self.frames.last_mut() {
+                    *colon = true;
+                }
+
+                self.bump()?;
+                self.start = None;
+                self.primary = None;
+                Ok(Some(State::Operand))
+            }
+            kind if closes(kind) => self.closer(token).map(Some),
             _ => {
                 let open = self.innermost().map(|group| group.delimiter);
                 let (found, at) = self.found(Some(token));
-                self.report(at, ErrorKind::ExpectedOperator { found, open });
+
+                let kind = if self.entry() == Some(false) {
+                    ErrorKind::ExpectedKeyEnd(found)
+                } else {
+                    ErrorKind::ExpectedOperator { found, open }
+                };
+
+                self.report(at, kind);
                 self.skip()?;
                 self.close_at(&primary, Syntax::Error)?;
                 Ok(Some(State::Operator))
@@ -830,15 +894,25 @@ impl Parser<'_> {
     /// A `,` after an operand: the next entry of a list or arguments,
     /// otherwise an error, skipped with what follows it.
     fn comma(&mut self, token: Token) -> Result<State, Diagnostic> {
+        let key = self.entry() == Some(false);
         let (left, _) = self.reduce(0)?;
         let (found, at) = self.found(Some(token));
 
         let open = self.innermost().map(|group| group.delimiter);
 
         if open.is_some_and(Delimiter::separated) {
+            if key {
+                self.report(at, ErrorKind::ExpectedKeyEnd(found));
+            }
+
             self.bump()?;
             self.start = None;
             self.primary = None;
+
+            if open == Some(Delimiter::Map) {
+                self.open_entry()?;
+            }
+
             return Ok(State::Operand);
         }
 
@@ -855,8 +929,14 @@ impl Parser<'_> {
     /// closed by the wrong token, or with no group open it is reported
     /// and skipped.
     fn closer(&mut self, token: Token) -> Result<State, Diagnostic> {
+        // A map's key closed without its `:`.
+        let key = self.entry() == Some(false) && token.kind == Syntax::CloseBrace;
         let (left, _) = self.reduce(0)?;
         let (found, at) = self.found(Some(token));
+
+        if key {
+            self.report(at, ErrorKind::ExpectedKeyEnd(found));
+        }
 
         let matches = *self.count(token.kind) > 0;
 
@@ -886,6 +966,22 @@ impl Parser<'_> {
 
         self.close_group(true)
     }
+}
+
+/// Whether `kind` opens a group.
+fn opens(kind: Syntax) -> bool {
+    matches!(
+        kind,
+        Syntax::OpenParen | Syntax::OpenBracket | Syntax::OpenBrace
+    )
+}
+
+/// Whether `kind` closes a group.
+fn closes(kind: Syntax) -> bool {
+    matches!(
+        kind,
+        Syntax::CloseParen | Syntax::CloseBracket | Syntax::CloseBrace
+    )
 }
 
 fn internal(error: impl std::fmt::Display) -> Diagnostic {

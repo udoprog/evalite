@@ -10,6 +10,7 @@ use crate::debug::DebugInfo;
 use crate::env::{Environment, Overload};
 use crate::error::{Arity, Callee, Diagnostic, Diagnostics, ErrorKind, Reporter};
 use crate::lexer::parse_int;
+use crate::message::Key;
 use crate::methods::{self, Associated, MethodSig, PathError};
 use crate::parser::{Options, Parsed, parse_with};
 use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
@@ -190,6 +191,15 @@ enum Work<'a> {
         node: N<'a>,
         start: usize,
     },
+    /// After a map's values, in key order: `order[n]` is where the `n`th
+    /// of them is written, counting from 0. Its keys are the constant list
+    /// `keys` of type `key`.
+    Map {
+        node: N<'a>,
+        order: Vec<usize>,
+        keys: u32,
+        key: TypeId,
+    },
     /// After the parts of an expression already found to be in error: drop
     /// the `usize` values they left and give the expression the error
     /// type.
@@ -215,6 +225,7 @@ impl<'a> Work<'a> {
             | Work::IndexExit(node)
             | Work::Unwrap(node)
             | Work::List { node, .. }
+            | Work::Map { node, .. }
             | Work::Discard(node, _) => *node,
         }
     }
@@ -443,6 +454,12 @@ impl<'a> Compiler<'a> {
                 Work::IndexExit(node) => self.index_exit(node)?,
                 Work::Unwrap(node) => self.unwrap(node)?,
                 Work::List { node, start } => self.list(node, start)?,
+                Work::Map {
+                    node,
+                    order,
+                    keys,
+                    key,
+                } => self.map_exit(node, &order, keys, key)?,
                 Work::Discard(node, n) => {
                     self.pop_n(n)?;
                     self.push(self.error, *node.span());
@@ -569,6 +586,7 @@ impl<'a> Compiler<'a> {
                 let entries = parts.collect::<Vec<_>>();
                 work.extend(entries.into_iter().rev().map(Work::Enter));
             }
+            Syntax::Map => self.map(node, work)?,
             kind => return Err(internal(format!("{kind:?} is not an expression"))),
         }
 
@@ -1348,6 +1366,247 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// A map literal: its keys are checked here, as literals of one type
+    /// given once each, then its entries are compiled in key order.
+    fn map(&mut self, node: N<'a>, work: &mut Vec<Work<'a>>) -> Result<(), Diagnostic> {
+        // An `Error` part is an entry without its `:`, already reported.
+        let parts = node
+            .children()
+            .filter(|n| matches!(n.value(), Syntax::Entry | Syntax::Error))
+            .collect::<Vec<_>>();
+
+        if parts.is_empty() {
+            return Err(Diagnostic::new(*node.span(), ErrorKind::EmptyMap));
+        }
+
+        let mut entries = Vec::with_capacity(parts.len());
+        let mut keys = Vec::with_capacity(parts.len());
+        let mut fits = true;
+
+        for part in &parts {
+            if part.value() != Syntax::Entry {
+                fits = false;
+                continue;
+            }
+
+            let mut exprs = exprs(*part);
+
+            let (Some(key), Some(value)) = (exprs.next(), exprs.next()) else {
+                return Err(internal("a map entry without a key and a value"));
+            };
+
+            match self.key(key) {
+                MapKey::Literal(literal) => keys.push((literal, *key.span())),
+                MapKey::Broken => fits = false,
+                MapKey::Other => {
+                    self.report(Diagnostic::new(*key.span(), ErrorKind::MapKeyLiteral));
+                    fits = false;
+                }
+            }
+
+            entries.push((key, value));
+        }
+
+        let order = if fits { self.key_order(&keys) } else { None };
+
+        let Some(order) = order else {
+            // Its values are still checked, then dropped. Its keys are
+            // literals or already reported.
+            let values = parts.iter().filter_map(|part| match part.value() {
+                Syntax::Entry => exprs(*part).nth(1),
+                _ => Some(*part),
+            });
+            let values = values.collect::<Vec<_>>();
+            work.push(Work::Discard(node, values.len()));
+            work.extend(values.into_iter().rev().map(Work::Enter));
+            return Ok(());
+        };
+
+        // The keys, sorted, are a constant list.
+        let mut items = Vec::with_capacity(order.len());
+        let mut values = Vec::with_capacity(order.len());
+
+        for at in &order {
+            let (Some((literal, _)), Some((_, value))) = (keys.get(*at), entries.get(*at)) else {
+                return Err(internal("a map entry past the entries"));
+            };
+
+            items.push(match literal {
+                KeyLit::Int(n) => Scalar::Int(*n),
+                KeyLit::String(s) => Scalar::Const(self.string(s.clone())?),
+            });
+            values.push(*value);
+        }
+
+        let span = *node.span();
+
+        let key = match keys.first() {
+            Some((KeyLit::Int(_), _)) => self.int,
+            _ => self.node(TypeNode::String, span)?,
+        };
+
+        self.node(TypeNode::List(key), span)?;
+        let c = count(self.constants.len())?;
+        self.constants.push(Constant::List { entry: key, items });
+
+        work.push(Work::Map {
+            node,
+            order,
+            keys: c,
+            key,
+        });
+        work.extend(values.into_iter().rev().map(Work::Enter));
+        Ok(())
+    }
+
+    /// Where each of `keys`, in the order they are written, goes in key
+    /// order, if they are of one type and each given once; each that is not
+    /// is reported.
+    fn key_order(&mut self, keys: &[(KeyLit, Span<u32>)]) -> Option<Vec<usize>> {
+        let mut fits = true;
+
+        if let Some((first, _)) = keys.first() {
+            for (at, (key, span)) in keys.iter().enumerate().skip(1) {
+                if key.is_int() != first.is_int() {
+                    fits = false;
+                    self.report(Diagnostic::new(
+                        *span,
+                        ErrorKind::MapKeyMixed {
+                            index: at.saturating_add(1),
+                            expected: first.ty(),
+                            found: key.ty(),
+                        },
+                    ));
+                }
+            }
+        }
+
+        if !fits {
+            return None;
+        }
+
+        // The sort is stable, so a key given again follows where it is
+        // first given, and each repeat is found by the one sort.
+        let mut order = (0..keys.len()).collect::<Vec<_>>();
+        order.sort_by(|a, b| keys.get(*a).map(|k| &k.0).cmp(&keys.get(*b).map(|k| &k.0)));
+
+        let mut first: Option<&(KeyLit, Span<u32>)> = None;
+        let mut repeats = Vec::new();
+
+        for entry in order.iter().filter_map(|at| keys.get(*at)) {
+            match first {
+                Some((key, at)) if *key == entry.0 => {
+                    let key = match key {
+                        KeyLit::Int(n) => Key::Int(*n),
+                        KeyLit::String(s) => Key::string(s),
+                    };
+
+                    repeats.push(Diagnostic::new(
+                        entry.1,
+                        ErrorKind::RepeatedKey {
+                            key: key.to_string(),
+                            first: *at,
+                        },
+                    ));
+                }
+                _ => first = Some(entry),
+            }
+        }
+
+        if repeats.is_empty() {
+            return Some(order);
+        }
+
+        for repeat in repeats {
+            self.report(repeat);
+        }
+
+        None
+    }
+
+    /// The value of the map key `node`.
+    fn key(&self, node: N<'_>) -> MapKey {
+        let (node, negative) = match node.value() {
+            Syntax::Unary if operator(node) == Some(Syntax::Minus) => match exprs(node).next() {
+                Some(operand) => (operand, true),
+                None => return MapKey::Broken,
+            },
+            _ => (node, false),
+        };
+
+        match node.value() {
+            Syntax::Integer => match parse_int(self.text(node), negative) {
+                Some((n, _)) => MapKey::Literal(KeyLit::Int(n)),
+                None => MapKey::Broken,
+            },
+            Syntax::String if !negative => match unescape(self.text(node)) {
+                Some(s) => MapKey::Literal(KeyLit::String(s)),
+                None => MapKey::Broken,
+            },
+            Syntax::Error => MapKey::Broken,
+            _ => MapKey::Other,
+        }
+    }
+
+    /// After a map's values, in key order.
+    fn map_exit(
+        &mut self,
+        node: N<'a>,
+        order: &[usize],
+        keys: u32,
+        key: TypeId,
+    ) -> Result<(), Diagnostic> {
+        let values = self.pop_n(order.len())?;
+        let span = *node.span();
+
+        // The values in the order they are written.
+        let mut written = vec![None; order.len()];
+
+        for (value, at) in values.iter().zip(order) {
+            if let Some(slot) = written.get_mut(*at) {
+                *slot = Some(*value);
+            }
+        }
+
+        let written = written
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| internal("a map value missing"))?;
+
+        let Some(first) = written.first() else {
+            return Err(internal("a map without entries"));
+        };
+
+        let entry = first.ty;
+        let mut fits = entry != self.error;
+
+        for (at, value) in written.iter().enumerate().skip(1) {
+            if value.ty == self.error {
+                fits = false;
+            } else if entry != self.error && value.ty != entry {
+                fits = false;
+                self.report(Diagnostic::new(
+                    value.span,
+                    ErrorKind::MapValue {
+                        index: at.saturating_add(1),
+                        expected: self.ty(entry),
+                        found: self.ty(value.ty),
+                    },
+                ));
+            }
+        }
+
+        if !fits {
+            self.push(self.error, span);
+            return Ok(());
+        }
+
+        let ty = self.node(TypeNode::Map { key, value: entry }, span)?;
+        self.emit(Instr::Map { keys, map: ty });
+        self.push(ty, span);
+        Ok(())
+    }
+
     /// The program, unless any diagnostic was reported.
     fn finish(self) -> Result<(Program, DebugInfo), Diagnostics> {
         if let Some(diagnostics) = self.reporter.finish() {
@@ -1404,6 +1663,36 @@ fn literal(node: N<'_>, source: &str) -> (Option<Literal>, Span<u32>) {
     (literal, *node.span())
 }
 
+/// What a map's key is.
+enum MapKey {
+    Literal(KeyLit),
+    /// In error, already reported.
+    Broken,
+    /// Other than a literal.
+    Other,
+}
+
+/// A map key's value. Their order is the machine's: `Int`s by value,
+/// `String`s by their bytes.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum KeyLit {
+    Int(i64),
+    String(String),
+}
+
+impl KeyLit {
+    fn is_int(&self) -> bool {
+        matches!(self, Self::Int(_))
+    }
+
+    fn ty(&self) -> Type {
+        match self {
+            Self::Int(_) => Type::int(),
+            Self::String(_) => Type::string(),
+        }
+    }
+}
+
 fn is_expr(kind: Syntax) -> bool {
     matches!(
         kind,
@@ -1420,6 +1709,7 @@ fn is_expr(kind: Syntax) -> bool {
             | Syntax::Index
             | Syntax::Unwrap
             | Syntax::List
+            | Syntax::Map
             | Syntax::Error
     )
 }
