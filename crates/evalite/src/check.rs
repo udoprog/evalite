@@ -208,7 +208,8 @@ struct Compiler<'a> {
     constants: Vec<Constant>,
     strings: HashMap<String, u32>,
     globals: Vec<Global>,
-    global_ids: HashMap<String, u32>,
+    /// Where each global used so far is held, in words, and its type.
+    global_ids: HashMap<String, (u32, TypeId)>,
     functions: Vec<HostFunction>,
     function_ids: HashMap<(String, Vec<TypeId>), u32>,
     code: Vec<Instr>,
@@ -517,8 +518,13 @@ impl<'a> Compiler<'a> {
         Ok(c)
     }
 
-    /// Where the global `name` is held, in words, and its type.
+    /// Where the global `name` is held, in words, and its type. A global
+    /// is interned the first time it is used.
     fn global(&mut self, name: &str, at: Span<u32>) -> Result<(u32, TypeId), Diagnostic> {
+        if let Some(found) = self.global_ids.get(name) {
+            return Ok(*found);
+        }
+
         let Some(ty) = self.env.values.get(name) else {
             let kind = if self.env.functions.contains_key(name) {
                 ErrorKind::FunctionAsValue(name.to_owned())
@@ -533,18 +539,13 @@ impl<'a> Compiler<'a> {
         };
 
         let ty = self.intern(ty, at)?;
-
-        if let Some(g) = self.global_ids.get(name) {
-            return Ok((*g, ty));
-        }
-
         let g = count(self.global_words)?;
         self.global_words = self.global_words.saturating_add(self.types.width(ty));
         self.globals.push(Global {
             name: name.to_owned(),
             ty,
         });
-        self.global_ids.insert(name.to_owned(), g);
+        self.global_ids.insert(name.to_owned(), (g, ty));
         Ok((g, ty))
     }
 

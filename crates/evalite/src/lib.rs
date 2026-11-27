@@ -530,6 +530,9 @@ mod highlight_tests;
 #[cfg(test)]
 mod literal_tests;
 
+#[cfg(test)]
+mod types_tests;
+
 pub use self::check::{compile, compile_debug, compile_with};
 pub use self::complete::{CompleteError, Completion, CompletionKind};
 pub use self::debug::DebugInfo;

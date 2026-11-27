@@ -1,7 +1,8 @@
 use crate::message::{Invalid, Message, StoreError};
-use std::collections::hash_map::Entry;
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
 
 use musli::{Decode, Encode};
 
@@ -404,13 +405,38 @@ pub(crate) enum TypeNode {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Types {
     nodes: Vec<TypeNode>,
-    ids: HashMap<TypeNode, TypeId>,
+    /// The latest type of each hash of its node, with the earlier ones of
+    /// the same hash chained through `next`. The leaves are not here.
+    heads: HashMap<u64, TypeId, BuildHasherDefault<Passthrough>>,
+    /// For each type, the earlier one of the same hash.
+    next: Vec<Option<TypeId>>,
+    hasher: RandomState,
     /// How deeply each type nests.
     depths: Vec<usize>,
     /// The words a value of each type takes where it is held.
     widths: Vec<usize>,
     /// The ids of `Int`, `Bool` and `String`, found without hashing.
     leaves: [Option<TypeId>; 3],
+}
+
+/// Hashes that are already hashes.
+#[derive(Debug, Clone, Copy, Default)]
+struct Passthrough(u64);
+
+impl Hasher for Passthrough {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(*b);
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
+    }
 }
 
 fn leaf(node: &TypeNode) -> Option<usize> {
@@ -438,8 +464,48 @@ impl Types {
     pub(crate) fn find(&self, node: &TypeNode) -> Option<TypeId> {
         match leaf(node) {
             Some(n) => self.leaves.get(n).copied().flatten(),
-            None => self.ids.get(node).copied(),
+            None => self.lookup(self.hash_node(node), |n| n == node),
         }
+    }
+
+    /// The hash of a node with these parts, which are named for a record's
+    /// fields. Equal nodes have equal hashes, without building the node.
+    fn hash_parts<'a>(&self, tag: u8, parts: impl Iterator<Item = (&'a str, TypeId)>) -> u64 {
+        let mut hasher = self.hasher.build_hasher();
+        tag.hash(&mut hasher);
+
+        for (name, ty) in parts {
+            name.hash(&mut hasher);
+            ty.hash(&mut hasher);
+        }
+
+        hasher.finish()
+    }
+
+    fn hash_node(&self, node: &TypeNode) -> u64 {
+        match node {
+            TypeNode::Int | TypeNode::Bool | TypeNode::String => 0,
+            TypeNode::List(t) => self.hash_parts(1, std::iter::once(("", *t))),
+            TypeNode::Option(t) => self.hash_parts(2, std::iter::once(("", *t))),
+            TypeNode::Record(fields) => {
+                self.hash_parts(3, fields.iter().map(|f| (f.name.as_str(), f.ty)))
+            }
+        }
+    }
+
+    /// The type of this hash that `is` accepts.
+    fn lookup(&self, hash: u64, is: impl Fn(&TypeNode) -> bool) -> Option<TypeId> {
+        let mut at = self.heads.get(&hash).copied();
+
+        while let Some(id) = at {
+            if self.nodes.get(id.index()).is_some_and(&is) {
+                return Some(id);
+            }
+
+            at = self.next.get(id.index()).copied().flatten();
+        }
+
+        None
     }
 
     /// Whether a value of type `id` is one word that is never
@@ -503,18 +569,30 @@ impl Types {
     /// The id of `node`, adding it when new. `None` when the table is
     /// full or the type nests past [`MAX_TYPE_DEPTH`].
     pub(crate) fn add(&mut self, node: TypeNode) -> Option<TypeId> {
-        let leaf = leaf(&node);
+        let hash = self.hash_node(&node);
 
-        if let Some(id) = leaf.and_then(|n| self.leaves.get(n).copied().flatten()) {
+        if let Some(id) = match leaf(&node) {
+            Some(n) => self.leaves.get(n).copied().flatten(),
+            None => self.lookup(hash, |n| *n == node),
+        } {
             return Some(id);
         }
 
+        self.add_new(node, hash)
+    }
+
+    /// Add `node`, which is not in the table and has this hash.
+    fn add_new(&mut self, node: TypeNode, hash: u64) -> Option<TypeId> {
         let depth = match &node {
             TypeNode::Int | TypeNode::Bool | TypeNode::String => 0,
             TypeNode::List(id) | TypeNode::Option(id) => self.depth(*id),
             TypeNode::Record(fields) => fields.iter().map(|f| self.depth(f.ty)).max().unwrap_or(0),
         }
         .saturating_add(1);
+
+        if depth > MAX_TYPE_DEPTH {
+            return None;
+        }
 
         let width = match &node {
             TypeNode::Option(inner) if !self.has_niche(*inner) => {
@@ -523,26 +601,22 @@ impl Types {
             _ => 1,
         };
 
-        // One hash of the node, whether it is new or not.
-        let entry = match self.ids.entry(node) {
-            Entry::Occupied(entry) => return Some(*entry.get()),
-            Entry::Vacant(entry) => entry,
-        };
-
-        if depth > MAX_TYPE_DEPTH {
-            return None;
-        }
-
         let id = TypeId(u32::try_from(self.nodes.len()).ok()?);
-        self.nodes.push(entry.key().clone());
-        self.depths.push(depth);
-        self.widths.push(width);
-        entry.insert(id);
+        let leaf = leaf(&node);
+
+        let before = match leaf {
+            Some(_) => None,
+            None => self.heads.insert(hash, id),
+        };
 
         if let Some(slot) = leaf.and_then(|n| self.leaves.get_mut(n)) {
             *slot = Some(id);
         }
 
+        self.nodes.push(node);
+        self.next.push(before);
+        self.depths.push(depth);
+        self.widths.push(width);
         Some(id)
     }
 
@@ -552,6 +626,14 @@ impl Types {
         enum Step<'a> {
             Visit(&'a Type),
             Build(&'a Type),
+        }
+
+        // The leaves, which most types are, need no work lists.
+        match ty {
+            Type(Kind::Int) => return self.add(TypeNode::Int),
+            Type(Kind::Bool) => return self.add(TypeNode::Bool),
+            Type(Kind::String) => return self.add(TypeNode::String),
+            _ => {}
         }
 
         let mut steps = vec![Step::Visit(ty)];
@@ -579,18 +661,42 @@ impl Types {
                         Type(Kind::Option(_)) => TypeNode::Option(done.pop()?),
                         Type(Kind::Record(fields)) => {
                             let at = done.len().checked_sub(fields.len())?;
-                            let ids = done.split_off(at);
+                            let ids = done.get(at..)?;
+                            let names =
+                                || fields.keys().map(String::as_str).zip(ids.iter().copied());
+                            let hash = self.hash_parts(3, names());
 
-                            TypeNode::Record(
-                                fields
-                                    .keys()
-                                    .zip(ids)
-                                    .map(|(name, ty)| FieldNode {
-                                        name: name.clone(),
-                                        ty,
-                                    })
-                                    .collect(),
-                            )
+                            // An existing record is found without cloning
+                            // the names.
+                            let found = self.lookup(hash, |n| match n {
+                                TypeNode::Record(f) => {
+                                    f.len() == fields.len()
+                                        && f.iter()
+                                            .zip(names())
+                                            .all(|(f, (name, ty))| f.ty == ty && f.name == name)
+                                }
+                                _ => false,
+                            });
+
+                            let id = match found {
+                                Some(id) => id,
+                                None => {
+                                    let node = TypeNode::Record(
+                                        names()
+                                            .map(|(name, ty)| FieldNode {
+                                                name: name.to_owned(),
+                                                ty,
+                                            })
+                                            .collect(),
+                                    );
+
+                                    self.add_new(node, hash)?
+                                }
+                            };
+
+                            done.truncate(at);
+                            done.push(id);
+                            continue;
                         }
                     };
 
