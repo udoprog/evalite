@@ -645,7 +645,7 @@
 //! Variables are declared and set with `--var name:Type=value`:
 //!
 //! ```text
-//! $ evalite eval 'wits.min(dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
+//! $ evalite eval 'wits.min(dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=Some(1)'
 //! 3 : Int
 //!
 //! $ evalite eval 'skills[3] * 2' --var 'skills:List<Int>=[1, 2]'

@@ -122,6 +122,12 @@ compiled, and nothing converts implicitly:
   `Option<Option<Int>>` is `None`, `Some(None)` or `Some(Some(1))`, and
   `x!!` unwraps both.
 
+  An expression writes one as `Some(x)`, or `None` where the option type
+  is known from where it is written: beside a typed entry of a list or
+  map (`[None, Some(1)]`), as an argument (`bonus_or(None)`), or as
+  `unwrap_or`'s default of an option of options. A bare `None` with
+  nothing to give it a type is an error.
+
 Types and values are written the same way outside an expression, such as
 in a form or on a command line: [`Type::parse`] reads `Option<List<Int>>`,
 `Map<Int, String>` or `{boxes: Int}`, and [`Value::parse`] reads a value
@@ -631,7 +637,7 @@ way to try the language. Install it with `cargo install evalite-cli`.
 Variables are declared and set with `--var name:Type=value`:
 
 ```text
-$ evalite eval 'wits.min(dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=some(1)'
+$ evalite eval 'wits.min(dexterity) + bonus.unwrap_or(0)' --var wits:Int=3 --var dexterity:Int=2 --var 'bonus:Option<Int>=Some(1)'
 3 : Int
 
 $ evalite eval 'skills[3] * 2' --var 'skills:List<Int>=[1, 2]'
