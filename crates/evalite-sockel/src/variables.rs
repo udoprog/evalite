@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use evalite::{Environment, Globals, Machine, Options, Program, Type, Value};
+use evalite::{
+    DEFAULT_FUEL, DEFAULT_MAX_LEN, DEFAULT_MEMORY, Environment, Globals, Limits, Machine, Options,
+    Program, Type, Value,
+};
 use phrasebook::yew023::use_phrases_with;
 use sockel::{
     Badge, Button, ButtonSize, ButtonVariant, Cluster, Disclosure, Gap, InputSize, Stack,
@@ -134,6 +137,17 @@ impl Variable {
     }
 }
 
+/// What a constant of the longest source the parser allows can need: a word
+/// of memory and four steps per byte of source (a list entry takes at least
+/// two bytes and about a word), on top of the defaults. Bounded, as the
+/// source is.
+fn limits() -> Limits {
+    let len = DEFAULT_MAX_LEN;
+    Limits::new()
+        .memory(DEFAULT_MEMORY.saturating_add(u32::try_from(len).unwrap_or(u32::MAX)))
+        .fuel(DEFAULT_FUEL.saturating_add((len as u64).saturating_mul(4)))
+}
+
 /// `source` compiled as a constant of type `ty` and run once, or the first
 /// error's message.
 fn constant(source: &str, ty: &Type) -> Result<Value, String> {
@@ -147,7 +161,7 @@ fn constant(source: &str, ty: &Type) -> Result<Value, String> {
     })?;
 
     let globals = Globals::new(&env);
-    let mut machine = Machine::default();
+    let mut machine = Machine::new(limits());
     let outcome = machine
         .load(&program, &globals)
         .and_then(|run| run.run())
@@ -365,5 +379,26 @@ pub fn VariablesEditor(props: &VariablesEditorProps) -> Html {
             }}>
             <Stack tag="ul" gap={Gap::Hair} class={sockel::class::PLAIN_LIST}>{ for rows }</Stack>
         </Disclosure>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn large_values_bind() {
+        let list = format!("[{}]", vec!["1"; 1100].join(", "));
+        assert!(Variable::new(0, "xs", "List<Int>", &list).binding().is_ok());
+
+        let big = format!("\"{}\"", "a".repeat(60000));
+        assert!(Variable::new(0, "s", "String", &big).binding().is_ok());
+    }
+
+    #[test]
+    fn value_past_the_source_limit_is_refused() {
+        let big = format!("\"{}\"", "a".repeat(DEFAULT_MAX_LEN + 1));
+        let err = Variable::new(0, "s", "String", &big).binding().unwrap_err();
+        assert_eq!(err.column(), Column::Value);
     }
 }

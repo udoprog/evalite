@@ -303,7 +303,9 @@ written once as `sig::Shape` with one type variable `T`:
 - evalite-sockel's `VariablesEditor` (and so the playground) does not use
   `Value::parse`: a variable's value is an expression, compiled with
   `compile_as` against an empty environment and the declared type, then run
-  once (7e8fbd2e, user's choice). So it is highlighted, its errors are
+  once (7e8fbd2e, user's choice) on a machine whose limits follow the parse
+  `max_len`: a word of memory and four steps per source byte over the
+  defaults, so any value the parser accepts runs, and nothing unbounded does. So it is highlighted, its errors are
   underlined in place, it completes `Some(_)`, `None` and record fields from
   the declared type, and it may compute (`[1, 2 * 3]`). No row reads another,
   so rows have no order and no cycles. `ExpressionEditor` takes the type as
