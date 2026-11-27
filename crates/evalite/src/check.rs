@@ -9,6 +9,7 @@ use crate::Type;
 use crate::debug::DebugInfo;
 use crate::env::{Environment, Overload};
 use crate::error::{Arity, Callee, Diagnostic, Diagnostics, ErrorKind, Reporter};
+use crate::lexer::parse_int;
 use crate::methods::{self, Associated, MethodSig, PathError};
 use crate::parser::{Options, Parsed, parse_with};
 use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
@@ -396,10 +397,8 @@ impl<'a> Compiler<'a> {
 
         match node.value() {
             Syntax::Integer => {
-                let value = self
-                    .text(node)
-                    .parse::<i64>()
-                    .map_err(|_| Diagnostic::new(span, ErrorKind::IntegerTooLarge))?;
+                let (value, _) = parse_int(self.text(node), false)
+                    .ok_or_else(|| Diagnostic::new(span, ErrorKind::IntegerTooLarge))?;
                 self.emit(Instr::Int(value));
                 self.push(self.int, span);
             }

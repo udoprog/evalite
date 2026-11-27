@@ -82,6 +82,8 @@ impl<'a> Lexer<'a> {
 
                 end
             }
+            // A `0x` without digits, as one token.
+            Some((_, '0')) if matches!(chars.next(), Some((_, 'x' | 'X'))) => 2,
             Some((_, c)) => c.len_utf8(),
             None => 0,
         };
@@ -133,6 +135,17 @@ impl<'a> Lexer<'a> {
 
         let token = match c {
             c if c.is_whitespace() => (Syntax::Whitespace, prefix(rest, char::is_whitespace)),
+            '0' if matches!(chars.clone().next(), Some('x' | 'X')) => {
+                // `0x` and the hexadecimal digits after it.
+                let digits = rest.get(2..).unwrap_or_default();
+                let len = prefix(digits, |c| c.is_ascii_hexdigit());
+
+                if len == 0 {
+                    return Err((self.error(2, ErrorKind::HexWithoutDigits), Syntax::Invalid));
+                }
+
+                (Syntax::IntegerToken, len.saturating_add(2))
+            }
             '0'..='9' => (Syntax::IntegerToken, prefix(rest, |c| c.is_ascii_digit())),
             'a'..='z' | 'A'..='Z' | '_' => {
                 let len = prefix(rest, |c| c.is_ascii_alphanumeric() || c == '_');
@@ -229,4 +242,28 @@ fn prefix(s: &str, f: impl Fn(char) -> bool) -> usize {
     s.char_indices()
         .find(|(_, c)| !f(*c))
         .map_or(s.len(), |(at, _)| at)
+}
+
+/// The value of an integer token's text, `negative` when a `-` is written
+/// before it, and whether it is written in hexadecimal (`0x1F`). `None` when
+/// it is past the range of `Int`. Takes time linear in the text.
+pub(crate) fn parse_int(text: &str, negative: bool) -> Option<(i64, bool)> {
+    let hex = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X"));
+
+    let (magnitude, hex) = match hex {
+        Some(digits) if digits.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            (u64::from_str_radix(digits, 16).ok()?, true)
+        }
+        Some(_) => return None,
+        None if text.bytes().all(|b| b.is_ascii_digit()) => (text.parse::<u64>().ok()?, false),
+        None => return None,
+    };
+
+    let value = if negative {
+        i64::try_from(i128::from(magnitude).checked_neg()?).ok()?
+    } else {
+        i64::try_from(magnitude).ok()?
+    };
+
+    Some((value, hex))
 }

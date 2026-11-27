@@ -93,7 +93,8 @@
 //! compiled, and nothing converts implicitly:
 //!
 //! - `Int`: a 64-bit signed integer, such as `12` (`-12` is `-` applied to
-//!   `12`).
+//!   `12`), or `0x1A2B` in hexadecimal: `0x` or `0X` and one or more digits
+//!   in either case, kept as hexadecimal when a [`Structure`] is edited.
 //! - `Bool`: `true` or `false`.
 //! - `String`: a literal such as `"Essence (1e)"`. `\"` and `\\` are its only
 //!   escapes.
@@ -196,7 +197,7 @@
 //!          | "(" expr ")" | "[" (expr ("," expr)*)? "]"
 //! args     = "(" (expr ("," expr)*)? ")"
 //! name     = [A-Za-z_][A-Za-z0-9_]*
-//! integer  = [0-9]+
+//! integer  = [0-9]+ | ("0x" | "0X") [0-9A-Fa-f]+
 //! string   = '"' ([^"\\] | '\"' | '\\')* '"'
 //! ```
 //!

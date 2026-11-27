@@ -44,6 +44,16 @@ const CONSTRUCTS: &[(&str, &str)] = &[
     ("- 12", "-12"),
     ("-(12)", "-(12)"),
     ("--12", "--12"),
+    ("0x1a2B", "0x1A2B"),
+    ("0X1f", "0x1F"),
+    ("0x00ff", "0xFF"),
+    ("-0x10", "-0x10"),
+    ("-(0x10)", "-(0x10)"),
+    ("0x7FFFFFFFFFFFFFFF", "0x7FFFFFFFFFFFFFFF"),
+    ("wits + 0xA * -0xb", "wits + 0xA * -0xB"),
+    ("(-0x10).abs()", "(-0x10).abs()"),
+    ("0x10.abs()", "0x10.abs()"),
+    ("[0x1, 0x2]", "[0x1, 0x2]"),
     ("-wits", "-wits"),
     ("!dead", "!dead"),
     ("!!dead", "!!dead"),
@@ -938,6 +948,95 @@ fn stored_form_is_stable() {
         97, 100, 5, 2, 0, 1, 1, 30, 2, 1, 0, 1, 6, 3, 0, 11, 1, 31, 2, 32, 6, 3, 0, 2, 1, 29, 2,
         33, 6, 3, 0, 0, 1, 25, 2, 34, 2, 35,
     ];
-    assert_eq!(bytes, golden);
+    // These bytes are format 1's. Format 2 writes the same nodes after its
+    // number, and still reads format 1.
+    assert_eq!(bytes[..2], golden[..2]);
+    assert_eq!((golden[2], bytes[2]), (1, 2));
+    assert_eq!(bytes[3..], golden[3..]);
     assert_eq!(Structure::from_bytes(golden).unwrap(), structure);
+    assert_eq!(Structure::from_bytes(&bytes).unwrap(), structure);
+
+    // A hexadecimal integer is a node of its own, after the others.
+    let hex = s("0x1F").to_bytes().unwrap();
+    assert_eq!(hex, [3, 0, 2, 1, 1, 13, 1, 0, 62, 2, 0]);
+}
+
+#[test]
+fn hexadecimal_integers_keep_their_spelling() {
+    let hex = s("0x1a2B");
+    assert_eq!(hex.get(hex.root()), Some(&Node(Repr::Hex(0x1A2B))));
+    assert_eq!(hex.get(hex.root()).and_then(Node::as_int), Some(0x1A2B));
+    assert_eq!(hex.to_text(), "0x1A2B");
+
+    let negative = s("-0x10");
+    assert_eq!(negative.get(negative.root()), Some(&Node(Repr::Hex(-16))));
+
+    // The same number written in decimal is another node.
+    assert_ne!(s("26"), s("0x1A"));
+
+    // A hexadecimal integer is the same program as the decimal one.
+    assert_eq!(
+        s("0x1A + wits")
+            .compile(&env())
+            .unwrap()
+            .to_bytes()
+            .unwrap(),
+        compile("26 + wits", &env()).unwrap().to_bytes().unwrap()
+    );
+
+    // The largest, and one past it.
+    let max = s("0x7fffffffffffffff");
+    assert_eq!(max.get(max.root()).and_then(Node::as_int), Some(i64::MAX));
+    let error = Structure::from_text("0x8000000000000000").unwrap_err();
+    assert_eq!(
+        error.first().map(Diagnostic::kind),
+        Some(&ErrorKind::IntegerTooLarge)
+    );
+    let error = Structure::from_text("0xFFFFFFFFFFFFFFFF").unwrap_err();
+    assert_eq!(
+        error.first().map(Diagnostic::kind),
+        Some(&ErrorKind::IntegerTooLarge)
+    );
+
+    // `i64::MIN` has no text as an expression, as a decimal one has none.
+    let error = Structure::from_text("-0x8000000000000000").unwrap_err();
+    assert_eq!(
+        error.first().map(Diagnostic::kind),
+        Some(&ErrorKind::IntegerTooLarge)
+    );
+    let mut min = Structure::new();
+    min.replace(min.root(), Node(Repr::Hex(i64::MIN))).unwrap();
+    assert_eq!(min.to_text(), "-0x8000000000000000");
+    assert!(min.compile(&env()).is_err());
+
+    // A node of another kind replaces it, and an integer written by hand is
+    // decimal.
+    let mut edit = s("0x10 + 1");
+    let left = edit.get(edit.root()).unwrap().children()[0];
+    edit.replace(left, Node::int(16)).unwrap();
+    assert_eq!(edit.to_text(), "16 + 1");
+}
+
+#[test]
+fn hexadecimal_integers_are_stored() {
+    let structure = s("wits + 0xAb");
+    let bytes = structure.to_bytes().unwrap();
+    let back = Structure::from_bytes(&bytes).unwrap();
+    assert_eq!(back, structure);
+    assert_eq!(back.to_text(), "wits + 0xAB");
+
+    // Format 1 is still read, and holds decimal integers alone.
+    let mut old = stored_with(vec![Node(Repr::Int(7))], 0);
+    assert_eq!(old[2], 2);
+    old[2] = 1;
+    let old = Structure::from_bytes(&old).unwrap();
+    assert_eq!(old.to_text(), "7");
+
+    // A format after this one is not.
+    let mut new = stored_with(vec![Node(Repr::Hex(7))], 0);
+    new[2] = 3;
+    assert!(matches!(
+        Structure::from_bytes(&new).map_err(|e| e.message().clone()),
+        Err(Message::WrongFormat { found: 3, reads: 2 })
+    ));
 }

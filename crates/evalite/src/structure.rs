@@ -13,6 +13,7 @@ use crate::check::compile_parsed;
 use crate::debug::DebugInfo;
 use crate::env::Environment;
 use crate::error::{Diagnostic, Diagnostics, ErrorKind};
+use crate::lexer::parse_int;
 use crate::message::{Invalid, Labels, Message, StoreError};
 use crate::parser::{Options, Tree, parse_with};
 use crate::program::Program;
@@ -21,8 +22,13 @@ use crate::types::{is_field_name, is_value_name};
 
 type N<'a> = TreeNode<'a, Syntax, Flavor>;
 
-/// What a stored structure starts with, so later versions can tell.
-const FORMAT: u32 = 1;
+/// What a stored structure starts with, so later versions can tell. Format 2
+/// adds [`Repr::Hex`]; format 1 is read as well, since its nodes are all
+/// format 2's.
+const FORMAT: u32 = 2;
+
+/// The oldest format [`Structure::from_bytes`] reads.
+const OLDEST_FORMAT: u32 = 1;
 
 /// How a hole is written as text, in a value's place or a member's name.
 pub const HOLE: &str = "_";
@@ -444,7 +450,7 @@ impl Node {
     /// ```
     pub fn as_int(&self) -> Option<i64> {
         match self.0 {
-            Repr::Int(n) => Some(n),
+            Repr::Int(n) | Repr::Hex(n) => Some(n),
             _ => None,
         }
     }
@@ -757,15 +763,21 @@ pub(crate) enum Repr {
     Unwrap {
         operand: NodeId,
     },
+    /// An integer written in hexadecimal, such as `0x1F`, or `-0x1F` when
+    /// negative. Added in format 2.
+    Hex(i64),
 }
 
 impl Repr {
     /// Its parts, in the order they are written.
     fn children(&self) -> Vec<NodeId> {
         match self {
-            Self::Hole | Self::Int(_) | Self::Bool(_) | Self::String(_) | Self::Name(_) => {
-                Vec::new()
-            }
+            Self::Hole
+            | Self::Int(_)
+            | Self::Hex(_)
+            | Self::Bool(_)
+            | Self::String(_)
+            | Self::Name(_) => Vec::new(),
             Self::Unary { operand, .. } | Self::Unwrap { operand } => vec![*operand],
             Self::Binary { left, right, .. } => vec![*left, *right],
             Self::Call { args, .. } | Self::List { entries: args } => args.clone(),
@@ -793,7 +805,7 @@ impl Repr {
         match self {
             Self::Binary { op, .. } => op.power(),
             Self::Unary { .. } => PREFIX,
-            Self::Int(n) if *n < 0 => PREFIX,
+            Self::Int(n) | Self::Hex(n) if *n < 0 => PREFIX,
             _ => ATOM,
         }
     }
@@ -1436,7 +1448,7 @@ impl Structure {
                 .context(Message::DecodingStructure)
         })?;
 
-        if stored.format != FORMAT {
+        if !(OLDEST_FORMAT..=FORMAT).contains(&stored.format) {
             return Err(StoreError::new(Message::WrongFormat {
                 found: stored.format,
                 reads: FORMAT,
@@ -1817,6 +1829,13 @@ fn render(nodes: &[Node], root: NodeId) -> (String, Vec<(NodeId, Span<u32>)>) {
         match node {
             Node(Repr::Hole) => out.push_str(HOLE),
             Node(Repr::Int(n)) => out.push_str(&n.to_string()),
+            Node(Repr::Hex(n)) => {
+                if *n < 0 {
+                    out.push('-');
+                }
+
+                out.push_str(&format!("0x{:X}", n.unsigned_abs()));
+            }
             Node(Repr::Bool(b)) => out.push_str(if *b { "true" } else { "false" }),
             Node(Repr::String(s)) => escape(&mut out, s),
             Node(Repr::Name(name)) => out.push_str(name),
@@ -1824,7 +1843,7 @@ fn render(nodes: &[Node], root: NodeId) -> (String, Vec<(NodeId, Span<u32>)>) {
                 out.push_str(op.symbol());
                 // `-(12)`, since `-12` is the integer.
                 let literal = *op == UnaryOp::Neg
-                    && matches!(get(*operand), Some(Node(Repr::Int(n))) if *n >= 0);
+                    && matches!(get(*operand), Some(Node(Repr::Int(n) | Repr::Hex(n))) if *n >= 0);
                 then.push(Emit::Node(*operand, literal || power(*operand) < PREFIX));
             }
             Node(Repr::Binary { op, left, right }) => {
@@ -2001,17 +2020,17 @@ fn from_tree(source: &str, tree: &Tree) -> Result<Structure, Diagnostic> {
 
         let built = match node.value() {
             Syntax::Unary if negative => {
-                let n = exprs(node)
+                let (n, hex) = exprs(node)
                     .next()
                     .map(text)
-                    .and_then(|t| format!("-{t}").parse::<i64>().ok())
+                    .and_then(|t| parse_int(t, true))
                     .ok_or_else(|| Diagnostic::new(*node.span(), ErrorKind::IntegerTooLarge))?;
-                Node(Repr::Int(n))
+                Node(int_repr(n, hex))
             }
             Syntax::Integer => {
-                Node(Repr::Int(text(node).parse().map_err(|_| {
-                    Diagnostic::new(*node.span(), ErrorKind::IntegerTooLarge)
-                })?))
+                let (n, hex) = parse_int(text(node), false)
+                    .ok_or_else(|| Diagnostic::new(*node.span(), ErrorKind::IntegerTooLarge))?;
+                Node(int_repr(n, hex))
             }
             Syntax::Bool => Node(Repr::Bool(text(node) == "true")),
             Syntax::String => Node(Repr::String(
@@ -2138,6 +2157,11 @@ fn exprs<'a>(node: N<'a>) -> impl Iterator<Item = N<'a>> {
         .flat_map(|args| args.children().filter(|n| is_expr(n.value())));
 
     direct.chain(args)
+}
+
+/// The node for an integer, kept in hexadecimal when it was written so.
+fn int_repr(n: i64, hex: bool) -> Repr {
+    if hex { Repr::Hex(n) } else { Repr::Int(n) }
 }
 
 fn operator(node: N<'_>) -> Option<Syntax> {

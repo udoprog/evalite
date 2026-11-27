@@ -178,6 +178,13 @@ fn literals() {
         ("12", "12"),
         ("007", "007"),
         ("9223372036854775807", "9223372036854775807"),
+        ("0x0", "0x0"),
+        ("0x1F", "0x1F"),
+        ("0X1f", "0X1f"),
+        ("0xdeadBEEF", "0xdeadBEEF"),
+        ("0x7FFFFFFFFFFFFFFF", "0x7FFFFFFFFFFFFFFF"),
+        ("-0x10", "(- 0x10)"),
+        ("0x1 + 0x2", "(+ 0x1 0x2)"),
         (r#""""#, r#""""#),
         (r#""Essence (1e)""#, r#""Essence (1e)""#),
         (r#""a \"b\" \\ é""#, r#""a \"b\" \\ é""#),
@@ -552,7 +559,31 @@ fn error_integer_too_large() {
         ("9223372036854775808", message, 0..19),
         ("-9223372036854775808", message, 1..20),
         ("a + 18446744073709551616", message, 4..24),
+        ("0x8000000000000000", message, 0..18),
+        ("0xFFFFFFFFFFFFFFFF", message, 0..18),
+        ("0x10000000000000000", message, 0..19),
+        ("-0x8000000000000000", message, 1..19),
+        ("a + 0X1ffffffffffffffff", message, 4..23),
     ]);
+}
+
+#[test]
+fn error_hex_without_digits() {
+    let message =
+        "`0x` starts a hexadecimal integer, expected digits `0` to `9` or `a` to `f` after it";
+
+    errors(&[
+        ("0x", message, 0..2),
+        ("0X + 1", message, 0..2),
+        ("1 + 0x", message, 4..6),
+        ("0xg", message, 0..2),
+        ("[0x, 1]", message, 1..3),
+    ]);
+
+    // Digits only after the `0x`, so a letter that is no digit starts
+    // something else.
+    let (message, _) = error("0x1g");
+    assert!(message.starts_with("expected an operator"), "{message}");
 }
 
 #[test]

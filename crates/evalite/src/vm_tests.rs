@@ -1887,3 +1887,13 @@ fn nested_options() {
         }
     }
 }
+
+#[test]
+fn hexadecimal_integers_evaluate() {
+    assert_eq!(eval("0x1F + 1").as_int(), Some(32));
+    assert_eq!(eval("0Xff").as_int(), Some(255));
+    assert_eq!(eval("-0x10").as_int(), Some(-16));
+    assert_eq!(eval("0x7FFFFFFFFFFFFFFF").as_int(), Some(i64::MAX));
+    assert_eq!(eval("0x1A2B3C4D").as_int(), Some(0x1A2B_3C4D));
+    assert_eq!(eval("0x0010 == 16").as_bool(), Some(true));
+}

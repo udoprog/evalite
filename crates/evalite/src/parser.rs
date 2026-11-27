@@ -1,7 +1,7 @@
 use syntree::{Builder, EmptyVec, Span, TreeIndex};
 
 use crate::error::{Delimiter, Diagnostic, Diagnostics, ErrorKind, Found, Nesting, Reporter};
-use crate::lexer::{Lexer, Token, span};
+use crate::lexer::{Lexer, Token, parse_int, span};
 use crate::syntax::Syntax;
 
 syntree::flavor! {
@@ -502,7 +502,7 @@ impl Parser<'_> {
             Syntax::OpenParen => self.open(Delimiter::Paren, c, None, token),
             Syntax::OpenBracket => self.open(Delimiter::List, c, None, token),
             Syntax::IntegerToken => {
-                if self.lexer_text(token).parse::<i64>().is_err() {
+                if parse_int(self.lexer_text(token), false).is_none() {
                     self.report(token.span(), ErrorKind::IntegerTooLarge);
                     return self.literal(c, Syntax::Error);
                 }

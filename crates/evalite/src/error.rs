@@ -381,6 +381,8 @@ pub(crate) enum ErrorKind {
     InvalidEscape(char),
     /// An integer past the range of `Int`.
     IntegerTooLarge,
+    /// A `0x` not followed by a hexadecimal digit.
+    HexWithoutDigits,
     /// An operand was expected.
     ExpectedExpression(Found),
     /// An operand was complete, but what follows cannot continue it. `open`
@@ -648,6 +650,9 @@ impl fmt::Display for Diagnostic {
             ),
             ErrorKind::IntegerTooLarge => {
                 write!(f, "this integer is too large, the largest is {}", i64::MAX)
+            }
+            ErrorKind::HexWithoutDigits => {
+                f.write_str("`0x` starts a hexadecimal integer, expected digits `0` to `9` or `a` to `f` after it")
             }
             ErrorKind::ExpectedExpression(found) => {
                 write!(f, "expected an expression, found {found}")

@@ -871,3 +871,20 @@ fn deep_structures() {
         .collect::<Vec<_>>();
     assert!(labels.is_empty(), "{labels:?}");
 }
+
+#[test]
+fn hexadecimal_integers_add_no_candidates() {
+    // A hexadecimal integer fills a place as a decimal one does, and is
+    // offered nowhere.
+    for (hex, decimal) in [
+        ("0x1F + _", "31 + _"),
+        ("_ + 0xff", "_ + 255"),
+        ("0x10._()", "16._()"),
+        ("[0x1, _]", "[1, _]"),
+    ] {
+        assert_eq!(labels(hex, 0, None), labels(decimal, 0, None), "{hex}");
+    }
+
+    let all = labels("_", 0, Some(&Type::int()));
+    assert!(all.iter().all(|label| !label.starts_with("0x")), "{all:?}");
+}

@@ -166,3 +166,26 @@ fn recovered_errors() {
         assert_eq!(errors, rejected, "{source:?}");
     }
 }
+
+#[test]
+fn hexadecimal_integers() {
+    use Class::*;
+
+    assert_eq!(
+        texts("0x1F + 0Xab"),
+        [
+            (Number, "0x1F"),
+            (Whitespace, " "),
+            (Operator, "+"),
+            (Whitespace, " "),
+            (Number, "0Xab"),
+        ]
+    );
+
+    // Without digits, `0x` is one rejected token, not a number and a name.
+    assert_eq!(texts("0x")[0].1, "0x");
+    assert_ne!(texts("0x")[0].0, Number);
+    covers("0x");
+    covers("0xg + 0x1F");
+    covers("-0x10");
+}
