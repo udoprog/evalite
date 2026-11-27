@@ -7,7 +7,70 @@ use std::fmt;
 
 use crate::Type;
 use crate::error::Arity;
-use crate::types::Kind;
+use crate::types::{Kind, TypeId, TypeNode, Types};
+
+/// A type as a [`Shape`] matches it: its outer node, and what it holds.
+/// Both a [`Type`] and a [`TypeId`] in its table are one, so the checker
+/// matches the ids it has without building the types they name, which
+/// may be large.
+pub(crate) trait View: Copy + PartialEq {
+    fn view(self) -> Viewed<Self>;
+}
+
+/// The outer node of a [`View`].
+pub(crate) enum Viewed<V> {
+    Int,
+    Bool,
+    String,
+    List(V),
+    Option(V),
+    Map(V, V),
+    /// A record, which no shape matches but `T`.
+    Record,
+}
+
+impl View for &Type {
+    fn view(self) -> Viewed<Self> {
+        match &self.0 {
+            Kind::Int => Viewed::Int,
+            Kind::Bool => Viewed::Bool,
+            Kind::String => Viewed::String,
+            Kind::List(entry) => Viewed::List(entry),
+            Kind::Option(value) => Viewed::Option(value),
+            Kind::Map(key, value) => Viewed::Map(key, value),
+            Kind::Record(_) => Viewed::Record,
+        }
+    }
+}
+
+/// A type in a table. Tables hold each type once, so two are equal when
+/// their ids are, in constant time.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Id<'a>(pub(crate) &'a Types, pub(crate) TypeId);
+
+impl PartialEq for Id<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.1 == other.1
+    }
+}
+
+impl View for Id<'_> {
+    fn view(self) -> Viewed<Self> {
+        let Self(types, id) = self;
+
+        match types.get(id) {
+            Some(TypeNode::Int) => Viewed::Int,
+            Some(TypeNode::Bool) => Viewed::Bool,
+            Some(TypeNode::String) => Viewed::String,
+            Some(TypeNode::List(entry)) => Viewed::List(Self(types, *entry)),
+            Some(TypeNode::Option(value)) => Viewed::Option(Self(types, *value)),
+            Some(TypeNode::Map { key, value }) => {
+                Viewed::Map(Self(types, *key), Self(types, *value))
+            }
+            Some(TypeNode::Record(_)) | None => Viewed::Record,
+        }
+    }
+}
 
 /// A parameter's or result's type, which may hold the type variable `T`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,21 +100,24 @@ impl Shape {
 
     /// Whether `ty` is of this shape, binding `T` in `t` the first time it
     /// is met, and requiring the bound type every time after.
-    pub(crate) fn bind(self, ty: &Type, t: &mut Option<Type>) -> bool {
-        match (self, ty) {
-            (Self::Int, Type(Kind::Int))
-            | (Self::Bool, Type(Kind::Bool))
-            | (Self::String, Type(Kind::String)) => true,
-            (Self::Var, ty) => match t {
-                Some(bound) => bound == ty,
+    pub(crate) fn bind<V: View>(self, ty: V, t: &mut Option<V>) -> bool {
+        if self == Self::Var {
+            return match t {
+                Some(bound) => *bound == ty,
                 None => {
-                    *t = Some(ty.clone());
+                    *t = Some(ty);
                     true
                 }
-            },
-            (Self::List(inner), Type(Kind::List(entry))) => inner.bind(entry, t),
-            (Self::Option(inner), Type(Kind::Option(value))) => inner.bind(value, t),
-            (Self::Map(k, v), Type(Kind::Map(key, value))) => k.bind(key, t) && v.bind(value, t),
+            };
+        }
+
+        match (self, ty.view()) {
+            (Self::Int, Viewed::Int)
+            | (Self::Bool, Viewed::Bool)
+            | (Self::String, Viewed::String) => true,
+            (Self::List(inner), Viewed::List(entry)) => inner.bind(entry, t),
+            (Self::Option(inner), Viewed::Option(value)) => inner.bind(value, t),
+            (Self::Map(k, v), Viewed::Map(key, value)) => k.bind(key, t) && v.bind(value, t),
             _ => false,
         }
     }
@@ -114,6 +180,26 @@ pub(crate) enum Mismatch {
     Argument(usize, String),
 }
 
+/// Why arguments do not fit a [`Signature`], before it is described:
+/// describing the parameter an argument misses may build the type `T` is,
+/// so only a reported one is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Unfit<V> {
+    Mismatch(Mismatch),
+    /// The argument at this index, from 0, is not of this parameter, with
+    /// `T` as bound so far.
+    Argument(usize, Shape, Option<V>),
+}
+
+impl<V> Unfit<V> {
+    pub(crate) fn map<W>(self, f: impl FnOnce(V) -> W) -> Unfit<W> {
+        match self {
+            Self::Mismatch(mismatch) => Unfit::Mismatch(mismatch),
+            Self::Argument(n, param, t) => Unfit::Argument(n, param, t.map(f)),
+        }
+    }
+}
+
 impl Signature {
     pub(crate) const fn new(params: &'static [Shape], ret: Shape) -> Self {
         Self {
@@ -160,31 +246,34 @@ impl Signature {
         }
     }
 
-    /// The result of calling it with `args`, `t` already bound by a
-    /// method's receiver, or why `args` do not fit.
-    pub(crate) fn call(&self, args: &[Type], mut t: Option<Type>) -> Result<Type, Mismatch> {
+    /// The `T` calling it with `args` binds, `t` already bound by a
+    /// method's receiver, or why `args` do not fit. Its result is
+    /// [`ret`](Self::ret) with that `T`.
+    pub(crate) fn call<V: View>(
+        &self,
+        args: &[V],
+        mut t: Option<V>,
+    ) -> Result<Option<V>, Unfit<V>> {
         let fits = match self.arity() {
             Arity::Exactly(n) => args.len() == n,
             Arity::AtLeast(n) => args.len() >= n,
         };
 
         if !fits {
-            return Err(Mismatch::Count(self.arity()));
+            return Err(Unfit::Mismatch(Mismatch::Count(self.arity())));
         }
 
         for (n, arg) in args.iter().enumerate() {
             let Some(param) = self.param(n) else {
-                return Err(Mismatch::Count(self.arity()));
+                return Err(Unfit::Mismatch(Mismatch::Count(self.arity())));
             };
 
-            if !param.bind(arg, &mut t) {
-                return Err(Mismatch::Argument(n, param.describe(t.as_ref())));
+            if !param.bind(*arg, &mut t) {
+                return Err(Unfit::Argument(n, param, t));
             }
         }
 
-        self.ret
-            .resolve(t.as_ref())
-            .ok_or_else(|| Mismatch::Count(self.arity()))
+        Ok(t)
     }
 
     /// Its parameters as an error lists them, such as `(Int, List<T>)`, or

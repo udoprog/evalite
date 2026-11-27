@@ -1058,7 +1058,7 @@ impl Structure {
             });
 
             if let Some(param) = sig.param(n).filter(|_| count && others) {
-                match (param.resolve(t.as_ref()), param) {
+                match (param.resolve(t), param) {
                     (Some(ty), _) => want.push(Pattern::Type(ty)),
                     (None, Shape::List(_)) => want.push(Pattern::List),
                     (None, _) => return Want::Any,
@@ -1578,7 +1578,7 @@ fn returns(method: &methods::MethodSig, receiver: &Type) -> Type {
         .bind(receiver, &mut t)
         .then_some(t)
         .flatten();
-    method.sig.ret.resolve(t.as_ref()).unwrap_or_else(Type::int)
+    method.sig.ret.resolve(t).unwrap_or_else(Type::int)
 }
 
 /// Methods' [`describe`](methods::MethodSig::describe)s, each written

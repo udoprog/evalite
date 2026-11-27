@@ -496,10 +496,24 @@ two have one checker and identical errors (section 9).
     `Copy` and `const` and says how to parse, which a `Type` would break;
     the program's `result_type` is already stored, so nothing changes there;
   - every expected type is a `TypeId` handle, copied, never a cloned `Type`.
-    Host function parameters and a method's resolved parameters are interned
-    once per call, as checking the call already does. So the walk stays
-    linear (`check_tests::option_literals_are_linear`, which covers `[]` and
-    `{}` too);
+    A host function's parameter and result types are interned on first use
+    and found again by where the environment holds them
+    (`Compiler::declared`), as interning walks the whole type. A method's
+    resolved parameters and result are added to the table from their
+    `Shape` and the bound `T`'s `TypeId` (`Compiler::resolve_shape`). So the
+    walk stays linear (`check_tests::option_literals_are_linear`, which
+    covers `[]` and `{}` too);
+  - calls are matched on `TypeId`s too, never a built `Type`: `Shape::bind`,
+    `Signature::call` and the method table are generic over `sig::View`, a
+    type's outer node and what it holds, which both `&Type` (completions)
+    and `sig::Id`, a `TypeId` in its table (the checker), give. `T` binds to
+    an `Id`, compared in constant time as the table holds each type once.
+    A mismatch comes back as `Unfit`, the parameter's `Shape` and the bound
+    `T`, described only for a kept diagnostic, and `Callee::Method`'s
+    receiver is built only then, so a method, path or host function call
+    costs the same however large its receiver or arguments
+    (`tests::calling_on_large_types_is_bounded`). Only the outer shape and
+    `T` matter, so no per-`TypeId` cache of built types is needed;
   - diagnostics are the one place a `TypeId` becomes an owned `Type` (a
     tree, up to `MAX_TYPE_NODES` nodes). `Compiler::shown` builds it only
     when `Reporter::keeps` says the diagnostic will be kept, else it puts

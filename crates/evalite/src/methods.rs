@@ -5,7 +5,7 @@
 use crate::Type;
 use crate::error::Arity;
 use crate::program::Instr;
-use crate::sig::{Mismatch, Shape, Signature};
+use crate::sig::{Mismatch, Shape, Signature, Unfit, View};
 use crate::types::TypeId;
 
 const T: Shape = Shape::Var;
@@ -24,7 +24,7 @@ pub(crate) struct MethodSig {
 
 impl MethodSig {
     /// The `T` a `receiver` binds, if it has this method.
-    fn bind(&self, receiver: &Type) -> Option<Option<Type>> {
+    pub(crate) fn bind<V: View>(&self, receiver: V) -> Option<Option<V>> {
         let mut t = None;
         self.receiver.bind(receiver, &mut t).then_some(t)
     }
@@ -33,21 +33,25 @@ impl MethodSig {
     /// is a method of.
     pub(crate) fn signature(&self, receiver: &Type) -> (Vec<Type>, Type) {
         let t = self.bind(receiver).flatten();
-        let resolve = |shape: Shape| shape.resolve(t.as_ref()).unwrap_or_else(Type::int);
+        let resolve = |shape: Shape| shape.resolve(t).unwrap_or_else(Type::int);
         let params = self.sig.params.iter().map(|p| resolve(*p)).collect();
         (params, resolve(self.sig.ret))
     }
 
-    /// What calling it on `receiver` with `args` gives, or why it does
+    /// The `T` calling it on `receiver` with `args` binds, or why it does
     /// not take them.
-    pub(crate) fn call(&self, receiver: &Type, args: &[Type]) -> Result<Type, Mismatch> {
+    pub(crate) fn call<V: View>(&self, receiver: V, args: &[V]) -> Result<Option<V>, Unfit<V>> {
         self.sig.call(args, self.bind(receiver).flatten())
     }
 
-    /// What calling it by path with `args`, the receiver first, gives, or
-    /// why it does not take them.
-    fn call_by_path(&self, args: &[Type]) -> Result<Type, Mismatch> {
-        let count = || Mismatch::Count(Arity::Exactly(self.sig.params.len().saturating_add(1)));
+    /// The `T` calling it by path with `args`, the receiver first, binds,
+    /// or why it does not take them.
+    fn call_by_path<V: View>(&self, args: &[V]) -> Result<Option<V>, Unfit<V>> {
+        let count = || {
+            Unfit::Mismatch(Mismatch::Count(Arity::Exactly(
+                self.sig.params.len().saturating_add(1),
+            )))
+        };
 
         let Some((receiver, rest)) = args.split_first() else {
             return Err(count());
@@ -57,18 +61,18 @@ impl MethodSig {
             return Err(count());
         }
 
-        let Some(t) = self.bind(receiver) else {
+        let Some(t) = self.bind(*receiver) else {
             // A map's methods exist once per key type, so any key type will do.
             let expected = match self.receiver {
                 Shape::Map(..) => String::from("Map<K, V>"),
                 receiver => receiver.to_string(),
             };
-            return Err(Mismatch::Argument(0, expected));
+            return Err(Unfit::Mismatch(Mismatch::Argument(0, expected)));
         };
 
-        self.sig.call(rest, t).map_err(|mismatch| match mismatch {
-            Mismatch::Count(_) | Mismatch::Takes(_) => count(),
-            Mismatch::Argument(n, ty) => Mismatch::Argument(n.saturating_add(1), ty),
+        self.sig.call(rest, t).map_err(|unfit| match unfit {
+            Unfit::Mismatch(_) => count(),
+            Unfit::Argument(n, param, t) => Unfit::Argument(n.saturating_add(1), param, t),
         })
     }
 
@@ -178,17 +182,17 @@ pub(crate) const METHODS: &[MethodSig] = &[
 ];
 
 /// The methods a value of type `ty` has, in name order.
-pub(crate) fn methods_of(ty: &Type) -> impl Iterator<Item = &'static MethodSig> {
+pub(crate) fn methods_of<V: View>(ty: V) -> impl Iterator<Item = &'static MethodSig> {
     METHODS.iter().filter(move |m| m.bind(ty).is_some())
 }
 
 /// The method `name` of a value of type `ty`.
-pub(crate) fn find(ty: &Type, name: &str) -> Option<&'static MethodSig> {
+pub(crate) fn find<V: View>(ty: V, name: &str) -> Option<&'static MethodSig> {
     methods_of(ty).find(|m| m.name == name)
 }
 
 /// The names of the methods a value of type `ty` has, in name order.
-pub(crate) fn method_names(ty: &Type) -> Vec<&'static str> {
+pub(crate) fn method_names<V: View>(ty: V) -> Vec<&'static str> {
     methods_of(ty).map(|m| m.name).collect()
 }
 
@@ -244,7 +248,7 @@ impl Associated {
     /// The method of the same type and name as this one whose receiver is
     /// `receiver`, as a map's methods are once per key type; itself when
     /// none is, or it is a function.
-    pub(crate) fn for_receiver(self, receiver: Option<&Type>) -> Self {
+    pub(crate) fn for_receiver<V: View>(self, receiver: Option<V>) -> Self {
         let (Self::Method(method), Some(receiver)) = (self, receiver) else {
             return self;
         };
@@ -259,11 +263,19 @@ impl Associated {
             .map_or(self, Self::Method)
     }
 
-    /// What calling it with `args` gives, or why it does not take them.
-    pub(crate) fn call(self, args: &[Type]) -> Result<Type, Mismatch> {
+    /// The `T` calling it with `args` binds, or why it does not take them.
+    pub(crate) fn call<V: View>(self, args: &[V]) -> Result<Option<V>, Unfit<V>> {
         match self {
             Self::Function(function) => function.sig.call(args, None),
             Self::Method(method) => method.call_by_path(args),
+        }
+    }
+
+    /// Its result, with `T` as its arguments bind it.
+    pub(crate) fn ret(self) -> Shape {
+        match self {
+            Self::Function(function) => function.sig.ret,
+            Self::Method(method) => method.sig.ret,
         }
     }
 }

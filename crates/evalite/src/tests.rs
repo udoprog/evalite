@@ -1640,6 +1640,63 @@ fn reporting_large_types_is_bounded() {
     }
 }
 
+/// Calls cost the same however large the types they are on: methods,
+/// paths and host functions are matched on the checker's type ids, so
+/// four times the calls on a list of a large record take about as long
+/// as the env's types take to intern once, not four times as long. The
+/// errors they give are bounded as [`reporting_large_types_is_bounded`]
+/// has it.
+#[test]
+fn calling_on_large_types_is_bounded() {
+    use std::time::Instant;
+
+    let unlimited = Options::new().max_depth(usize::MAX).max_len(usize::MAX);
+    let mut env = Environment::new();
+    let fields = (0..5_000).map(|i| (format!("f{i}"), Type::int()));
+    let list = Type::list(Type::record(fields));
+    env.value("l", list.clone()).unwrap();
+    env.function("h", [list], Type::int()).unwrap();
+
+    fn calls(call: &str, n: usize) -> String {
+        format!("[{}]", vec![call; n].join(", "))
+    }
+
+    let shapes: [fn(usize) -> String; 8] = [
+        |n| calls("l.len()", n),
+        |n| calls("l.get(0)", n),
+        |n| calls("List::len(l)", n),
+        |n| calls("h(l)", n),
+        |n| calls("l.nope()", n),
+        |n| calls("l.get(true)", n),
+        |n| calls("List::get(l, true)", n),
+        |n| calls("h(1)", n),
+    ];
+
+    for shape in shapes {
+        let mut times = Vec::new();
+
+        for n in [MAX_DIAGNOSTICS, MAX_DIAGNOSTICS * 4] {
+            let source = shape(n);
+            let parsed = crate::parse_with(&source, &unlimited).unwrap();
+
+            let start = Instant::now();
+            let result = crate::check::compile_parsed(&source, parsed, &env, None);
+            times.push(start.elapsed().as_secs_f64());
+
+            if let Err(errors) = result {
+                assert!(errors.len() <= MAX_DIAGNOSTICS + 1, "{source:.40}");
+            }
+        }
+
+        // Building the types per call would take four times as long.
+        assert!(
+            times[1] < times[0] * 2.5 + 0.05,
+            "{:.40}: {times:?}",
+            shape(1)
+        );
+    }
+}
+
 #[test]
 fn unescapes() {
     assert_eq!(unescape(r#""""#).as_deref(), Some(""));

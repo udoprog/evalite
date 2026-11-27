@@ -16,7 +16,7 @@ use crate::methods::{self, Associated, MethodSig, PathError};
 use crate::parser::{Options, Parsed, parse_with};
 use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
 use crate::references::{Literal, Recorder, Reference, ReferenceKind};
-use crate::sig::{Mismatch, Shape};
+use crate::sig::{Id, Mismatch, Shape, Unfit};
 use crate::syntax::{Syntax, callee, unescape};
 use crate::types::{FieldNode, Held, TypeFault, TypeId, TypeNode, Types, check_type};
 
@@ -252,7 +252,7 @@ enum Work<'a> {
     /// After a method's receiver.
     Method(N<'a>),
     /// After a method's arguments.
-    MethodExit(N<'a>, &'static MethodSig, Callee),
+    MethodExit(N<'a>, &'static MethodSig),
     Field(N<'a>),
     /// After an unwrap's operand.
     Unwrap(N<'a>),
@@ -404,6 +404,10 @@ struct Compiler<'a> {
     global_types: HashMap<u32, TypeId>,
     functions: Vec<HostFunction>,
     function_ids: HashMap<(String, Vec<TypeId>), u32>,
+    /// The id of each host function's parameter and result type met so
+    /// far, by where the environment holds it, so each is interned once
+    /// however many calls there are.
+    declared: HashMap<*const Type, TypeId>,
     code: Vec<Instr>,
     /// The span of each instruction of `code`.
     spans: Vec<Span<u32>>,
@@ -449,6 +453,7 @@ impl<'a> Compiler<'a> {
             global_types: HashMap::new(),
             functions: Vec::new(),
             function_ids: HashMap::new(),
+            declared: HashMap::new(),
             code: Vec::new(),
             spans: Vec::new(),
             span: Span::point(0),
@@ -495,6 +500,28 @@ impl<'a> Compiler<'a> {
                 },
             )
         })
+    }
+
+    /// The id of `ty`, a type the environment declares, interned on first
+    /// use only: interning walks the whole type.
+    fn declared(&mut self, ty: &'a Type) -> Option<TypeId> {
+        let key = std::ptr::from_ref(ty);
+
+        if let Some(id) = self.declared.get(&key) {
+            return Some(*id);
+        }
+
+        let id = self.types.intern(ty)?;
+        self.declared.insert(key, id);
+        Some(id)
+    }
+
+    /// [`declared`](Self::declared), or why `ty` is not in the table.
+    fn declared_at(&mut self, ty: &'a Type, at: Span<u32>) -> Result<TypeId, Diagnostic> {
+        match self.declared(ty) {
+            Some(id) => Ok(id),
+            None => self.intern(ty, at),
+        }
     }
 
     fn intern(&mut self, ty: &Type, at: Span<u32>) -> Result<TypeId, Diagnostic> {
@@ -676,7 +703,7 @@ impl<'a> Compiler<'a> {
                 }
                 Work::Path(node, associated, path) => self.path(node, associated, path)?,
                 Work::Method(node) => self.method(node, work)?,
-                Work::MethodExit(node, method, callee) => self.method_exit(node, method, callee)?,
+                Work::MethodExit(node, method) => self.method_exit(node, method)?,
                 Work::Field(node) => self.field(node)?,
                 Work::Index(node) => self.index(node, work)?,
                 Work::IndexExit(node) => self.index_exit(node)?,
@@ -1067,24 +1094,23 @@ impl<'a> Compiler<'a> {
 
     /// What argument `n` of `len` is expected to be: the parameter every
     /// overload of that many parameters has there, if they agree.
-    fn param_expect(&mut self, overloads: &[Overload], len: usize, n: usize) -> Expect {
+    fn param_expect(&mut self, overloads: &'a [Overload], len: usize, n: usize) -> Expect {
         let mut params = overloads
             .iter()
             .filter(|o| o.takes(len))
             .filter_map(|o| o.param(n));
 
-        let Some(first) = params.next() else {
+        let Some(first) = params.next().and_then(|p| self.declared(p)) else {
             return Expect::Nothing;
         };
 
-        if params.any(|p| p != first) {
-            return Expect::Nothing;
+        for param in params {
+            if self.declared(param) != Some(first) {
+                return Expect::Nothing;
+            }
         }
 
-        match self.types.intern(first) {
-            Some(ty) => Expect::Type(ty),
-            None => Expect::Nothing,
-        }
+        Expect::Type(first)
     }
 
     /// `None::<T>`, an `Option<T>` whatever is expected, which is
@@ -1467,10 +1493,21 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        let callee = Callee::Function(name.clone());
+        let callee = |_: &Self, _| Callee::Function(name.clone());
 
         match (overloads, first) {
-            ([_], Some(mismatch)) => Err(self.mismatch(mismatch, callee, &values, &args, node)),
+            ([_], Some(unfit)) => {
+                let mismatch = match unfit {
+                    Unfit::Mismatch(mismatch) => mismatch,
+                    Unfit::Argument(n, _, param) => {
+                        let at = values.get(n).map_or(span, |v| v.span);
+                        let shown = param.filter(|_| self.reporter.keeps(at.start));
+                        Mismatch::Argument(n, shown.map(Type::to_string).unwrap_or_default())
+                    }
+                };
+
+                Err(self.described(mismatch, callee, &values, &args, node))
+            }
             _ => Err(Diagnostic::new(
                 span,
                 ErrorKind::NoOverload {
@@ -1486,28 +1523,30 @@ impl<'a> Compiler<'a> {
     /// not take them.
     fn overload(
         &mut self,
-        overload: &Overload,
+        overload: &'a Overload,
         found: &[TypeId],
         at: Span<u32>,
-    ) -> Result<Result<TypeId, Mismatch>, Diagnostic> {
+    ) -> Result<Result<TypeId, Unfit<&'a Type>>, Diagnostic> {
         if !overload.takes(found.len()) {
-            return Ok(Err(match overload.repeated {
+            return Ok(Err(Unfit::Mismatch(match overload.repeated {
                 None => Mismatch::Count(Arity::Exactly(overload.params.len())),
                 Some(_) => Mismatch::Takes(overload.describe()),
-            }));
+            })));
         }
 
         for (n, found) in found.iter().enumerate() {
             let Some(param) = overload.param(n) else {
-                return Ok(Err(Mismatch::Count(Arity::Exactly(overload.params.len()))));
+                let arity = Arity::Exactly(overload.params.len());
+                return Ok(Err(Unfit::Mismatch(Mismatch::Count(arity))));
             };
 
-            if self.intern(param, at)? != *found {
-                return Ok(Err(Mismatch::Argument(n, param.to_string())));
+            if self.declared_at(param, at)? != *found {
+                // Its type is shown only by a kept diagnostic.
+                return Ok(Err(Unfit::Argument(n, Shape::Var, Some(param))));
             }
         }
 
-        Ok(Ok(self.intern(&overload.ret, at)?))
+        Ok(Ok(self.declared_at(&overload.ret, at)?))
     }
 
     fn emit_call(
@@ -1559,14 +1598,19 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
 
-        let found = values.iter().map(|v| self.ty(v.ty)).collect::<Vec<_>>();
-        let associated = associated.for_receiver(found.first());
+        let found = values
+            .iter()
+            .map(|v| Id(&self.types, v.ty))
+            .collect::<Vec<_>>();
+        let associated = associated.for_receiver(found.first().copied());
+        let called = associated.call(&found).map(|t| t.map(|t| t.1));
 
-        let ret = match associated.call(&found) {
-            Ok(ret) => self.intern(&ret, span)?,
-            Err(mismatch) => {
-                let callee = Callee::Function(path);
-                return Err(self.mismatch(mismatch, callee, &values, &args, node));
+        let ret = match called {
+            Ok(t) => self.resolve(associated.ret(), t, span)?,
+            Err(unfit) => {
+                let unfit = unfit.map(|t| t.1);
+                let callee = |_: &Self, _| Callee::Function(path);
+                return Err(self.mismatch(unfit, callee, &values, &args, node));
             }
         };
 
@@ -1617,10 +1661,79 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// The type `shape` is with `T` as `t`, added to the table: `None`
+    /// when it holds `T` and `t` is not known.
+    fn resolve_shape(
+        &mut self,
+        shape: Shape,
+        t: Option<TypeId>,
+        at: Span<u32>,
+    ) -> Result<Option<TypeId>, Diagnostic> {
+        let node = match shape {
+            Shape::Int => TypeNode::Int,
+            Shape::Bool => TypeNode::Bool,
+            Shape::String => TypeNode::String,
+            Shape::Var => return Ok(t),
+            Shape::List(inner) => match self.resolve_shape(*inner, t, at)? {
+                Some(entry) => TypeNode::List(entry),
+                None => return Ok(None),
+            },
+            Shape::Option(inner) => match self.resolve_shape(*inner, t, at)? {
+                Some(value) => TypeNode::Option(value),
+                None => return Ok(None),
+            },
+            Shape::Map(key, value) => {
+                let key = self.resolve_shape(*key, t, at)?;
+                let value = self.resolve_shape(*value, t, at)?;
+
+                match (key, value) {
+                    (Some(key), Some(value)) => TypeNode::Map { key, value },
+                    _ => return Ok(None),
+                }
+            }
+        };
+
+        self.node(node, at).map(Some)
+    }
+
+    /// The result `ret` of a call that bound `T` to `t`.
+    fn resolve(
+        &mut self,
+        ret: Shape,
+        t: Option<TypeId>,
+        at: Span<u32>,
+    ) -> Result<TypeId, Diagnostic> {
+        self.resolve_shape(ret, t, at)?
+            .ok_or_else(|| internal("a result with `T` unbound"))
+    }
+
+    /// The diagnostic for a call that does not take its arguments, the
+    /// callee as `callee` shows it at a span: only a kept diagnostic
+    /// builds the types it shows.
     fn mismatch(
         &self,
+        unfit: Unfit<TypeId>,
+        callee: impl FnOnce(&Self, Span<u32>) -> Callee,
+        values: &[Value],
+        args: &[N<'_>],
+        node: N<'_>,
+    ) -> Diagnostic {
+        let mismatch = match unfit {
+            Unfit::Mismatch(mismatch) => mismatch,
+            Unfit::Argument(n, param, t) => {
+                let at = values.get(n).map_or(*node.span(), |v| v.span);
+                let t = t.map(|t| self.shown(t, at));
+                Mismatch::Argument(n, param.describe(t.as_ref()))
+            }
+        };
+
+        self.described(mismatch, callee, values, args, node)
+    }
+
+    fn described(
+        &self,
         mismatch: Mismatch,
-        callee: Callee,
+        callee: impl FnOnce(&Self, Span<u32>) -> Callee,
         values: &[Value],
         args: &[N<'_>],
         node: N<'_>,
@@ -1639,7 +1752,7 @@ impl<'a> Compiler<'a> {
                 Diagnostic::new(
                     at,
                     ErrorKind::ArgumentCount {
-                        callee,
+                        callee: callee(self, at),
                         expected,
                         found: args.len(),
                     },
@@ -1649,7 +1762,7 @@ impl<'a> Compiler<'a> {
                 Some(value) => Diagnostic::new(
                     value.span,
                     ErrorKind::ArgumentType {
-                        callee,
+                        callee: callee(self, value.span),
                         index: n.saturating_add(1),
                         expected,
                         found: self.shown(value.ty, value.span),
@@ -1674,14 +1787,16 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
 
-        let receiver_type = self.ty(receiver.ty);
+        let view = Id(&self.types, receiver.ty);
 
-        let Some(method) = methods::find(&receiver_type, name) else {
+        let Some(method) = methods::find(view, name) else {
+            let at = *name_node.span();
+            let available = methods::method_names(view);
             self.report(Diagnostic::new(
-                *name_node.span(),
+                at,
                 ErrorKind::UnknownMethod {
-                    available: methods::method_names(&receiver_type),
-                    receiver: receiver_type,
+                    available,
+                    receiver: self.shown(receiver.ty, at),
                     method: name.to_owned(),
                 },
             ));
@@ -1693,33 +1808,23 @@ impl<'a> Compiler<'a> {
         // Each argument is expected to be its parameter, with `T` as the
         // receiver binds it.
         let args = args_of(node);
-        let mut t = None;
-        let bound = method.receiver.bind(&receiver_type, &mut t);
+        let bound = method.bind(view).map(|t| t.map(|t| t.1));
         let mut expects = Vec::with_capacity(args.len());
 
         for n in 0..args.len() {
-            let param = method.sig.param(n).filter(|_| bound);
-            let ty = param.and_then(|p| p.resolve(t.as_ref()));
-            let ty = ty.and_then(|ty| self.types.intern(&ty));
+            let ty = match (method.sig.param(n), bound) {
+                (Some(param), Some(t)) => self.resolve_shape(param, t, *node.span()).ok().flatten(),
+                _ => None,
+            };
             expects.push(ty.map_or(Expect::Nothing, Expect::Type));
         }
 
-        let callee = Callee::Method {
-            receiver: receiver_type,
-            name: name.to_owned(),
-        };
-
-        work.push(Work::MethodExit(node, method, callee));
+        work.push(Work::MethodExit(node, method));
         push_expected(work, &args, &expects);
         Ok(())
     }
 
-    fn method_exit(
-        &mut self,
-        node: N<'a>,
-        method: &MethodSig,
-        callee: Callee,
-    ) -> Result<(), Diagnostic> {
+    fn method_exit(&mut self, node: N<'a>, method: &MethodSig) -> Result<(), Diagnostic> {
         let args = args_of(node);
         let values = self.pop_n(args.len())?;
         let receiver = self.pop()?;
@@ -1730,11 +1835,24 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
 
-        let found = values.iter().map(|v| self.ty(v.ty)).collect::<Vec<_>>();
+        let found = values
+            .iter()
+            .map(|v| Id(&self.types, v.ty))
+            .collect::<Vec<_>>();
+        let called = method
+            .call(Id(&self.types, receiver.ty), &found)
+            .map(|t| t.map(|t| t.1));
 
-        let ret = match method.call(&self.ty(receiver.ty), &found) {
-            Ok(ret) => self.intern(&ret, span)?,
-            Err(mismatch) => return Err(self.mismatch(mismatch, callee, &values, &args, node)),
+        let ret = match called {
+            Ok(t) => self.resolve(method.sig.ret, t, span)?,
+            Err(unfit) => {
+                // The receiver's type, shown only by a kept diagnostic.
+                let callee = |this: &Self, at| Callee::Method {
+                    receiver: this.shown(receiver.ty, at),
+                    name: method.name.to_owned(),
+                };
+                return Err(self.mismatch(unfit.map(|t| t.1), callee, &values, &args, node));
+            }
         };
 
         let held = match self.types.get(receiver.ty) {
