@@ -296,6 +296,15 @@ mod tests {
             Type::int(),
         )
         .unwrap();
+        env.function(
+            "roll",
+            [Type::record([
+                ("athletics", Type::int()),
+                ("Brawl (bar)", Type::int()),
+            ])],
+            Type::int(),
+        )
+        .unwrap();
         env.value(
             "m",
             Type::record([("athletics", Type::int()), ("Brawl (bar)", Type::int())]),
@@ -413,5 +422,15 @@ mod tests {
     fn record_keys_of_a_later_key() {
         assert_eq!(labels("count({boxes: 1, co", 19), ["count"]);
         assert_eq!(labels("count({boxes: 1, ", 17), ["bonus", "count"]);
+    }
+
+    #[test]
+    fn record_keys_skip_unwritable_and_mixed() {
+        assert_eq!(labels("roll({", 6), ["athletics"]);
+        let labels = labels("count({\"boxes\": 1, ", 20);
+        assert!(
+            !labels.iter().any(|l| l == "bonus" || l == "boxes"),
+            "{labels:?}"
+        );
     }
 }

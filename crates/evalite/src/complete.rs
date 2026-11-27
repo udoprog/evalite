@@ -1153,11 +1153,24 @@ impl Structure {
             return None;
         };
 
+        // Another key that isn't a name makes the literal a map.
+        if entries
+            .iter()
+            .any(|(k, _)| *k != at && !matches!(self.get(*k), Some(Node(Repr::Name(_)))))
+        {
+            return None;
+        }
+
         let mut out = Vec::new();
 
         for pattern in patterns {
             if let Pattern::Type(Type(Kind::Record(fields))) = pattern {
                 for (name, ty) in fields {
+                    // A field that isn't a name can't be written as a key.
+                    if !crate::types::is_value_name(&name) {
+                        continue;
+                    }
+
                     let written = entries.iter().any(|(k, _)| {
                         *k != at && matches!(self.get(*k), Some(Node(Repr::Name(n))) if *n == name)
                     });

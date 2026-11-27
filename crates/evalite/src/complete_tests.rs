@@ -1250,6 +1250,17 @@ fn record_literal_keys() {
     assert_eq!(s.to_text(), "{b: 1, a: _}");
 }
 
+#[test]
+fn record_literal_keys_skip_unwritable_and_mixed() {
+    // A field that isn't a name can't be a key.
+    let ty = Type::record([("a", Type::int()), ("Brawl (bar)", Type::int())]);
+    assert_eq!(labels("{_: _}", 0, Some(&ty)), ["a"]);
+
+    // A literal with another key that isn't a name is a map.
+    let ty = Type::record([("a", Type::int()), ("b", Type::int())]);
+    assert!(!labels("{\"a\": 1, _: _}", 0, Some(&ty)).contains(&"b".to_owned()));
+}
+
 /// A host function's option parameter takes `None` and `Some(_)`, which
 /// compile there once filled.
 #[test]
