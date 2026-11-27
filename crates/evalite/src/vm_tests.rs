@@ -1066,15 +1066,15 @@ fn store_memory() {
     let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
     assert_eq!(outcome.value, int(2));
 
-    // Replacing it with a longer one would take 3 words beside the 2
-    // freed, which do not fit a block of 3.
+    // Replacing it with a longer one would take 3 words, though the 2 it
+    // frees are counted as left.
     assert_eq!(
         set_chain(
             &globals
                 .set("s", &Value::from("0123456789abcdef!"))
                 .unwrap_err()
         ),
-        "the value needs 3 words of memory, 0 are left: while setting `s`"
+        "the value needs 3 words of memory, 2 are left: while setting `s`"
     );
     assert_eq!(globals.get("s"), Some(Value::from("0123456789abcdef")));
 }

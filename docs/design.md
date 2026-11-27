@@ -726,8 +726,10 @@ it, and a program reading it is refused at load. Its memory:
    block for each needed size, from the free lists or past the heap's end.
    If what it takes past the end is past the limit it is `TooLarge`, and
    the plan is undone, before any word changed, so a failed set leaves the
-   store as it was. When words are free the store then compacts once and
-   tries again from step 1 (see "Compact and retry", below);
+   store as it was. When the old value has parts the store then compacts
+   with them last and takes their words, else, when words are free, it
+   compacts once and tries again from step 1 (see "Compact and retry",
+   below);
 5. `write`s the new value at the slot, its parts taking the planned blocks
    by size;
 6. sets the flag, and compacts when more than half the heap is free.
@@ -898,6 +900,25 @@ the 30th cycle with 65 words live.
   all and the retry's plan is undone as before; only the layout, which no
   value shows, may be compacted. `remove` takes no words, so it never
   retries.
+
+  A replace (`set`, `set_at`, or `insert` of a key the map has) whose old
+  value has parts retries differently (Globals 6): freed blocks are never
+  merged, so a grown value fits in no block its own parts leave, and a
+  plain compaction keeps those parts live. `Globals::reclaim` instead
+  compacts with the replaced value's parts moved last
+  (`Heap::compacted`'s `last`, which walks each part's old address beside
+  its new one and defers the subtree there), so they end the heap; it cuts
+  them off and takes the new blocks from where they started. The limit
+  then counts only the other values' words, so the replace is refused only
+  when the store with the new value would not fit, and the "words left" in
+  its error is that figure. Refused, the cut parts are put back, so every
+  value is as it was, the store compacted, and `fitting`, finding no free
+  words, does not retry again. Cost: one compaction, plus copying the old
+  value's words out and back on a refusal. A push or insert that grows a
+  full list or map still takes the new block before the old is freed (the
+  Globals 4 decision table): the old entries are copied out of it, so its
+  words cannot be reclaimed the same way without copying them first, and
+  growth takes at most the list's own room again.
 
 Compaction otherwise only runs once more than half the heap is free.
 ## 8. Stored formats and verification

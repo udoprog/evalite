@@ -672,7 +672,7 @@ fn the_limit_is_kept() {
     assert_eq!(
         error,
         [
-            "the value needs 2 words of memory, 0 are left",
+            "the value needs 2 words of memory, 1 are left",
             "while setting `names[1]`"
         ]
     );
@@ -1083,14 +1083,15 @@ fn a_plan_that_does_not_fit_is_undone() {
 
     // Its header and entries take the free 5 words, two strings of 2 words
     // split the old 3-word ones, and the rest is 12 words past the end. So
-    // it is refused, and so it is when the store is compacted to try again,
-    // which frees the 5 words: 17 words past the end, with 13 left.
+    // it is refused, and so it is when the store is compacted with the old
+    // `b`'s 7 words last to take them: all 21 words past the other values'
+    // none, with 20 left.
     let two = || s(&"w".repeat(16));
     let b = Value::list([two(), two(), two(), s(&"v".repeat(80))]);
     let error = globals.set("b", &b).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "the value needs 17 words of memory, 13 are left"
+        "the value needs 21 words of memory, 20 are left"
     );
     assert_eq!(globals.stats().free(), 0);
     assert_eq!(globals.stats().heap(), 7);
@@ -1713,12 +1714,15 @@ fn compacting_does_not_make_a_refusal_change_values() {
     assert_eq!(fragmented_values(&globals), before);
     assert_tidy(&globals);
 
+    // 8 words in place of the entry's 1, with 7 left once compacted
+    // without it.
+    let eight = s(&"c".repeat(64));
     let error = globals
-        .set_at(&Path::value("w").index(0), &seven)
+        .set_at(&Path::value("w").index(0), &eight)
         .unwrap_err();
     assert_eq!(
         format!("{error:#}"),
-        "the value needs 7 words of memory, 6 are left: while setting `w[0]`"
+        "the value needs 8 words of memory, 7 are left: while setting `w[0]`"
     );
     assert_eq!(fragmented_values(&globals), before);
     assert_tidy(&globals);
@@ -1727,4 +1731,126 @@ fn compacting_does_not_make_a_refusal_change_values() {
     let five = s(&"c".repeat(40));
     globals.set("a", &five).unwrap();
     assert_eq!(globals.get("a"), Some(five));
+}
+
+/// A string of `words` words.
+fn words(words: usize) -> Value {
+    s(&"w".repeat(words * 8))
+}
+
+/// Growing a value takes the words of the value it replaces, though its
+/// freed block is too small for the new one: a store refuses it only when
+/// a fresh one would.
+#[test]
+fn growing_a_value_reuses_its_words() {
+    let mut env = Environment::new();
+    env.value("s", Type::string()).unwrap();
+    env.value("t", Type::string()).unwrap();
+
+    // At the limit, a value of 5 words grown to 6.
+    let mut globals = Globals::with_limit(&env, 10);
+    globals.set("s", &words(5)).unwrap();
+    globals.set("s", &words(6)).unwrap();
+    assert_eq!(globals.get("s"), Some(words(6)));
+    assert_tidy(&globals);
+
+    // With 2 words free besides, grown to 8.
+    let mut globals = Globals::with_limit(&env, 12);
+    globals.set("t", &words(2)).unwrap();
+    globals.set("s", &words(5)).unwrap();
+    globals.set("t", &s("")).unwrap();
+    assert_eq!((globals.stats().heap(), globals.stats().free()), (7, 2));
+    globals.set("s", &words(8)).unwrap();
+    assert_eq!(globals.get("s"), Some(words(8)));
+    assert_eq!(globals.get("t"), Some(s("")));
+    assert_tidy(&globals);
+
+    // Grown a word at a time up to exactly the limit, beside another value.
+    let mut globals = Globals::with_limit(&env, 12);
+    globals.set("t", &words(2)).unwrap();
+
+    for n in 0..=10 {
+        globals.set("s", &words(n)).unwrap();
+        assert_eq!(globals.get("s"), Some(words(n)));
+        assert_eq!(globals.get("t"), Some(words(2)));
+        assert_tidy(&globals);
+    }
+
+    assert_eq!(globals.stats().live(), 12);
+
+    // A word more does not fit, and the error counts the words the value
+    // gives back as left.
+    let error = globals.set("s", &words(11)).unwrap_err();
+    assert_eq!(
+        format!("{error:#}"),
+        "the value needs 11 words of memory, 10 are left: while setting `s`"
+    );
+    assert_eq!(globals.get("s"), Some(words(10)));
+    assert_eq!(globals.get("t"), Some(words(2)));
+    assert_tidy(&globals);
+}
+
+/// A part grown at a path takes the words of the part it replaces, nested
+/// in a list, a record and a map, and a refusal leaves every value as it
+/// was.
+#[test]
+fn growing_a_part_reuses_its_words() {
+    let mut env = Environment::new();
+    env.value("w", Type::list(Type::string())).unwrap();
+    env.value("skills", Type::map(Type::string(), skill_type()))
+        .unwrap();
+    env.value("t", Type::string()).unwrap();
+
+    let skills = |specialty: Value| {
+        Value::map([(
+            s("occult"),
+            Value::record([("dots", int(1)), ("specialties", Value::list([specialty]))]),
+        )])
+    };
+
+    // `w` takes a header, an entry and its 3 words; `skills` a header, an
+    // entry of 2, its key's word, a record of 2, a header, an entry and its
+    // word; `t` 2.
+    let mut globals = Globals::with_limit(&env, 5 + 9 + 2);
+    globals.set("w", &Value::list([words(3)])).unwrap();
+    globals.set("skills", &skills(words(1))).unwrap();
+    globals.set("t", &words(2)).unwrap();
+    assert_eq!(globals.stats().live(), 16);
+
+    // `t` freed: 2 words left, in no block the parts below fit.
+    globals.set("t", &s("")).unwrap();
+
+    let entry = Path::value("w").index(0);
+    globals.set_at(&entry, &words(5)).unwrap();
+    assert_eq!(globals.get("w"), Some(Value::list([words(5)])));
+    assert_tidy(&globals);
+
+    let specialty = Path::value("skills")
+        .string_key("occult")
+        .field("specialties")
+        .index(0);
+    globals.set_at(&specialty, &words(1)).unwrap();
+    assert_eq!(globals.get("skills"), Some(skills(words(1))));
+    assert_eq!(globals.stats().live(), 16);
+
+    // Refused past the limit, leaving every value as it was.
+    let before = ["w", "skills", "t"].map(|name| globals.get(name));
+    let error = globals.set_at(&specialty, &words(2)).unwrap_err();
+    assert_eq!(
+        format!("{error:#}"),
+        r#"the value needs 2 words of memory, 1 are left: while setting `skills["occult"].specialties[0]`"#
+    );
+    assert_eq!(["w", "skills", "t"].map(|name| globals.get(name)), before);
+    assert_tidy(&globals);
+
+    // A key the map has, set by an insert, reuses its words as well.
+    globals.set_at(&entry, &words(3)).unwrap();
+    globals
+        .insert(
+            &Path::value("skills").string_key("occult"),
+            &Value::record([("dots", int(2)), ("specialties", Value::list([words(3)]))]),
+        )
+        .unwrap();
+    assert_eq!(globals.get_at(&specialty), Some(words(3)));
+    assert_tidy(&globals);
 }

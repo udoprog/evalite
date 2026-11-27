@@ -155,10 +155,10 @@ impl Globals {
     /// let mut globals = Globals::with_limit(&env, 2);
     /// globals.set("name", &Value::string("Ada Lovelace"))?;
     ///
-    /// // Its 4 words would not fit in the 2 of the name it replaces, and no
-    /// // more are left.
+    /// // Its 4 words would not fit, though the 2 of the name it replaces
+    /// // are counted as left.
     /// let error = globals.set("name", &Value::string("Ada, Countess of Lovelace")).unwrap_err();
-    /// assert_eq!(error.to_string(), "the value needs 4 words of memory, 0 are left");
+    /// assert_eq!(error.to_string(), "the value needs 4 words of memory, 2 are left");
     /// assert_eq!(globals.get("name"), Some(Value::string("Ada Lovelace")));
     ///
     /// // A value of the same size takes the words of the one it replaces.
@@ -291,10 +291,11 @@ impl Globals {
     /// Returns a [`GlobalsError`], leaving the value as it was, when `name`
     /// is not declared, `value` is not of its declared type (the error
     /// names the path into `value`), or its parts do not fit in the words
-    /// left. Free words are counted as left: a set that does not fit while
-    /// some are free compacts the store once and tries again, as do
-    /// [`set_at`](Self::set_at), [`insert`](Self::insert) and
-    /// [`push`](Self::push). Every value is as it was whether or not it
+    /// left. Free words and those of the value it replaces are counted as
+    /// left: a set that does not fit compacts the store once and tries
+    /// again, as do [`set_at`](Self::set_at), [`insert`](Self::insert) and
+    /// [`push`](Self::push), so it is refused only when the store with the
+    /// new value would not fit. Every value is as it was whether or not it
     /// fits, though the store may be compacted.
     ///
     /// ```
@@ -380,13 +381,26 @@ impl Globals {
         // word is written, so a value that does not fit is undone and
         // leaves the store as it was.
         let mut plan = Plan::default();
+        let reclaims = !old.is_empty();
 
         for (start, words) in old {
             self.heap.give(&mut plan, start, words);
         }
 
         let pool = self.heap.take_all(&mut plan, sizes);
-        self.heap.settle(plan)?;
+
+        let (at, pool) = match self.heap.settle(plan) {
+            Ok(()) => (at, pool),
+            // Freed blocks are not merged, so the old parts may not hold
+            // the new ones though the store would: compact with them last
+            // and take their words.
+            Err(error) if error.is_too_large() && reclaims => {
+                self.reclaim(at, value, id).unwrap_or(Err(error))?
+            }
+            Err(error) => return Err(error),
+        };
+
+        let types = &self.layout.types;
 
         // Measured, so it is a fault for the write to fail. The old parts
         // are freed by then, so the value is left unset rather than
@@ -405,6 +419,53 @@ impl Globals {
         }
 
         written
+    }
+
+    /// Take blocks for the parts of `value`, of type `ty`, to replace the
+    /// value whose word is at `at`, in place of its own, when
+    /// [`replace`](Self::replace) found they do not fit: compact the store
+    /// with that value's parts last, so they end the heap, and take the
+    /// blocks from where they start. The
+    /// limit then counts only the other values' words, so it is refused
+    /// only when the store with the new value would not fit.
+    ///
+    /// Gives where the value's word moved to and the blocks. Refused, every
+    /// value is as it was, the store compacted. `None`, leaving the store
+    /// as it was, when compacting faults or does not reach the value.
+    fn reclaim(
+        &mut self,
+        at: usize,
+        value: &Value,
+        ty: TypeId,
+    ) -> Option<Result<(usize, Pool), RunError>> {
+        let sizes = match memory::parts(&self.layout.types, value, ty) {
+            Ok(sizes) => sizes,
+            Err(error) => return Some(Err(error)),
+        };
+        let roots = self.roots();
+        let (words, tail) = self
+            .heap
+            .compacted(&self.layout.types, roots, Some(at))
+            .ok()?;
+        let tail = tail?;
+
+        self.heap.words = words;
+        self.heap.free.clear();
+        self.heap.free_words = 0;
+
+        // The old parts, kept to put back on a refusal, as the old value
+        // still points at them.
+        let parts = self.heap.words.split_off(tail.start);
+        let mut plan = Plan::default();
+        let pool = self.heap.take_all(&mut plan, sizes);
+
+        Some(match self.heap.settle(plan) {
+            Ok(()) => Ok((tail.at, pool)),
+            Err(error) => {
+                self.heap.words.extend(parts);
+                Err(error)
+            }
+        })
     }
 
     /// The value `name`, or `None` when it is not declared or not set.
@@ -1380,7 +1441,7 @@ impl Globals {
     /// Move the values' parts together, freeing every free word. Whether
     /// it did; a fault leaves the store as it was.
     fn compact(&mut self) -> bool {
-        let Ok(words) = self.heap.compacted(&self.layout.types, self.roots()) else {
+        let Ok((words, _)) = self.heap.compacted(&self.layout.types, self.roots(), None) else {
             return false;
         };
 
@@ -1392,7 +1453,10 @@ impl Globals {
 
     /// Run `op`, a change that fails without changing the store, and when
     /// it is refused for want of room while words are free, compact the
-    /// store and run it again from the start, finding its path afresh.
+    /// store and run it again from the start, finding its path afresh. A
+    /// replace refused for want of room has already compacted, with the
+    /// words of the value it replaces (see [`reclaim`](Self::reclaim)),
+    /// and leaves none free, so it is not run again.
     /// Compaction keeps every value, so a retry that is refused too leaves
     /// the values as they were, as the first try did. At most one
     /// compaction, O(live words), for each call.
@@ -1627,11 +1691,22 @@ impl Heap {
     /// slots, in the order they are reached, and the references to them
     /// rewritten. Lists and maps keep their room. O(live words), with an
     /// explicit work list.
+    ///
+    /// The value at the word `last`, when one is, has its parts moved
+    /// after all the others', so they end the heap: [`Tail`] says where
+    /// they start and where its word moved, or is `None` when no value
+    /// reached holds that word.
     fn compacted(
         &self,
         types: &Types,
-        mut work: Vec<(usize, TypeId)>,
-    ) -> Result<Vec<Word>, RunError> {
+        roots: Vec<(usize, TypeId)>,
+        mut last: Option<usize>,
+    ) -> Result<(Vec<Word>, Option<Tail>), RunError> {
+        // Each where it is in the words being made and was in the heap,
+        // which are the same for a slot.
+        let mut work: Vec<_> = roots.into_iter().map(|(at, ty)| (at, at, ty)).collect();
+        let mut deferred = None;
+        let mut tail = None;
         let mut out = self
             .words
             .get(..self.slot_words)
@@ -1669,7 +1744,27 @@ impl Heap {
                 .ok_or_else(|| fault(Fault::OutsideMemory))
         };
 
-        while let Some((at, ty)) = work.pop() {
+        loop {
+            let Some((at, was, ty)) = work.pop() else {
+                // The value at `last` once every other is moved.
+                let Some(item @ (at, _, _)) = deferred.take() else {
+                    break;
+                };
+
+                tail = Some(Tail {
+                    at,
+                    start: out.len(),
+                });
+                work.push(item);
+                continue;
+            };
+
+            if last.is_some_and(|last| last == was) {
+                last = None;
+                deferred = Some((at, was, ty));
+                continue;
+            }
+
             let word = *out.get(at).ok_or_else(|| fault(Fault::OutsideMemory))?;
 
             match types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))? {
@@ -1677,10 +1772,10 @@ impl Heap {
                 TypeNode::Option(inner) => {
                     if types.tagged(ty).is_some() {
                         if word.as_bool()? {
-                            work.push((step(at, 1)?, *inner));
+                            work.push((step(at, 1)?, step(was, 1)?, *inner));
                         }
                     } else if !word.is_none() {
-                        work.push((at, *inner));
+                        work.push((at, was, *inner));
                     }
                 }
                 TypeNode::String => {
@@ -1699,7 +1794,7 @@ impl Heap {
                     put(&mut out, at, Word::reference(to, len)?)?;
 
                     for (offset, field) in types.field_offsets(fields) {
-                        work.push((step(to, offset)?, field.ty));
+                        work.push((step(to, offset)?, step(start, offset)?, field.ty));
                     }
                 }
                 node @ (TypeNode::List(_) | TypeNode::Map { .. }) => {
@@ -1737,19 +1832,20 @@ impl Heap {
                         work.reserve(len);
 
                         for n in 0..len {
-                            let entry = n
-                                .checked_mul(stride)
-                                .and_then(|at| at.checked_add(to))
-                                .and_then(|at| at.checked_add(offset))
-                                .ok_or_else(|| fault(Fault::OutsideMemory))?;
-                            work.push((entry, ty));
+                            let entry = |base: usize| {
+                                n.checked_mul(stride)
+                                    .and_then(|at| at.checked_add(base))
+                                    .and_then(|at| at.checked_add(offset))
+                                    .ok_or_else(|| fault(Fault::OutsideMemory))
+                            };
+                            work.push((entry(to)?, entry(start)?, ty));
                         }
                     }
                 }
             }
         }
 
-        Ok(out)
+        Ok((out, tail))
     }
 
     /// Copy the `n` words from `from` to `to`, which may overlap.
@@ -1786,6 +1882,13 @@ struct Opening {
     after: usize,
     from: usize,
     new_len: usize,
+}
+
+/// Where [`Heap::compacted`] moved the value it moved last: the word that
+/// holds it, and the first word of its parts, which end the heap.
+struct Tail {
+    at: usize,
+    start: usize,
 }
 
 /// The blocks a [`Plan`] took for the parts of values, by their size in
