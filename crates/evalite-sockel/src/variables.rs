@@ -356,7 +356,8 @@ pub fn VariablesEditor(props: &VariablesEditorProps) -> Html {
                         <ExpressionEditor class={value_class} label={Some(value_label)}
                             source={AttrValue::from(variable.value.clone())}
                             on_input={edit(|v, t| v.value = t)} environment={empty.clone()}
-                            check={declared.is_some()} expected={declared} rows={1} />
+                            check={declared.is_some()} expected={declared}
+                            size={Some(InputSize::Small)} />
                         { mark }
                         <Button variant={ButtonVariant::Quiet} size={ButtonSize::Small} onclick={on_remove}>
                             { phrases.text("evalite-variables-remove").to_string() }

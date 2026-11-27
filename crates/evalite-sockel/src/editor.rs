@@ -8,7 +8,8 @@ use gloo_timers::callback::Timeout;
 use phrasebook::Phrases;
 use phrasebook::yew023::use_phrases_with;
 use sockel::{
-    CodeEditor, CodeSpan, CodeToken, Completion, CompletionQuery, Completions, Diagnostic, Severity,
+    CodeEditor, CodeSpan, CodeToken, Completion, CompletionQuery, Completions, Diagnostic,
+    InputSize, Severity,
 };
 use yew::prelude::*;
 
@@ -79,6 +80,10 @@ pub struct ExpressionEditorProps {
     pub label: Option<AttrValue>,
     #[prop_or(4)]
     pub rows: u32,
+    /// One line, as tall as a sockel input of this size, for a row of
+    /// inputs: Enter is not a newline and Tab moves on.
+    #[prop_or_default]
+    pub size: Option<InputSize>,
     #[prop_or_default]
     pub readonly: bool,
     #[prop_or_default]
@@ -105,6 +110,7 @@ impl PartialEq for ExpressionEditorProps {
             && self.debounce_ms == other.debounce_ms
             && self.label == other.label
             && self.rows == other.rows
+            && self.size == other.size
             && self.readonly == other.readonly
             && self.id == other.id
             && self.describedby == other.describedby
@@ -203,7 +209,7 @@ pub fn ExpressionEditor(props: &ExpressionEditorProps) -> Html {
     html! {
         <CodeEditor {label} value={props.source.clone()} on_input={props.on_input.clone()}
             spans={(*spans).clone()} diagnostics={marks} complete={Some(complete)}
-            rows={props.rows} readonly={props.readonly} id={props.id.clone()}
+            rows={props.rows} size={props.size} readonly={props.readonly} id={props.id.clone()}
             describedby={props.describedby.clone()} class={props.class.clone()} />
     }
 }
