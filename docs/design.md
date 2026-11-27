@@ -145,7 +145,8 @@ written once as `sig::Shape` with one type variable `T`:
 **Types and values as text** (`literal.rs`):
 
 - `Type::parse` and `Value::parse` read what `Display` prints, iteratively,
-  refusing input over `DEFAULT_MAX_LEN` and types over `MAX_TYPE_DEPTH`.
+  refusing input over `DEFAULT_MAX_LEN` and types over `MAX_TYPE_DEPTH`. A
+  type literal cannot reach `MAX_TYPE_NODES`: each node takes two bytes.
 - `Value::parse` follows the type, so its nesting is bounded by the type's.
 - Map values are written `{1: "a"}`. `Value::parse` refuses a duplicate key.
   `Value::map` sorts its entries and keeps the last of a repeated key.
@@ -276,7 +277,8 @@ two have one checker and identical errors (section 9).
 - Bounds:
   - linear in the tree;
   - types are interned (section 4);
-  - a type nesting past `MAX_TYPE_DEPTH` is a compile error (`TypeTooDeep`);
+  - a type nesting past `MAX_TYPE_DEPTH` is a compile error (`TypeTooDeep`),
+    and past `MAX_TYPE_NODES` written out `TypeTooLarge`;
   - counts past `u32` are `TooLarge`.
 
 ### 3.4 Program (`program.rs`)
@@ -325,7 +327,10 @@ inspects what a word is.
 It also bounds the globals' and host functions' types written out: the sum
 over every global, parameter and return type, and everything they reach,
 are each at most `MAX_GLOBAL_TYPE_NODES` (2^21), since `Program::globals()`
-and `Program::functions()` hand out built `Type`s. `functions()` builds
+and `Program::functions()` hand out built `Type`s. The compiler counts the
+same totals as it adds each global and host function (`Held`, each type id
+marked once), and reports the first to cross as `ErrorKind::TypesTooLarge`,
+so a compiled program never fails this check in `Program::verify`. `functions()` builds
 them in one `to_types` pass, so it walks the table once, not once per type.
 
 ### 3.6 Machine (`vm.rs`)
@@ -341,8 +346,8 @@ Section 6.
 | `Options::max_depth` | 32 default | parser | nesting of prefix ops and groups |
 | `MAX_DIAGNOSTICS` | 100 | `Reporter` | diagnostics kept |
 | `MAX_TYPE_DEPTH` | 64 | `Environment`, `Types`, literals, stored tables | type nesting |
-| `MAX_TYPE_NODES` | 65 536 | `Types::add`, stored tables | one type's nodes with shared parts written out |
-| `MAX_GLOBAL_TYPE_NODES` | 2^21 | verifier | a program's globals' and host functions' types written out, together |
+| `MAX_TYPE_NODES` (public) | 65 536 | `Environment`, `Types::add`, stored tables | one type's nodes with shared parts written out; a declared type over it is `DeclareKind::TypeTooLarge`, a value's is `ErrorKind::TypeTooLarge` |
+| `MAX_GLOBAL_TYPE_NODES` | 2^21 | compiler, verifier | a program's globals' and host functions' types written out, together; the compiler reports `ErrorKind::TypesTooLarge` at the global or call that crosses it, the verifier refuses stored bytes |
 | `Limits::memory` | 1024 words default | `Machine` | stack + heap + constants + globals + bound/returned parts |
 | `Limits::fuel` | 1000 default | `Run` | steps per run |
 | `MAX_STEPS` | 4096 | completions | type walks per value when searching paths |

@@ -253,6 +253,12 @@
 //! | Memory  | 64-bit words for the stack, built lists, constants and bound values  | [`DEFAULT_MEMORY`] (1024)  | [`Limits::memory`]     |
 //! | Fuel    | steps: one per instruction, plus one per list or map entry built, `Int` that `min`/`max` compares, word a function returns, and key or string-key word a map lookup compares | [`DEFAULT_FUEL`] (1000) | [`Limits::fuel`] |
 //!
+//! A type has bounds of its own: `MAX_TYPE_DEPTH` (64) levels and
+//! `MAX_TYPE_NODES` (65536) nodes written out, which `Environment::value`
+//! and `Environment::function` refuse. The types of the globals and host
+//! functions an expression uses may have 2^21 nodes together, and an
+//! expression that passes that is a compile error.
+//!
 //! Going too deep is a compile error at the construct that did; the parser
 //! never recurses, so no input overflows the stack. A program's memory is
 //! known when it is compiled, and [`Machine::load`] refuses one that needs
@@ -679,7 +685,7 @@ pub use self::structure::{
     BinaryOp, EditError, HOLE, Node, NodeId, Structure, StructureError, StructureErrors, UnaryOp,
 };
 pub(crate) use self::syntax::Syntax;
-pub use self::types::{FieldTypes, MAX_TYPE_DEPTH, Type};
+pub use self::types::{FieldTypes, MAX_TYPE_DEPTH, MAX_TYPE_NODES, Type};
 pub use self::value::{Fields, Value};
 pub use self::vm::{DEFAULT_FUEL, DEFAULT_MEMORY, Host, Limits, Machine, Outcome, Run};
 pub use syntree::Span;

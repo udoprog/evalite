@@ -520,6 +520,12 @@ pub(crate) enum ErrorKind {
     /// A value whose type nests more than
     /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH) levels.
     TypeTooDeep,
+    /// A value whose type has more than
+    /// [`MAX_TYPE_NODES`](crate::MAX_TYPE_NODES) nodes once written out.
+    TypeTooLarge,
+    /// A program whose globals' and host functions' types, written out
+    /// together, have more than `max` nodes.
+    TypesTooLarge { max: usize },
     /// A program too large to count its parts.
     TooLarge,
     /// The diagnostics past [`MAX_DIAGNOSTICS`], which are left out.
@@ -937,6 +943,15 @@ impl fmt::Display for Diagnostic {
                 f,
                 "this value's type nests more than {}",
                 plural(crate::MAX_TYPE_DEPTH, "level", "levels")
+            ),
+            ErrorKind::TypeTooLarge => write!(
+                f,
+                "this value's type has more than {} parts once written out, which is the most a type may have",
+                crate::MAX_TYPE_NODES
+            ),
+            ErrorKind::TypesTooLarge { max } => write!(
+                f,
+                "the types of the values and functions used so far have more than {max} parts together once written out, which is the most an expression's may have"
             ),
             ErrorKind::TooLarge => f.write_str("this expression is too large to compile"),
             ErrorKind::MoreErrors(n) => {

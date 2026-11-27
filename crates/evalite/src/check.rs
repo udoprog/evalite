@@ -17,7 +17,7 @@ use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
 use crate::references::{Literal, Recorder, Reference, ReferenceKind};
 use crate::sig::{Mismatch, Shape};
 use crate::syntax::{Syntax, callee, unescape};
-use crate::types::{TypeId, TypeNode, Types};
+use crate::types::{Held, TypeFault, TypeId, TypeNode, Types, check_type};
 
 type N<'a> = Node<'a, Syntax, crate::parser::Flavor>;
 
@@ -261,6 +261,8 @@ struct Compiler<'a> {
     span: Span<u32>,
     /// The words the globals so far take.
     global_words: usize,
+    /// What the globals and host functions so far hold.
+    held: Held,
     values: Vec<Value>,
     /// `&&` and `||` jumps waiting for their right operands.
     jumps: Vec<usize>,
@@ -297,6 +299,7 @@ impl<'a> Compiler<'a> {
             spans: Vec::new(),
             span: Span::point(0),
             global_words: 0,
+            held: Held::default(),
             values: Vec::new(),
             jumps: Vec::new(),
             error: TypeId(u32::MAX),
@@ -314,15 +317,51 @@ impl<'a> Compiler<'a> {
     }
 
     fn node(&mut self, node: TypeNode, at: Span<u32>) -> Result<TypeId, Diagnostic> {
-        self.types
-            .add(node)
-            .ok_or_else(|| Diagnostic::new(at, ErrorKind::TypeTooDeep))
+        let large = self.types.is_large(&node);
+
+        self.types.add(node).ok_or_else(|| {
+            Diagnostic::new(
+                at,
+                if large {
+                    ErrorKind::TypeTooLarge
+                } else {
+                    ErrorKind::TypeTooDeep
+                },
+            )
+        })
     }
 
     fn intern(&mut self, ty: &Type, at: Span<u32>) -> Result<TypeId, Diagnostic> {
+        self.types.intern(ty).ok_or_else(|| {
+            let large = check_type(ty) == Err(TypeFault::TooLarge);
+            Diagnostic::new(
+                at,
+                if large {
+                    ErrorKind::TypeTooLarge
+                } else {
+                    ErrorKind::TypeTooDeep
+                },
+            )
+        })
+    }
+
+    /// Hold `ty` in a global or a host function, reporting at `at` the
+    /// type that takes what is held past what a program may hold.
+    fn hold(&mut self, ty: TypeId, at: Span<u32>) -> Result<(), Diagnostic> {
         self.types
-            .intern(ty)
-            .ok_or_else(|| Diagnostic::new(at, ErrorKind::TypeTooDeep))
+            .hold(&mut self.held, ty)
+            .ok_or_else(|| internal("a held type outside the table"))?;
+
+        if self.held.too_large() {
+            return Err(Diagnostic::new(
+                at,
+                ErrorKind::TypesTooLarge {
+                    max: crate::program::MAX_GLOBAL_TYPE_NODES,
+                },
+            ));
+        }
+
+        Ok(())
     }
 
     /// Emit `instr`. The memory the code uses is the verifier's to count
@@ -625,6 +664,7 @@ impl<'a> Compiler<'a> {
         };
 
         let ty = self.intern(ty, at)?;
+        self.hold(ty, at)?;
         let g = count(self.global_words)?;
         self.global_words = self.global_words.saturating_add(self.types.width(ty));
         self.globals.push(Global {
@@ -896,6 +936,11 @@ impl<'a> Compiler<'a> {
             Some(f) => *f,
             None => {
                 let f = count(self.functions.len())?;
+
+                for ty in found.iter().copied().chain([ret]) {
+                    self.hold(ty, span)?;
+                }
+
                 self.functions.push(HostFunction {
                     name: name.to_owned(),
                     params: found.to_vec(),

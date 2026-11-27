@@ -11,9 +11,10 @@ use musli::{Decode, Encode};
 pub const MAX_TYPE_DEPTH: usize = 64;
 
 /// How many nodes a type may have once its shared parts are written out,
-/// so `List<Int>` has 2. Types are trees, but a stored table shares parts,
-/// so a few nodes can stand for more than a program could hold.
-pub(crate) const MAX_TYPE_NODES: usize = 1 << 16;
+/// so `List<Int>` has 2. Declared types past it are refused, and so are
+/// stored programs. A type is a tree, but a stored table shares parts, so a
+/// few nodes can stand for more than a program could hold.
+pub const MAX_TYPE_NODES: usize = 1 << 16;
 
 /// The type of a value: `Int`, `Bool`, `String`, `List<T>`, `Option<T>`,
 /// `Map<K, V>` or a record.
@@ -343,18 +344,29 @@ pub(crate) fn is_field_name(name: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TypeFault {
     TooDeep,
+    /// More than [`MAX_TYPE_NODES`] nodes.
+    TooLarge,
     /// A map whose key type is neither `Int` nor `String`.
     MapKey,
 }
 
-/// Check that `ty` is a type evalite has: at most [`MAX_TYPE_DEPTH`] deep,
-/// and each map keyed by `Int` or `String`.
+/// Check that `ty` is a type evalite has: at most [`MAX_TYPE_DEPTH`] deep
+/// and [`MAX_TYPE_NODES`] nodes, and each map keyed by `Int` or `String`.
+/// It stops at the first fault, so it visits at most [`MAX_TYPE_NODES`] and
+/// one nodes.
 pub(crate) fn check_type(ty: &Type) -> Result<(), TypeFault> {
     let mut stack = vec![(ty, 1usize)];
+    let mut nodes = 0usize;
 
     while let Some((ty, depth)) = stack.pop() {
         if depth > MAX_TYPE_DEPTH {
             return Err(TypeFault::TooDeep);
+        }
+
+        nodes = nodes.saturating_add(1);
+
+        if nodes > MAX_TYPE_NODES {
+            return Err(TypeFault::TooLarge);
         }
 
         let next = depth.saturating_add(1);
@@ -769,6 +781,11 @@ impl Types {
         }
     }
 
+    /// Whether `node` would have more than [`MAX_TYPE_NODES`] nodes.
+    pub(crate) fn is_large(&self, node: &TypeNode) -> bool {
+        self.node_size(node) > MAX_TYPE_NODES
+    }
+
     /// The id of `node`, adding it when new. `None` when the table is
     /// full, the type nests past [`MAX_TYPE_DEPTH`] or has more than
     /// [`MAX_TYPE_NODES`] nodes.
@@ -955,6 +972,33 @@ impl Types {
             .collect()
     }
 
+    /// Add `id` to what a program holds, keeping `held`'s counts as
+    /// [`Program::verify`](crate::program::Program::verify) takes them.
+    /// Each node is marked once over every call, so any number of calls
+    /// walk the table once. `None` when `id` is not in the table.
+    pub(crate) fn hold(&self, held: &mut Held, id: TypeId) -> Option<()> {
+        held.nodes = held.nodes.saturating_add(*self.sizes.get(id.index())?);
+        let mut stack = vec![id];
+
+        while let Some(id) = stack.pop() {
+            if held.marked.len() <= id.index() {
+                held.marked.resize(id.index().checked_add(1)?, false);
+            }
+
+            let marked = held.marked.get_mut(id.index())?;
+
+            if *marked {
+                continue;
+            }
+
+            *marked = true;
+            held.reached = held.reached.saturating_add(*self.sizes.get(id.index())?);
+            stack.extend(parts(self.nodes.get(id.index())?));
+        }
+
+        Some(())
+    }
+
     /// The nodes written out for everything `ids` reach, each counted once:
     /// what [`Types::to_types`] holds while it builds.
     pub(crate) fn reached_size(&self, ids: &[TypeId]) -> Option<usize> {
@@ -1086,6 +1130,27 @@ impl Types {
         }
 
         Ok(types)
+    }
+}
+
+/// The types a program under compilation holds in its globals and host
+/// functions, counted as [`Program::verify`](crate::program::Program::verify)
+/// bounds them.
+#[derive(Debug, Default)]
+pub(crate) struct Held {
+    /// The types held, each written out and counted every time held.
+    nodes: usize,
+    /// Which ids the types held reach.
+    marked: Vec<bool>,
+    /// The written-out sizes of the types reached, each counted once.
+    reached: usize,
+}
+
+impl Held {
+    /// Whether more is held than a program may hold.
+    pub(crate) fn too_large(&self) -> bool {
+        self.nodes > crate::program::MAX_GLOBAL_TYPE_NODES
+            || self.reached > crate::program::MAX_GLOBAL_TYPE_NODES
     }
 }
 

@@ -60,6 +60,9 @@ pub(crate) enum DeclareKind {
     /// A type nesting more than [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH)
     /// levels.
     TypeTooDeep,
+    /// A type with more than [`MAX_TYPE_NODES`](crate::MAX_TYPE_NODES)
+    /// nodes.
+    TypeTooLarge,
     /// A map whose key type is neither `Int` nor `String`.
     MapKey,
 }
@@ -87,6 +90,11 @@ impl fmt::Display for DeclareError {
                 f,
                 "the type of `{name}` nests more than {} levels",
                 crate::MAX_TYPE_DEPTH
+            ),
+            DeclareKind::TypeTooLarge => write!(
+                f,
+                "the type of `{name}` has more than {} parts once written out, which is the most a type may have",
+                crate::MAX_TYPE_NODES
             ),
             DeclareKind::MapKey => write!(
                 f,
@@ -129,7 +137,8 @@ impl Environment {
     ///
     /// Returns a [`DeclareError`] when `name` is not a valid name (lowercase
     /// letters, digits and `_`, starting with a letter or `_`), `ty` nests
-    /// deeper than [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH), or `ty` has a
+    /// deeper than [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH) or has more than
+    /// [`MAX_TYPE_NODES`](crate::MAX_TYPE_NODES) nodes, or `ty` has a
     /// [`Type::map`] keyed by other than `Int` or `String`.
     pub fn value(&mut self, name: &str, ty: Type) -> Result<(), DeclareError> {
         check_name(name)?;
@@ -148,7 +157,8 @@ impl Environment {
     ///
     /// Returns a [`DeclareError`] when `name` is not a valid name, or a
     /// parameter or `ret` nests deeper than
-    /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH) or has a map keyed by other
+    /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH), has more than
+    /// [`MAX_TYPE_NODES`](crate::MAX_TYPE_NODES) nodes or has a map keyed by other
     /// than `Int` or `String`.
     pub fn function(
         &mut self,
@@ -236,6 +246,7 @@ fn check_name(name: &str) -> Result<(), DeclareError> {
 fn check(name: &str, ty: &Type) -> Result<(), DeclareError> {
     check_type(ty).map_err(|fault| match fault {
         TypeFault::TooDeep => DeclareError::new(DeclareKind::TypeTooDeep, name),
+        TypeFault::TooLarge => DeclareError::new(DeclareKind::TypeTooLarge, name),
         TypeFault::MapKey => DeclareError::new(DeclareKind::MapKey, name),
     })
 }

@@ -12,7 +12,7 @@ pub(crate) const FORMAT: u32 = 5;
 /// How many nodes the globals' and host functions' types may have
 /// together, each written out in full, as [`Program::globals`] and
 /// [`Program::functions`] hand them out.
-const MAX_GLOBAL_TYPE_NODES: usize = 1 << 21;
+pub(crate) const MAX_GLOBAL_TYPE_NODES: usize = 1 << 21;
 
 /// One instruction of a stack machine over words of memory. A value takes
 /// the words its type's layout gives it: one for an `Int`, a `Bool` (0 or

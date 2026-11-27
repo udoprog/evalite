@@ -926,6 +926,141 @@ fn declarations() {
     }
 }
 
+/// A record of `fields` `Int` fields, `fields + 1` nodes written out.
+fn wide(fields: usize) -> Type {
+    Type::record((0..fields).map(|i| (format!("f{i}"), Type::int())))
+}
+
+#[test]
+fn types_with_too_many_nodes_are_refused_at_declaration() {
+    let mut env = Environment::new();
+
+    // The most a type may have is accepted, one more is refused, whatever
+    // its depth.
+    assert_eq!(env.value("x", wide(MAX_TYPE_NODES - 1)), Ok(()));
+    assert_eq!(
+        env.value("y", wide(MAX_TYPE_NODES)),
+        Err(DeclareError::new(DeclareKind::TypeTooLarge, "y"))
+    );
+    assert_eq!(
+        env.value("y", wide(70_000)),
+        Err(DeclareError::new(DeclareKind::TypeTooLarge, "y"))
+    );
+    assert_eq!(env.value_type("y"), None);
+
+    assert_eq!(
+        env.function("f", [wide(70_000)], Type::int()),
+        Err(DeclareError::new(DeclareKind::TypeTooLarge, "f"))
+    );
+    assert_eq!(
+        env.function("f", [], wide(70_000)),
+        Err(DeclareError::new(DeclareKind::TypeTooLarge, "f"))
+    );
+    assert_eq!(
+        env.function("f", [], Type::list(wide(MAX_TYPE_NODES - 1))),
+        Err(DeclareError::new(DeclareKind::TypeTooLarge, "f"))
+    );
+
+    assert_eq!(
+        DeclareError::new(DeclareKind::TypeTooLarge, "y").to_string(),
+        "the type of `y` has more than 65536 parts once written out, which is the most a type may have"
+    );
+
+    // What is declared compiles, so the compiler never meets a type it
+    // cannot hold.
+    assert_eq!(
+        compile("x.f0 + x.f65534", &env).unwrap().result_type(),
+        Type::int()
+    );
+}
+
+#[test]
+fn a_value_over_the_type_limit_is_its_own_error() {
+    let mut env = Environment::new();
+    env.value("x", wide(MAX_TYPE_NODES - 1)).unwrap();
+
+    let (message, at) = error_in("[x]", &env);
+    assert_eq!(
+        message,
+        "this value's type has more than 65536 parts once written out, which is the most a type may have"
+    );
+    assert_eq!(at, 0..3);
+
+    // Not a nesting error.
+    let (message, _) = error_in("[x].len()", &env);
+    assert!(!message.contains("nests"), "{message}");
+}
+
+#[test]
+fn globals_over_the_total_are_a_diagnostic() {
+    let mut env = Environment::new();
+    let names = (0..40).map(|i| format!("g{i}")).collect::<Vec<_>>();
+
+    for name in &names {
+        env.value(name, wide(60_000)).unwrap();
+    }
+
+    let source = names
+        .iter()
+        .map(|name| format!("{name}.f0"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+
+    let errors = diagnostics_in(&source, &env);
+    let max = crate::program::MAX_GLOBAL_TYPE_NODES;
+
+    // Each is 60001 nodes, so the 35th is the first to pass 2^21.
+    let (message, at) = errors.first().unwrap();
+    assert_eq!(*at, "g34");
+    assert_eq!(
+        message,
+        &format!(
+            "the types of the values and functions used so far have more than {max} parts together once written out, which is the most an expression's may have"
+        )
+    );
+    assert!(
+        errors.iter().all(|(m, _)| !m.contains("internal")),
+        "{errors:?}"
+    );
+
+    // Under the total, the same globals compile.
+    let ok = names
+        .iter()
+        .take(34)
+        .map(|name| format!("{name}.f0"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    assert_eq!(compile(&ok, &env).unwrap().result_type(), Type::int());
+}
+
+#[test]
+fn functions_count_to_the_total_too() {
+    let mut env = Environment::new();
+    let names = (0..40).map(|i| format!("f{i}")).collect::<Vec<_>>();
+
+    for name in &names {
+        env.function(name, [], wide(60_000)).unwrap();
+    }
+
+    let source = names
+        .iter()
+        .map(|name| format!("{name}().f0"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+
+    let errors = diagnostics_in(&source, &env);
+    let (message, at) = errors.first().unwrap();
+    assert!(
+        message.starts_with("the types of the values and functions"),
+        "{message}"
+    );
+    assert_eq!(*at, "f34()");
+    assert!(
+        errors.iter().all(|(m, _)| !m.contains("internal")),
+        "{errors:?}"
+    );
+}
+
 #[test]
 fn redeclaring() {
     let mut env = Environment::new();
