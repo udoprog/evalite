@@ -1,6 +1,7 @@
 //! Completions: what fits in a structure's hole, by the type its place
 //! takes.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 
@@ -8,6 +9,7 @@ use crate::Type;
 use crate::env::Environment;
 use crate::error::Arity;
 use crate::methods::{self, Associated};
+use crate::parser::DEFAULT_MAX_LEN;
 use crate::sig::Shape;
 use crate::structure::{
     BinaryOp, EditError, EditKind, HOLE, Node, NodeId, Repr, Structure, StructureErrors, UnaryOp,
@@ -46,7 +48,7 @@ pub enum CompletionKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Insert {
     /// Put this expression, holes and all, in the node's place.
-    Expr(Structure),
+    Expr(Expr),
     /// Name a member hole's field, read as `["name"]` when it is not
     /// written as a name.
     Field(String),
@@ -361,7 +363,7 @@ impl Want {
     /// Whether a value of `ty` fits, or reaches something that fits
     /// through its fields, entries and methods.
     fn reachable(&self, ty: &Type) -> bool {
-        let mut stack = vec![ty.clone()];
+        let mut stack = vec![Cow::Borrowed(ty)];
         let mut steps = 0usize;
 
         while let Some(ty) = stack.pop() {
@@ -375,18 +377,26 @@ impl Want {
                 return true;
             }
 
+            // What a borrowed type holds is borrowed too.
             match &ty {
-                Type(Kind::Record(fields)) => stack.extend(fields.values().cloned()),
-                Type(Kind::List(entry)) => stack.push((**entry).clone()),
-                _ => {}
+                Cow::Borrowed(ty) => match *ty {
+                    Type(Kind::Record(fields)) => stack.extend(fields.values().map(Cow::Borrowed)),
+                    Type(Kind::List(entry)) => stack.push(Cow::Borrowed(&**entry)),
+                    _ => {}
+                },
+                Cow::Owned(Type(Kind::Record(fields))) => {
+                    stack.extend(fields.values().cloned().map(Cow::Owned));
+                }
+                Cow::Owned(Type(Kind::List(entry))) => stack.push(Cow::Owned((**entry).clone())),
+                Cow::Owned(_) => {}
             }
 
             for method in receiver_methods(&ty) {
-                let (_, ret) = method.signature(&ty);
+                let ret = returns(method, &ty);
 
                 // `Int`'s methods give an `Int`: nothing new to reach.
-                if ret != ty {
-                    stack.push(ret);
+                if ret != *ty {
+                    stack.push(Cow::Owned(ret));
                 }
             }
         }
@@ -539,8 +549,15 @@ impl Structure {
             _ => self.values(env, at, &want),
         };
 
-        let mut seen = HashSet::new();
-        out.retain(|c| seen.insert(c.label.clone()));
+        let keep = {
+            let mut seen = HashSet::with_capacity(out.len());
+            out.iter()
+                .map(|c| seen.insert(c.label.as_str()))
+                .collect::<Vec<_>>()
+        };
+
+        let mut keep = keep.into_iter();
+        out.retain(|_| keep.next().unwrap_or(true));
         Ok(out)
     }
 
@@ -551,7 +568,7 @@ impl Structure {
     ///
     /// Returns an [`EditError`] when `at` is not a node of the structure, when
     /// `completion` is a field or method and `at` is neither, or when the edit
-    /// would break the tree, as [`graft`](Self::graft) and
+    /// would break the tree, as [`add`](Self::add) and
     /// [`replace`](Self::replace) do.
     pub fn apply(&mut self, at: NodeId, completion: &Completion) -> Result<(), EditError> {
         let (receiver, old_args) = match self.get(at) {
@@ -562,7 +579,7 @@ impl Structure {
         };
 
         match &completion.insert {
-            Insert::Expr(expr) => self.graft(at, expr),
+            Insert::Expr(expr) => expr.build(self, at),
             Insert::Field(name) => {
                 let receiver = receiver.ok_or(EditKind::NotAMember(at))?;
 
@@ -820,31 +837,48 @@ impl Structure {
             for name in fields.keys() {
                 let mut label = String::new();
                 escape(&mut label, name);
-                expr(
-                    &mut out,
-                    label,
-                    CompletionKind::Literal,
+                let (ty, expr) = (
                     Some(Type::string()),
+                    Expr::Literal(Repr::String(name.clone())),
                 );
+                offer(&mut out, label, CompletionKind::Literal, ty, None, || expr);
             }
 
             return out;
         }
 
+        let mut described = Described::default();
+
         for (name, ty) in &env.values {
-            paths(&mut out, name, ty, want);
+            paths(&mut out, &mut described, name, ty, want);
         }
 
         for (name, overloads) in &env.functions {
+            // `true(_)` is not a call.
+            if matches!(name.as_str(), "true" | "false") {
+                continue;
+            }
+
             for overload in overloads {
                 if !want.fits(&overload.ret) {
                     continue;
                 }
 
-                let label = format!("{name}({})", holes(overload.params.len()));
+                let n = overload.params.len();
+                let label = call_label(name, n);
                 let ty = Some(overload.ret.clone());
-                let signature = overload.signature(name);
-                expr_signed(&mut out, label, CompletionKind::Function, ty, signature);
+                let signature = Some(overload.signature(name));
+                offer(
+                    &mut out,
+                    label,
+                    CompletionKind::Function,
+                    ty,
+                    signature,
+                    || Expr::Call {
+                        function: name.clone(),
+                        args: n,
+                    },
+                );
             }
         }
 
@@ -853,26 +887,36 @@ impl Structure {
                 continue;
             };
 
-            let label = format!("{}({})", function.path(), holes(function.sig.holes()));
-            let signature = function.describe();
-            expr_signed(&mut out, label, CompletionKind::Function, ty, signature);
+            let path = function.path();
+            let n = function.sig.holes();
+            let label = call_label(&path, n);
+            let signature = Some(function.describe());
+            offer(
+                &mut out,
+                label,
+                CompletionKind::Function,
+                ty,
+                signature,
+                || Expr::Call {
+                    function: path,
+                    args: n,
+                },
+            );
         }
 
         let literals = [
-            ("0", Type::int()),
-            ("true", Type::bool()),
-            ("false", Type::bool()),
-            ("\"\"", Type::string()),
+            ("0", Repr::Int(0), Type::int()),
+            ("true", Repr::Bool(true), Type::bool()),
+            ("false", Repr::Bool(false), Type::bool()),
+            ("\"\"", Repr::String(String::new()), Type::string()),
         ];
 
-        for (label, ty) in literals {
+        for (label, repr, ty) in literals {
             if want.fits(&ty) {
-                expr(
-                    &mut out,
-                    label.to_owned(),
-                    CompletionKind::Literal,
-                    Some(ty),
-                );
+                let (label, ty) = (label.to_owned(), Some(ty));
+                offer(&mut out, label, CompletionKind::Literal, ty, None, || {
+                    Expr::Literal(repr)
+                });
             }
         }
 
@@ -886,7 +930,10 @@ impl Structure {
         };
 
         if let Some(ty) = list {
-            expr(&mut out, format!("[{HOLE}]"), CompletionKind::Literal, ty);
+            let label = format!("[{HOLE}]");
+            offer(&mut out, label, CompletionKind::Literal, ty, None, || {
+                Expr::List
+            });
         }
 
         let operators = [
@@ -922,107 +969,325 @@ impl Structure {
                 continue;
             }
 
-            for op in binary {
+            for &op in binary {
                 let label = format!("{HOLE} {} {HOLE}", op.symbol());
-                expr(&mut out, label, CompletionKind::Operator, Some(ty.clone()));
+                let ty = Some(ty.clone());
+                offer(&mut out, label, CompletionKind::Operator, ty, None, || {
+                    Expr::Binary(op)
+                });
             }
 
             let label = format!("{}{HOLE}", unary.symbol());
-            expr(&mut out, label, CompletionKind::Operator, Some(ty.clone()));
+            let ty = Some(ty.clone());
+            offer(&mut out, label, CompletionKind::Operator, ty, None, || {
+                Expr::Unary(unary)
+            });
         }
 
         if let Some(ty) = want.unwrapped() {
-            expr(&mut out, format!("{HOLE}!"), CompletionKind::Operator, ty);
+            let label = format!("{HOLE}!");
+            offer(&mut out, label, CompletionKind::Operator, ty, None, || {
+                Expr::Unwrap
+            });
         }
 
         out
     }
 }
 
-/// Offer the expression `label` is the text of.
-fn expr(out: &mut Vec<Completion>, label: String, kind: CompletionKind, ty: Option<Type>) {
-    if let Ok(structure) = Structure::from_text(&label) {
-        out.push(Completion {
-            label,
-            kind,
-            ty,
-            signature: None,
-            insert: Insert::Expr(structure),
-        });
-    }
-}
-
-/// Offer the call or method call `label` is the text of, of `signature`.
-fn expr_signed(
+/// Offer the expression `label` is the text of. One whose text would not
+/// parse back, as it is too long, is not offered.
+fn offer(
     out: &mut Vec<Completion>,
     label: String,
     kind: CompletionKind,
     ty: Option<Type>,
-    signature: String,
+    signature: Option<String>,
+    expr: impl FnOnce() -> Expr,
 ) {
-    expr(out, label, kind, ty);
+    if label.len() > DEFAULT_MAX_LEN {
+        return;
+    }
 
-    if let Some(last) = out.last_mut() {
-        last.signature = Some(signature);
+    out.push(Completion {
+        label,
+        kind,
+        ty,
+        signature,
+        insert: Insert::Expr(expr()),
+    });
+}
+
+/// An expression a [`Completion`] puts in a node's place, holes and all,
+/// which [`Structure::apply`] builds there: its nodes are made only for
+/// the completion applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Expr {
+    /// A node without parts: an integer, a bool or a string.
+    Literal(Repr),
+    /// `[_]`.
+    List,
+    /// `_ op _`.
+    Binary(BinaryOp),
+    /// `op _`.
+    Unary(UnaryOp),
+    /// `_!`.
+    Unwrap,
+    /// A call of `function` with `args` holes.
+    Call { function: String, args: usize },
+    /// The value `name`, along `steps`, then `end`.
+    Path {
+        name: String,
+        steps: Vec<Step<String>>,
+        end: End,
+    },
+}
+
+impl Expr {
+    /// Build it in `s`, in place of node `at`, as
+    /// [`graft`](Structure::graft) would its structure: the nodes it holds
+    /// are added parts first, then `at` is replaced.
+    fn build(&self, s: &mut Structure, at: NodeId) -> Result<(), EditError> {
+        if s.get(at).is_none() {
+            return Err(EditKind::UnknownNode(at).into());
+        }
+
+        let repr = match self {
+            Self::Literal(repr) => repr.clone(),
+            Self::List => Repr::List {
+                entries: vec![hole(s)?],
+            },
+            Self::Binary(op) => Repr::Binary {
+                op: *op,
+                left: hole(s)?,
+                right: hole(s)?,
+            },
+            Self::Unary(op) => Repr::Unary {
+                op: *op,
+                operand: hole(s)?,
+            },
+            Self::Unwrap => Repr::Unwrap { operand: hole(s)? },
+            Self::Call { function, args } => Repr::Call {
+                function: function.clone(),
+                args: holes(s, *args)?,
+            },
+            Self::Path { name, steps, end } => path(s, name, steps, end)?,
+        };
+
+        s.replace(at, Node(repr))
     }
 }
 
-fn holes(n: usize) -> String {
-    vec![HOLE; n].join(", ")
+/// Add a hole to `s`.
+fn hole(s: &mut Structure) -> Result<NodeId, EditError> {
+    s.add(Node(Repr::Hole))
+}
+
+/// Add `n` holes to `s`.
+fn holes(s: &mut Structure, n: usize) -> Result<Vec<NodeId>, EditError> {
+    (0..n).map(|_| hole(s)).collect()
+}
+
+/// `function(_, ...)`, with `n` holes.
+fn call_label(function: &str, n: usize) -> String {
+    let mut out = String::with_capacity(function.len().saturating_add(n.saturating_mul(3)));
+    out.push_str(function);
+    push_holes(&mut out, n);
+    out
+}
+
+/// Write `(_, ...)`, with `n` holes.
+fn push_holes(out: &mut String, n: usize) {
+    out.push('(');
+
+    for i in 0..n {
+        if i > 0 {
+            out.push_str(", ");
+        }
+
+        out.push_str(HOLE);
+    }
+
+    out.push(')');
+}
+
+/// `a` then `b`.
+fn joined(a: &str, b: &str) -> String {
+    let mut out = String::with_capacity(a.len().saturating_add(b.len()));
+    out.push_str(a);
+    out.push_str(b);
+    out
+}
+
+/// What `method` gives, called on `receiver`, which has it: what
+/// [`MethodSig::signature`](methods::MethodSig::signature) gives, without
+/// its parameters.
+fn returns(method: &methods::MethodSig, receiver: &Type) -> Type {
+    let mut t = None;
+    let t = method
+        .receiver
+        .bind(receiver, &mut t)
+        .then_some(t)
+        .flatten();
+    method.sig.ret.resolve(t.as_ref()).unwrap_or_else(Type::int)
+}
+
+/// Methods' [`describe`](methods::MethodSig::describe)s, each written
+/// once per [`Structure::complete`].
+#[derive(Default)]
+struct Described(Vec<(&'static methods::MethodSig, String)>);
+
+impl Described {
+    fn of(&mut self, method: &'static methods::MethodSig) -> String {
+        if let Some((_, text)) = self.0.iter().find(|(m, _)| std::ptr::eq(*m, method)) {
+            return text.clone();
+        }
+
+        let text = method.describe();
+        self.0.push((method, text.clone()));
+        text
+    }
+}
+
+/// A step along a path into a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Step<S> {
+    /// Its field `name`.
+    Field(S),
+    /// An entry of a list, `[_]`.
+    Entry,
+}
+
+/// What a path ends with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum End {
+    Value,
+    /// `!`.
+    Unwrap,
+    /// A call of its method `name` with `args` holes.
+    Method {
+        name: &'static str,
+        args: usize,
+    },
+}
+
+/// The value `name`, along `steps`, then `end`: the node at the end, its
+/// parts added to `s`.
+fn path(
+    s: &mut Structure,
+    name: &str,
+    steps: &[Step<String>],
+    end: &End,
+) -> Result<Repr, EditError> {
+    // As it is read: `_` is a hole and `true` a literal.
+    let mut repr = match name {
+        HOLE => Repr::Hole,
+        "true" => Repr::Bool(true),
+        "false" => Repr::Bool(false),
+        _ => Repr::Name(name.to_owned()),
+    };
+
+    for step in steps {
+        let receiver = s.add(Node(repr))?;
+
+        repr = match step {
+            Step::Field(name) if is_field_name(name) && !is_reserved(name) => Repr::Field {
+                receiver,
+                name: Some(name.clone()),
+            },
+            Step::Field(name) => Repr::Index {
+                receiver,
+                index: s.add(Node(Repr::String(name.clone())))?,
+            },
+            Step::Entry => Repr::Index {
+                receiver,
+                index: hole(s)?,
+            },
+        };
+    }
+
+    Ok(match *end {
+        End::Value => repr,
+        End::Unwrap => Repr::Unwrap {
+            operand: s.add(Node(repr))?,
+        },
+        End::Method { name, args } => Repr::Method {
+            receiver: s.add(Node(repr))?,
+            name: Some(name.to_owned()),
+            args: holes(s, args)?,
+        },
+    })
 }
 
 /// The value `name` of type `ty`, or the paths into it, and the methods at
 /// their ends, that give what `want` takes.
-fn paths(out: &mut Vec<Completion>, name: &str, ty: &Type, want: &Want) {
-    let mut stack = vec![(name.to_owned(), ty.clone())];
+fn paths(out: &mut Vec<Completion>, described: &mut Described, name: &str, ty: &Type, want: &Want) {
+    let mut stack = vec![(name.to_owned(), Vec::new(), ty)];
     let mut steps = 0usize;
 
-    while let Some((path, ty)) = stack.pop() {
+    while let Some((label, path, ty)) = stack.pop() {
         steps = steps.saturating_add(1);
 
         if steps > MAX_STEPS {
             break;
         }
 
-        if want.fits(&ty) {
-            expr(out, path, CompletionKind::Value, Some(ty));
+        if want.fits(ty) {
+            let kind = CompletionKind::Value;
+            offer(out, label, kind, Some(ty.clone()), None, || {
+                path_expr(name, &path, End::Value)
+            });
             continue;
         }
 
-        if let Type(Kind::Option(value)) = &ty
+        if let Type(Kind::Option(value)) = ty
             && want.fits(value)
         {
-            let label = format!("{path}!");
-            expr(out, label, CompletionKind::Unwrap, Some((**value).clone()));
+            let label = joined(&label, "!");
+            let ty = Some((**value).clone());
+            offer(out, label, CompletionKind::Unwrap, ty, None, || {
+                path_expr(name, &path, End::Unwrap)
+            });
         }
 
-        for method in receiver_methods(&ty) {
-            let (params, ret) = method.signature(&ty);
+        for method in receiver_methods(ty) {
+            let ret = returns(method, ty);
 
             if want.fits(&ret) {
-                let label = format!("{path}.{}({})", method.name, holes(params.len()));
-                expr_signed(
-                    out,
-                    label,
-                    CompletionKind::Method,
-                    Some(ret),
-                    method.describe(),
-                );
+                let n = method.sig.params.len();
+                let mut text = String::with_capacity(label.len().saturating_add(16));
+                text.push_str(&label);
+                text.push('.');
+                text.push_str(method.name);
+                push_holes(&mut text, n);
+
+                let (kind, signature) = (CompletionKind::Method, Some(described.of(method)));
+                offer(out, text, kind, Some(ret), signature, || {
+                    let end = End::Method {
+                        name: method.name,
+                        args: n,
+                    };
+                    path_expr(name, &path, end)
+                });
             }
         }
 
         let mut next = Vec::new();
 
-        match &ty {
+        match ty {
             Type(Kind::Record(fields)) => {
                 for (field, ty) in fields {
                     if want.reachable(ty) {
-                        next.push((format!("{path}{}", member(field)), ty.clone()));
+                        let mut path = path.clone();
+                        path.push(Step::Field(field));
+                        next.push((joined(&label, &member(field)), path, ty));
                     }
                 }
             }
             Type(Kind::List(entry)) if want.reachable(entry) => {
-                next.push((format!("{path}[{HOLE}]"), (**entry).clone()));
+                let mut path = path.clone();
+                path.push(Step::Entry);
+                next.push((joined(&label, "[_]"), path, &**entry));
             }
             _ => {}
         }
@@ -1031,10 +1296,25 @@ fn paths(out: &mut Vec<Completion>, name: &str, ty: &Type, want: &Want) {
     }
 }
 
+/// The path `name` then `steps`, to `end`.
+fn path_expr(name: &str, steps: &[Step<&str>], end: End) -> Expr {
+    Expr::Path {
+        name: name.to_owned(),
+        steps: steps
+            .iter()
+            .map(|step| match step {
+                Step::Field(name) => Step::Field((*name).to_owned()),
+                Step::Entry => Step::Entry,
+            })
+            .collect(),
+        end,
+    }
+}
+
 /// How the field `name` is read: `.name`, or `["name"]`.
 fn member(name: &str) -> String {
     if is_field_name(name) && !is_reserved(name) {
-        format!(".{name}")
+        joined(".", name)
     } else {
         let mut out = String::from("[");
         escape(&mut out, name);
@@ -1070,7 +1350,7 @@ fn members(receiver: &Type, want: &Want) -> Vec<Completion> {
 
         if want.reachable(&ret) {
             out.push(Completion {
-                label: format!("{}({})", method.name, holes(params.len())),
+                label: call_label(method.name, params.len()),
                 kind: CompletionKind::Method,
                 ty: Some(ret),
                 signature: Some(method.describe()),

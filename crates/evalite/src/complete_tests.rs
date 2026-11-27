@@ -565,13 +565,12 @@ fn applying_members() {
     // An expression may replace any node, hole or not.
     let mut s = self::s("wits + 1");
     let one = s.post_order()[1];
-    let completion = Completion {
-        label: "bonus.unwrap_or(_)".into(),
-        kind: CompletionKind::Method,
-        ty: Some(Type::int()),
-        signature: None,
-        insert: Insert::Expr(self::s("bonus.unwrap_or(_)")),
-    };
+    let completion = s
+        .complete(&env, one, None)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.label == "bonus.unwrap_or(_)")
+        .unwrap();
     s.apply(one, &completion).unwrap();
     assert_eq!(s.to_text(), "wits + bonus.unwrap_or(_)");
 }
@@ -597,6 +596,94 @@ fn method(name: &str, args: usize) -> Completion {
             args,
         },
     }
+}
+
+/// Each expression offered builds what its label parses to.
+fn assert_parsed(env: &Environment, text: &str, n: usize, root: Option<&Type>) -> usize {
+    let s = s(text);
+    let hole = s.holes()[n];
+    let mut checked = 0;
+
+    for c in s.complete(env, hole, root).unwrap() {
+        let Insert::Expr(_) = &c.insert else {
+            continue;
+        };
+
+        let mut built = Structure::new();
+        built.apply(built.root(), &c).unwrap();
+
+        let parsed = Structure::from_text(&c.label)
+            .unwrap_or_else(|e| panic!("{text:?}: {:?} does not parse: {e}", c.label));
+        assert_eq!(built, parsed, "{text:?}: {:?}", c.label);
+        assert_eq!(built.to_text(), c.label, "{text:?}");
+        checked += 1;
+    }
+
+    checked
+}
+
+#[test]
+fn completions_are_their_labels() {
+    let env = env();
+    let mut checked = 0;
+
+    for (text, n, root, _) in cases() {
+        checked += assert_parsed(&env, text, n, root.as_ref());
+    }
+
+    assert!(checked > 500, "{checked}");
+
+    // Names read as something else, and fields not written as names.
+    let mut env = Environment::new();
+
+    for name in ["_", "true", "false"] {
+        env.value(name, Type::option(Type::list(Type::int())))
+            .unwrap();
+        env.function(name, [Type::int()], Type::int()).unwrap();
+    }
+
+    let fields = Type::record([
+        ("Foo", Type::int()),
+        ("x y", Type::int()),
+        ("true", Type::int()),
+        ("_", Type::list(Type::int())),
+        ("q\"\\", Type::option(Type::int())),
+    ]);
+    env.value("r", Type::record([("inner", fields)])).unwrap();
+
+    let mut checked = 0;
+
+    for root in [None, Some(Type::int()), Some(Type::bool())] {
+        checked += assert_parsed(&env, "_", 0, root.as_ref());
+    }
+
+    checked += assert_parsed(&env, r#"r.inner[_]"#, 0, None);
+    assert!(checked > 50, "{checked}");
+
+    let all = s("_").complete(&env, s("_").root(), None).unwrap();
+    let labels = all.iter().map(|c| c.label.as_str()).collect::<Vec<_>>();
+    assert!(labels.contains(&"_(_)"), "{labels:?}");
+    assert!(!labels.contains(&"true(_)"), "{labels:?}");
+}
+
+/// What is too long to parse back is not offered.
+#[test]
+fn completions_parse_back() {
+    let fits = "x".repeat(DEFAULT_MAX_LEN - "long.".len());
+    let over = "y".repeat(DEFAULT_MAX_LEN - "long.".len() + 1);
+
+    let mut env = Environment::new();
+    let ty = Type::record([(fits.as_str(), Type::int()), (over.as_str(), Type::int())]);
+    env.value("long", ty).unwrap();
+
+    let s = s("_");
+    let all = s.complete(&env, s.root(), Some(&Type::int())).unwrap();
+    let paths = all
+        .iter()
+        .filter(|c| c.kind == CompletionKind::Value)
+        .map(|c| c.label.len())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, [DEFAULT_MAX_LEN]);
 }
 
 /// A form fills a structure one hole at a time, each with a completion.
