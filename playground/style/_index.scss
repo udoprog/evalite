@@ -272,13 +272,6 @@ a {
     max-width: var(--page-reading);
 }
 
-// A table cell that takes its card's whole line when sockel lays a table's
-// rows out as cards on a phone; sockel's cells there are only as wide as
-// their text, which leaves a chart no room.
-.playground-full-line {
-    flex: 1 1 100%;
-}
-
 // A bar chart's rows: the series' name, its bar and its value, with the
 // names and values in columns of their own so the bars share one baseline.
 .playground-bars {

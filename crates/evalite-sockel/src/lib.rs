@@ -486,6 +486,7 @@ pub const CLASSES: &[&str] = &[
     "sockel-numeric",
     "sockel-off",
     "sockel-on",
+    "sockel-one-row",
     "sockel-open",
     "sockel-overlay",
     "sockel-overlay-host",

@@ -484,7 +484,7 @@ fn Benchmarks() -> Html {
                         <span class={class::MUTED}>{ &expression.description }</span>
                     </Stack>
                 </TableCell>
-                <TableCell class={class::FULL_LINE}>
+                <TableCell full=true>
                     <div class={class::BARS}>{ for bars }</div>
                 </TableCell>
             </TableRow>
