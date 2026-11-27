@@ -34,6 +34,11 @@ pub(crate) enum Message {
     NoStep { ty: TypeId, step: PathStep },
     /// A path through an absent option.
     NoneOnPath,
+    /// A path to insert or remove at that does not end with a list's
+    /// index or a map's key.
+    NotEntryPath,
+    /// A path to push onto that is to a value of type `ty`, not a list.
+    NotList { ty: TypeId },
     /// A path's map key of another type than the map's keys, `expected`.
     KeyMistyped { expected: TypeId, found: Found },
     /// A program that reads `global` (or, when `None`, some value) where
@@ -82,6 +87,12 @@ pub(crate) enum Message {
     /// Context: setting the part of a value of a store at `path`, as the
     /// caller wrote it.
     SettingAt { path: Box<str> },
+    /// Context: inserting into a value of a store at `path`.
+    InsertingAt { path: Box<str> },
+    /// Context: removing the part of a value of a store at `path`.
+    RemovingAt { path: Box<str> },
+    /// Context: pushing onto the list of a store at `path`.
+    PushingOnto { path: Box<str> },
     /// Context: the part of a value at `path` from `root`.
     AtPath { root: Root, path: Box<[Seg]> },
     /// Context: calling a function of the caller's.
@@ -424,6 +435,7 @@ pub(crate) enum Fault {
     ReadAsSeveral,
     NotUtf8,
     StorePastLimit,
+    BadCapacity,
     WriteToStore,
     DynamicStep,
 }
@@ -468,6 +480,7 @@ impl Fault {
             Self::ReadAsSeveral => "a value read as several",
             Self::NotUtf8 => "a string is not UTF-8",
             Self::StorePastLimit => "a store past its limit",
+            Self::BadCapacity => "a list or map with a capacity below its length",
             Self::WriteToStore => "writes to the store it reads",
             Self::DynamicStep => "a path with a computed step",
         }
@@ -600,6 +613,13 @@ impl fmt::Display for Shown<'_> {
                 }
             }
             Message::NoneOnPath => f.write_str("the optional value is none"),
+            Message::NotEntryPath => {
+                f.write_str("the path does not end with a list's index or a map's key")
+            }
+            Message::NotList { ty } => match p.and_then(|p| p.types().to_type(*ty)) {
+                Some(ty) => write!(f, "{ty} is not a list"),
+                None => f.write_str("the value is not a list"),
+            },
             Message::KeyMistyped { expected, found } => {
                 match p.and_then(|p| p.types().to_type(*expected)) {
                     Some(ty) => {
@@ -665,6 +685,9 @@ impl fmt::Display for Shown<'_> {
                 None => f.write_str("while setting a value"),
             },
             Message::SettingAt { path } => write!(f, "while setting `{path}`"),
+            Message::InsertingAt { path } => write!(f, "while inserting at `{path}`"),
+            Message::RemovingAt { path } => write!(f, "while removing `{path}`"),
+            Message::PushingOnto { path } => write!(f, "while pushing onto `{path}`"),
             Message::AtPath { root, path } => {
                 f.write_str("at `")?;
 

@@ -362,7 +362,10 @@
 //! replaces it, freeing the words of the old one for values of the same size.
 //! [`Globals::set_at`] replaces one part of a value in place, a field, a list
 //! entry or a map key's value, found by a [`Path`], so updating one entry of a
-//! large map costs the entry, not the map. A run reads the store and never
+//! large map costs the entry, not the map. [`Globals::insert`],
+//! [`Globals::push`] and [`Globals::remove`] add and take out a list's entries
+//! or a map's keys, into lists and maps that keep room to grow, so adding an
+//! entry takes amortized O(1) words. A run reads the store and never
 //! writes to it, and reading a value that is not set is a run error naming it.
 //! A store has a word limit of its own ([`Globals::with_limit`]), apart from
 //! the machine's [`Limits`].
@@ -397,6 +400,9 @@
 //!
 //! globals.set_at(&Path::value("health").field("boxes"), &Value::int(9))?;
 //! assert_eq!(machine.load(&programs[0], &globals)?.run()?.value(), &Value::int(7));
+//!
+//! globals.push(&Path::value("health").field("damage"), &Value::int(3))?;
+//! assert_eq!(machine.load(&programs[0], &globals)?.run()?.value(), &Value::int(6));
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
 //!

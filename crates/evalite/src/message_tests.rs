@@ -133,6 +133,16 @@ fn every_message_with_and_without_a_program() {
             "the optional value is none",
         ),
         (
+            Message::NotEntryPath,
+            "the path does not end with a list's index or a map's key",
+            "the path does not end with a list's index or a map's key",
+        ),
+        (
+            Message::NotList { ty: int },
+            "Int is not a list",
+            "the value is not a list",
+        ),
+        (
             Message::KeyMistyped {
                 expected: int,
                 found: Found::String,
@@ -366,6 +376,27 @@ fn every_message_with_and_without_a_program() {
             "while setting `health.count[7]`",
         ),
         (
+            Message::InsertingAt {
+                path: "health.count[7]".into(),
+            },
+            "while inserting at `health.count[7]`",
+            "while inserting at `health.count[7]`",
+        ),
+        (
+            Message::RemovingAt {
+                path: "health.count[7]".into(),
+            },
+            "while removing `health.count[7]`",
+            "while removing `health.count[7]`",
+        ),
+        (
+            Message::PushingOnto {
+                path: "health.count".into(),
+            },
+            "while pushing onto `health.count`",
+            "while pushing onto `health.count`",
+        ),
+        (
             Message::AtPath {
                 root: Root::Global(g("health")),
                 path: Box::new([
@@ -479,6 +510,7 @@ fn every_fault_has_its_own_text() {
         Fault::ReadAsSeveral,
         Fault::NotUtf8,
         Fault::StorePastLimit,
+        Fault::BadCapacity,
         Fault::WriteToStore,
         Fault::DynamicStep,
     ];

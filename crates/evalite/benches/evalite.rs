@@ -15,7 +15,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use evalite::{
-    DEFAULT_FUEL, Environment, Globals, Limits, Machine, Program, Structure, Type, Value,
+    DEFAULT_FUEL, Environment, Globals, Limits, Machine, Path, Program, Structure, Type, Value,
 };
 
 const ATTRIBUTES: [&str; 9] = [
@@ -548,6 +548,90 @@ fn characterize(c: &mut Criterion) {
     group.finish();
 }
 
+/// How many entries the map `update/*` changes has.
+const ENTRIES: i64 = 100_000;
+
+/// How many single-entry updates `update/*` makes of it.
+const UPDATES: i64 = 1_000;
+
+/// Updates of single entries of a large map in a store, against
+/// rebuilding the map and setting it whole, which is what a host without
+/// in-place updates does for each.
+fn update(c: &mut Criterion) {
+    let mut env = Environment::new();
+    let entry = Type::record([("dice", Type::int()), ("rank", Type::int())]);
+    env.value("catalog", Type::map(Type::int(), entry)).unwrap();
+
+    let entry = |n: i64| Value::record([("dice", Value::int(n % 5)), ("rank", Value::int(n % 3))]);
+    // Even keys, so an odd one is inserted between two.
+    let catalog = |changed: i64| {
+        Value::map((0..ENTRIES).map(|n| {
+            let value = if n == changed { entry(n + 1) } else { entry(n) };
+            (Value::int(n * 2), value)
+        }))
+    };
+
+    let mut globals = Globals::new(&env);
+    globals.set("catalog", &catalog(-1)).unwrap();
+    let key = |n: i64| (n * 7919) % ENTRIES;
+
+    let mut group = c.benchmark_group("update");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(UPDATES as u64));
+
+    // A field of an entry, written in place.
+    group.bench_function("set_at", |b| {
+        b.iter(|| {
+            for n in 0..UPDATES {
+                let path = Path::value("catalog").int_key(key(n) * 2).field("dice");
+                globals.set_at(&path, &Value::int(n)).unwrap();
+            }
+        })
+    });
+
+    // A whole entry inserted between two, moving the entries after it, then
+    // removed, moving them back: half an update each.
+    group.bench_function("insert_remove", |b| {
+        b.iter(|| {
+            for n in 0..UPDATES / 2 {
+                let path = Path::value("catalog").int_key(key(n) * 2 + 1);
+                globals.insert(&path, &entry(n)).unwrap();
+                black_box(globals.remove(&path).unwrap());
+            }
+        })
+    });
+
+    // A whole entry set by key, as `insert` of a key the map has.
+    group.bench_function("insert_existing", |b| {
+        b.iter(|| {
+            for n in 0..UPDATES {
+                let path = Path::value("catalog").int_key(key(n) * 2);
+                globals.insert(&path, &entry(n)).unwrap();
+            }
+        })
+    });
+
+    group.finish();
+
+    // One update the other way: the map rebuilt with the entry changed,
+    // then set whole. Its time is per update, so compare it with the
+    // others' divided by UPDATES.
+    let mut group = c.benchmark_group("update");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(1));
+
+    group.bench_function("set_whole", |b| {
+        let mut n = 0;
+
+        b.iter(|| {
+            n += 1;
+            globals.set("catalog", &catalog(key(n))).unwrap();
+        })
+    });
+
+    group.finish();
+}
+
 /// What an editor does with a sheet: highlight its sources, parse them
 /// into structures, and complete a hole.
 fn editing(c: &mut Criterion) {
@@ -588,5 +672,13 @@ fn editing(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, stages, read, whole_sheet, characterize, editing);
+criterion_group!(
+    benches,
+    stages,
+    read,
+    whole_sheet,
+    characterize,
+    update,
+    editing
+);
 criterion_main!(benches);

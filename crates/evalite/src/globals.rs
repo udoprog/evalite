@@ -325,7 +325,7 @@ impl Globals {
         }
 
         for (start, words) in old {
-            self.heap.free.entry(words).or_default().push(start);
+            self.heap.free(start, words);
         }
 
         // Measured, so it is a fault for the write to fail. The old parts
@@ -522,12 +522,642 @@ impl Globals {
         .ok()
     }
 
+    /// Insert `value` at `path`, a list's index or a map's key, moving the
+    /// entries after it along.
+    ///
+    /// - A list's index may be from 0 to its length, which pushes onto it.
+    /// - A map's key goes where it keeps the keys in order. A key the map
+    ///   has already is set to `value`, as [`set_at`](Self::set_at) sets it.
+    ///
+    /// The path steps through present options as `set_at`'s does, and
+    /// through those of the list or map it ends in. Lists and maps in a
+    /// store have room for more entries than they hold: one that is full
+    /// moves to a block of twice its room, at least 4 entries, so an
+    /// insert takes amortized O(1) words. It takes as long as the path, a
+    /// binary search for a key, `value`, and moving the entries after it
+    /// (a copy of words), or all of them when the list or map moves.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`GlobalsError`], leaving the store as it was, when:
+    ///
+    /// - the path does not end with a list's index or a map's key, or
+    ///   [`set_at`](Self::set_at) would refuse the path to the list or map;
+    /// - an index is past the list's length, or a key is not of the map's
+    ///   key type;
+    /// - `value` is not of the entry's type, or it, and the list or map
+    ///   when it moves, do not fit in the words left.
+    ///
+    /// ```
+    /// use evalite::{Environment, Globals, Machine, Path, Type, Value};
+    ///
+    /// let mut env = Environment::new();
+    /// env.value("skills", Type::map(Type::string(), Type::int()))?;
+    /// env.value("tracks", Type::list(Type::int()))?;
+    ///
+    /// let mut globals = Globals::new(&env);
+    /// globals.set("skills", &Value::map([(Value::string("occult"), Value::int(3))]))?;
+    /// globals.set("tracks", &Value::list([Value::int(1), Value::int(3)]))?;
+    ///
+    /// globals.insert(&Path::value("skills").string_key("brawl"), &Value::int(2))?;
+    /// globals.insert(&Path::value("tracks").index(1), &Value::int(2))?;
+    /// globals.push(&Path::value("tracks"), &Value::int(4))?;
+    ///
+    /// let program = evalite::compile(r#"skills["brawl"] + tracks[1] + tracks.len()"#, &env)?;
+    /// assert_eq!(Machine::default().load(&program, &globals)?.run()?.value(), &Value::int(8));
+    ///
+    /// let error = globals.insert(&Path::value("tracks").index(5), &Value::int(5)).unwrap_err();
+    /// assert_eq!(
+    ///     format!("{error:#}"),
+    ///     "index 5 is out of range of a list of 4 entries: at `tracks`: while inserting at `tracks[5]`",
+    /// );
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn insert(&mut self, path: &Path, value: &Value) -> Result<(), GlobalsError> {
+        self.insert_at(path, value).map_err(|e| {
+            let path = path.to_string().into_boxed_str();
+            self.error(&e.context(Message::InsertingAt { path }))
+        })
+    }
+
+    /// Push `value` onto the list at `path`, as [`insert`](Self::insert)
+    /// at its length does.
+    ///
+    /// # Errors
+    ///
+    /// As [`insert`](Self::insert), and when the path is not to a list.
+    ///
+    /// ```
+    /// use evalite::{Environment, Globals, Path, Type, Value};
+    ///
+    /// let mut env = Environment::new();
+    /// env.value("marks", Type::list(Type::bool()))?;
+    ///
+    /// let mut globals = Globals::new(&env);
+    /// globals.set("marks", &Value::list([]))?;
+    ///
+    /// for _ in 0..3 {
+    ///     globals.push(&Path::value("marks"), &Value::bool(true))?;
+    /// }
+    ///
+    /// assert_eq!(globals.get("marks"), Some(Value::list(vec![Value::bool(true); 3])));
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn push(&mut self, path: &Path, value: &Value) -> Result<(), GlobalsError> {
+        self.push_at(path, value).map_err(|e| {
+            let path = path.to_string().into_boxed_str();
+            self.error(&e.context(Message::PushingOnto { path }))
+        })
+    }
+
+    /// Remove the entry at `path`, a list's index or a map's key, moving
+    /// the entries after it back, and give its value.
+    ///
+    /// Its parts are freed. A list or map that falls below a quarter of its
+    /// room gives back the second half of it, keeping at least 4 entries'
+    /// room, and one left empty gives back its block, so a store's memory
+    /// follows its data. A remove takes no words, so it never fails for
+    /// want of them. It takes as long as the path, a binary search for a
+    /// key, the removed value, and moving the entries after it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`GlobalsError`], leaving the store as it was, when the
+    /// path does not end with a list's index or a map's key, or
+    /// [`set_at`](Self::set_at) would refuse it.
+    ///
+    /// ```
+    /// use evalite::{Environment, Globals, Path, Type, Value};
+    ///
+    /// let mut env = Environment::new();
+    /// env.value("tags", Type::map(Type::string(), Type::int()))?;
+    ///
+    /// let mut globals = Globals::new(&env);
+    /// let tags = [("air", 1), ("fire", 2), ("water", 3)];
+    /// globals.set("tags", &Value::map(tags.map(|(k, v)| (Value::string(k), Value::int(v)))))?;
+    ///
+    /// let fire = Path::value("tags").string_key("fire");
+    /// assert_eq!(globals.remove(&fire)?, Value::int(2));
+    /// assert_eq!(globals.get_at(&fire), None);
+    ///
+    /// let error = globals.remove(&fire).unwrap_err();
+    /// assert_eq!(format!("{error:#}"), r#"the map has no key "fire": at `tags`: while removing `tags["fire"]`"#);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn remove(&mut self, path: &Path) -> Result<Value, GlobalsError> {
+        self.remove_at(path).map_err(|e| {
+            let path = path.to_string().into_boxed_str();
+            self.error(&e.context(Message::RemovingAt { path }))
+        })
+    }
+
+    fn insert_at(&mut self, path: &Path, value: &Value) -> Result<(), RunError> {
+        let (last, entries) = self.locate_entries(path)?;
+        let Entries {
+            place,
+            kind,
+            start,
+            len,
+            stride,
+            ..
+        } = &entries;
+        let global = place.global;
+
+        match (last, *kind) {
+            (StepRepr::Index(index), Kind::List(entry)) => {
+                let Some(n) = usize::try_from(*index).ok().filter(|n| *n <= *len) else {
+                    let range = Message::IndexOutOfRange {
+                        index: *index,
+                        len: count(*len),
+                    };
+                    return Err(off_path(range, global, &place.segs));
+                };
+
+                self.open(&entries, n, &[(value, entry, Seg::Index(count(n)))])
+            }
+            (
+                StepRepr::Key(key),
+                Kind::Map {
+                    key: key_ty,
+                    value: value_ty,
+                },
+            ) => {
+                let shown = self.shown_key(key, key_ty, global, &place.segs)?;
+
+                match memory::search_key(&self.heap, *start, *len, *stride, key)? {
+                    Some(Ok(n)) => {
+                        let mut segs = place.segs.clone();
+                        segs.push(Seg::Key(shown));
+                        let at = n
+                            .checked_mul(*stride)
+                            .and_then(|at| at.checked_add(*start))
+                            .and_then(|at| at.checked_add(1))
+                            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                        let place = Place {
+                            global,
+                            at,
+                            ty: value_ty,
+                            segs,
+                        };
+                        self.replace(&place, value, true)
+                    }
+                    Some(Err(n)) => self.open(
+                        &entries,
+                        n,
+                        &[
+                            (key, key_ty, Seg::KeyOf(count(n))),
+                            (value, value_ty, Seg::Key(shown)),
+                        ],
+                    ),
+                    None => Err(fault(Fault::ValueChangedType)),
+                }
+            }
+            (last, _) => Err(self.not_entry(last, &entries)),
+        }
+    }
+
+    fn push_at(&mut self, path: &Path, value: &Value) -> Result<(), RunError> {
+        let place = self.locate(path)?;
+        let (at, ty) = self.through_options(place.at, place.ty, place.global, &place.segs)?;
+        let place = Place { at, ty, ..place };
+
+        let Some(TypeNode::List(entry)) = self.layout.types.get(ty) else {
+            return Err(RunError::new(Message::NotList { ty }));
+        };
+
+        let entry = *entry;
+        let entries = self.entries(place)?;
+        let n = entries.len;
+        self.open(&entries, n, &[(value, entry, Seg::Index(count(n)))])
+    }
+
+    fn remove_at(&mut self, path: &Path) -> Result<Value, RunError> {
+        let (last, entries) = self.locate_entries(path)?;
+        let types = &self.layout.types;
+        let mut fuel = memory::Fuel::UNLIMITED;
+        let Entries {
+            place,
+            kind,
+            start,
+            len,
+            stride,
+            ..
+        } = &entries;
+        let global = place.global;
+
+        let (n, removed, freed) = match (last, *kind) {
+            (StepRepr::Index(index), Kind::List(entry)) => {
+                let Some(n) = usize::try_from(*index).ok().filter(|n| *n < *len) else {
+                    let range = Message::IndexOutOfRange {
+                        index: *index,
+                        len: count(*len),
+                    };
+                    return Err(off_path(range, global, &place.segs));
+                };
+
+                let at = n
+                    .checked_mul(*stride)
+                    .and_then(|at| at.checked_add(*start))
+                    .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                let removed = memory::read(&self.heap, types, at, entry, &mut fuel)?;
+                (n, removed, memory::blocks(&self.heap, types, at, entry)?)
+            }
+            (
+                StepRepr::Key(key),
+                Kind::Map {
+                    key: key_ty,
+                    value: value_ty,
+                },
+            ) => {
+                let shown = self.shown_key(key, key_ty, global, &place.segs)?;
+
+                let n = match memory::search_key(&self.heap, *start, *len, *stride, key)? {
+                    Some(Ok(n)) => n,
+                    Some(Err(_)) => {
+                        let missing = Message::NoSuchKey { key: shown };
+                        return Err(off_path(missing, global, &place.segs));
+                    }
+                    None => return Err(fault(Fault::ValueChangedType)),
+                };
+
+                let at = n
+                    .checked_mul(*stride)
+                    .and_then(|at| at.checked_add(*start))
+                    .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                let value_at = at
+                    .checked_add(1)
+                    .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                let removed = memory::read(&self.heap, types, value_at, value_ty, &mut fuel)?;
+                let mut freed = memory::blocks(&self.heap, types, at, key_ty)?;
+                freed.extend(memory::blocks(&self.heap, types, value_at, value_ty)?);
+                (n, removed, freed)
+            }
+            (last, _) => return Err(self.not_entry(last, &entries)),
+        };
+
+        self.close(&entries, n, freed)?;
+        Ok(removed)
+    }
+
+    /// The list or map a path to insert or remove at ends in, and the step
+    /// into it.
+    fn locate_entries<'a>(&self, path: &'a Path) -> Result<(&'a StepRepr, Entries), RunError> {
+        let Some((last, steps)) = path.steps.split_last() else {
+            return Err(RunError::new(Message::NotEntryPath));
+        };
+
+        let place = self.locate_steps(path, steps)?;
+        let (at, ty) = self.through_options(place.at, place.ty, place.global, &place.segs)?;
+        let place = Place { at, ty, ..place };
+
+        if let StepRepr::Field(_) = last {
+            return Err(RunError::new(Message::NotEntryPath));
+        }
+
+        match self.layout.types.get(ty) {
+            Some(TypeNode::List(_) | TypeNode::Map { .. }) => Ok((last, self.entries(place)?)),
+            _ => Err(no_step(last, ty, place.global, &place.segs)),
+        }
+    }
+
+    /// Why the step `last` cannot be taken into `entries`.
+    #[cold]
+    fn not_entry(&self, last: &StepRepr, entries: &Entries) -> RunError {
+        let place = &entries.place;
+
+        match last {
+            StepRepr::Field(_) => RunError::new(Message::NotEntryPath),
+            _ => no_step(last, place.ty, place.global, &place.segs),
+        }
+    }
+
+    /// The list or map held at `place`.
+    fn entries(&self, place: Place) -> Result<Entries, RunError> {
+        let types = &self.layout.types;
+
+        let (kind, stride) = match types.get(place.ty) {
+            Some(TypeNode::List(entry)) => (Kind::List(*entry), types.width(*entry)),
+            Some(TypeNode::Map { key, value }) => {
+                let stride = types
+                    .width(*value)
+                    .checked_add(1)
+                    .ok_or_else(|| fault(Fault::ListTooLarge))?;
+                (
+                    Kind::Map {
+                        key: *key,
+                        value: *value,
+                    },
+                    stride,
+                )
+            }
+            _ => return Err(fault(Fault::ValueChangedType)),
+        };
+
+        let (start, len) = get(&self.heap, Some(place.at))?.as_reference()?;
+        inside(&self.heap, start, len.checked_mul(stride))?;
+        let cap = memory::capacity(&self.heap, start, len)?;
+
+        Ok(Entries {
+            place,
+            kind,
+            start,
+            len,
+            cap,
+            stride,
+        })
+    }
+
+    /// Open the entry `n` of `entries`, moving those from it along, and
+    /// write `parts` into it: each value of its type at its offset in the
+    /// entry (a map's key, then its value). A full list or map first moves
+    /// to a block of twice its room.
+    ///
+    /// Each part is checked and the words they and a move take are found
+    /// before anything changes, so an error leaves the store as it was.
+    fn open(
+        &mut self,
+        entries: &Entries,
+        n: usize,
+        parts: &[(&Value, TypeId, Seg)],
+    ) -> Result<(), RunError> {
+        let &Entries {
+            ref place,
+            start,
+            len,
+            cap,
+            stride,
+            ..
+        } = entries;
+        let types = &self.layout.types;
+
+        let mut sizes = Vec::new();
+
+        for (value, ty, seg) in parts {
+            let mut segs = place.segs.clone();
+            segs.push(seg.clone());
+            memory::measure_at(types, value, *ty, Root::Global(place.global), &segs)?;
+            sizes.extend(memory::parts(types, value, *ty)?);
+        }
+
+        // Refused as a set refuses a list or map too long for a reference,
+        // before anything changes.
+        let new_len = len.saturating_add(1);
+        memory::check_len(new_len)?;
+
+        // A full one moves to a block of twice its room, freeing its own.
+        let grown = if new_len > cap {
+            let new_cap = cap
+                .checked_mul(2)
+                .ok_or_else(|| fault(Fault::ListTooLarge))?
+                .max(MIN_CAPACITY);
+            let words =
+                memory::entries_block(new_cap, stride).ok_or_else(|| fault(Fault::ListTooLarge))?;
+            sizes.push(words);
+            Some((new_cap, words, self.block(start, cap, stride)?))
+        } else {
+            None
+        };
+
+        let old = grown
+            .iter()
+            .filter_map(|(_, _, old)| *old)
+            .collect::<Vec<_>>();
+        let needed = self.bump(&sizes, &old);
+        let left = self.heap.room.saturating_sub(self.heap.used());
+
+        if needed > left {
+            return Err(RunError::new(Message::TooLarge {
+                needed: count(needed),
+                left: count(left),
+            }));
+        }
+
+        let before = n
+            .checked_mul(stride)
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+        let after = len
+            .checked_sub(n)
+            .and_then(|after| after.checked_mul(stride))
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+        let from = start
+            .checked_add(before)
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+
+        let opening = Opening {
+            grown,
+            before,
+            after,
+            from,
+            new_len,
+        };
+        let written = self.open_at(entries, parts, opening);
+        self.unset_on_fault(place.global, written)
+    }
+
+    /// The changes of [`open`](Self::open), once it has found they fit.
+    fn open_at(
+        &mut self,
+        entries: &Entries,
+        parts: &[(&Value, TypeId, Seg)],
+        opening: Opening,
+    ) -> Result<(), RunError> {
+        let Entries {
+            ref place,
+            start,
+            stride,
+            ..
+        } = *entries;
+        let Opening {
+            grown,
+            before,
+            after,
+            from,
+            new_len,
+        } = opening;
+        let types = &self.layout.types;
+
+        let start = match grown {
+            Some((new_cap, words, old)) => {
+                let block = self.heap.alloc(words)?;
+                let new_start = self.heap.header(block, new_cap)?;
+                self.heap.copy(start, before, new_start)?;
+                let to = new_start
+                    .checked_add(before)
+                    .and_then(|to| to.checked_add(stride))
+                    .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                self.heap.copy(from, after, to)?;
+
+                if let Some((block, words)) = old {
+                    self.heap.free(block, words);
+                }
+
+                new_start
+            }
+            None => {
+                let to = from
+                    .checked_add(stride)
+                    .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                self.heap.copy(from, after, to)?;
+                start
+            }
+        };
+
+        let entry = start
+            .checked_add(before)
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+
+        for (offset, (value, ty, _)) in parts.iter().enumerate() {
+            let dest = entry
+                .checked_add(offset)
+                .ok_or_else(|| fault(Fault::OutsideMemory))?;
+            memory::write(&mut self.heap, types, value, *ty, dest)?;
+        }
+
+        let reference = Word::reference(start, new_len)?;
+        memory::put(&mut self.heap, Some(place.at), reference)
+    }
+
+    /// `result`, leaving the value `global` unset when it failed: checked
+    /// before anything changed, so a fault, and its parts may be freed by
+    /// then, so it is never to point at them, as [`replace`](Self::replace)
+    /// leaves one.
+    fn unset_on_fault(
+        &mut self,
+        global: u32,
+        result: Result<(), RunError>,
+    ) -> Result<(), RunError> {
+        if result.is_err() {
+            let slot = usize::try_from(global)
+                .ok()
+                .and_then(|n| self.layout.slots.get(n))
+                .and_then(|held| usize::try_from(held.at).ok());
+
+            if let Some(set) = slot.and_then(|at| self.set.get_mut(at)) {
+                *set = false;
+            }
+        }
+
+        result
+    }
+
+    /// Close the entry `n` of `entries`, freeing `freed`, its parts' blocks,
+    /// and moving those after it back. One left below a quarter of its room
+    /// frees the second half of its block, keeping room for at least
+    /// [`MIN_CAPACITY`] entries, and one left empty frees its block.
+    fn close(
+        &mut self,
+        entries: &Entries,
+        n: usize,
+        freed: Vec<(usize, usize)>,
+    ) -> Result<(), RunError> {
+        let &Entries {
+            ref place,
+            start,
+            len,
+            cap,
+            stride,
+            ..
+        } = entries;
+
+        let new_len = len
+            .checked_sub(1)
+            .ok_or_else(|| fault(Fault::ListLostEntries))?;
+        let to = n
+            .checked_mul(stride)
+            .and_then(|to| to.checked_add(start))
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+        let from = to
+            .checked_add(stride)
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+        let after = new_len
+            .checked_sub(n)
+            .and_then(|after| after.checked_mul(stride))
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+        let block = self.block(start, cap, stride)?;
+
+        for (start, words) in freed {
+            self.heap.free(start, words);
+        }
+
+        let closed = self.close_at(entries, new_len, block, (from, after, to));
+        self.unset_on_fault(place.global, closed)
+    }
+
+    /// The moves of [`close`](Self::close), once its parts are freed.
+    fn close_at(
+        &mut self,
+        entries: &Entries,
+        new_len: usize,
+        block: Option<(usize, usize)>,
+        (from, after, to): (usize, usize, usize),
+    ) -> Result<(), RunError> {
+        let Entries {
+            ref place,
+            start,
+            cap,
+            stride,
+            ..
+        } = *entries;
+        self.heap.copy(from, after, to)?;
+
+        if new_len == 0 {
+            if let Some((block, words)) = block {
+                self.heap.free(block, words);
+            }
+        } else if cap > MIN_CAPACITY && new_len.saturating_mul(4) < cap {
+            let new_cap = (cap / 2).max(MIN_CAPACITY);
+            let tail = new_cap
+                .checked_mul(stride)
+                .and_then(|tail| tail.checked_add(start))
+                .ok_or_else(|| fault(Fault::OutsideMemory))?;
+            let words = cap
+                .checked_sub(new_cap)
+                .and_then(|n| n.checked_mul(stride))
+                .ok_or_else(|| fault(Fault::OutsideMemory))?;
+            let block = start
+                .checked_sub(memory::HEADER)
+                .ok_or_else(|| fault(Fault::OutsideMemory))?;
+            self.heap.header(block, new_cap)?;
+            self.heap.free(tail, words);
+        }
+
+        let reference = Word::reference(start, new_len)?;
+        memory::put(&mut self.heap, Some(place.at), reference)
+    }
+
+    /// The block, from its header, of a list's or map's room for `cap`
+    /// entries of `stride` words from `start`: none when it has no room.
+    fn block(
+        &self,
+        start: usize,
+        cap: usize,
+        stride: usize,
+    ) -> Result<Option<(usize, usize)>, RunError> {
+        if cap == 0 {
+            return Ok(None);
+        }
+
+        let block = start.checked_sub(memory::HEADER);
+        let words = memory::entries_block(cap, stride);
+
+        match (block, words) {
+            (Some(block), Some(words)) => Ok(Some((block, words))),
+            _ => Err(fault(Fault::OutsideMemory)),
+        }
+    }
+
     /// Where the part at `path` is held, and its type.
     ///
     /// Each step is checked against the type of the part before it, and
     /// reads the reference word it steps through: a constant number of
     /// words for a field or an index, a binary search for a key.
     fn locate(&self, path: &Path) -> Result<Place, RunError> {
+        self.locate_steps(path, &path.steps)
+    }
+
+    /// As [`locate`](Self::locate), the part at the first `steps` of
+    /// `path`.
+    fn locate_steps(&self, path: &Path, steps: &[StepRepr]) -> Result<Place, RunError> {
         if path.kind != ReferenceKind::Value {
             let name = cut(&path.name);
             return Err(RunError::new(Message::FunctionPath { name }));
@@ -548,28 +1178,10 @@ impl Globals {
 
         let types = &self.layout.types;
         let words = &self.heap;
-        let mut segs = Vec::with_capacity(path.steps.len());
+        let mut segs = Vec::with_capacity(steps.len());
 
-        for step in &path.steps {
-            // Through each present option to what it holds.
-            while let Some(TypeNode::Option(inner)) = types.get(ty) {
-                let word = get(words, Some(at))?;
-
-                let present = if types.tagged(ty).is_some() {
-                    at = at
-                        .checked_add(1)
-                        .ok_or_else(|| fault(Fault::OutsideMemory))?;
-                    word.as_bool()?
-                } else {
-                    !word.is_none()
-                };
-
-                if !present {
-                    return Err(off_path(Message::NoneOnPath, global, &segs));
-                }
-
-                ty = *inner;
-            }
+        for step in steps {
+            (at, ty) = self.through_options(at, ty, global, &segs)?;
 
             let node = types.get(ty).ok_or_else(|| fault(Fault::NoSuchType))?;
 
@@ -595,18 +1207,7 @@ impl Globals {
                     (seg, start.checked_add(offset), field_ty)
                 }
                 (StepRepr::Key(key), TypeNode::Map { key: key_ty, value }) => {
-                    let shown = match (&key.0, types.get(*key_ty)) {
-                        (Repr::Int(n), Some(TypeNode::Int)) => Key::Int(*n),
-                        (Repr::String(s), Some(TypeNode::String)) => Key::string(s),
-                        _ => {
-                            let mistyped = Message::KeyMistyped {
-                                expected: *key_ty,
-                                found: key.describe(),
-                            };
-                            return Err(off_path(mistyped, global, &segs));
-                        }
-                    };
-
+                    let shown = self.shown_key(key, *key_ty, global, &segs)?;
                     let (start, len) = get(words, Some(at))?.as_reference()?;
                     let stride = types
                         .width(*value)
@@ -636,21 +1237,7 @@ impl Globals {
                     let next = n.checked_mul(width).and_then(|n| n.checked_add(start));
                     (Seg::Index(count(n)), next, *entry)
                 }
-                (StepRepr::Dynamic, _) => return Err(fault(Fault::DynamicStep)),
-                (step, _) => {
-                    let step = match step {
-                        StepRepr::Field(name) => PathStep::Field(cut(name)),
-                        StepRepr::Key(key) => match (&key.0, key.as_int()) {
-                            (_, Some(n)) => PathStep::Key(Key::Int(n)),
-                            (Repr::String(s), _) => PathStep::Key(Key::string(s)),
-                            _ => return Err(fault(Fault::ValueChangedType)),
-                        },
-                        StepRepr::Index(index) => PathStep::Index(*index),
-                        StepRepr::Dynamic => return Err(fault(Fault::DynamicStep)),
-                    };
-
-                    return Err(off_path(Message::NoStep { ty, step }, global, &segs));
-                }
+                (step, _) => return Err(no_step(step, ty, global, &segs)),
             };
 
             at = next.ok_or_else(|| fault(Fault::OutsideMemory))?;
@@ -666,6 +1253,61 @@ impl Globals {
         })
     }
 
+    /// From the part of type `ty` at `at`, through each present option to
+    /// what it holds; an absent one is `NoneOnPath`, from `segs`.
+    fn through_options(
+        &self,
+        mut at: usize,
+        mut ty: TypeId,
+        global: u32,
+        segs: &[Seg],
+    ) -> Result<(usize, TypeId), RunError> {
+        let types = &self.layout.types;
+
+        while let Some(TypeNode::Option(inner)) = types.get(ty) {
+            let word = get(&self.heap, Some(at))?;
+
+            let present = if types.tagged(ty).is_some() {
+                at = at
+                    .checked_add(1)
+                    .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                word.as_bool()?
+            } else {
+                !word.is_none()
+            };
+
+            if !present {
+                return Err(off_path(Message::NoneOnPath, global, segs));
+            }
+
+            ty = *inner;
+        }
+
+        Ok((at, ty))
+    }
+
+    /// `key` as a step's key of a map whose keys are `key_ty`, refused
+    /// when of another type, from `segs`.
+    fn shown_key(
+        &self,
+        key: &Value,
+        key_ty: TypeId,
+        global: u32,
+        segs: &[Seg],
+    ) -> Result<Key, RunError> {
+        match (&key.0, self.layout.types.get(key_ty)) {
+            (Repr::Int(n), Some(TypeNode::Int)) => Ok(Key::Int(*n)),
+            (Repr::String(s), Some(TypeNode::String)) => Ok(Key::string(s)),
+            _ => {
+                let mistyped = Message::KeyMistyped {
+                    expected: key_ty,
+                    found: key.describe(),
+                };
+                Err(off_path(mistyped, global, segs))
+            }
+        }
+    }
+
     /// The value `name` and where it is among the slots.
     fn held(&self, name: &str) -> Option<(usize, &Held)> {
         let n = *self.layout.names.get(name)?;
@@ -676,6 +1318,17 @@ impl Globals {
     #[cfg(test)]
     pub(crate) fn heap_words(&self) -> usize {
         self.heap.used()
+    }
+
+    /// The entries the list or map at `path` holds, and has room for.
+    #[cfg(test)]
+    pub(crate) fn room_at(&self, path: &Path) -> Option<(usize, usize)> {
+        let place = self.locate(path).ok()?;
+        let (at, ty) = self
+            .through_options(place.at, place.ty, place.global, &place.segs)
+            .ok()?;
+        let entries = self.entries(Place { at, ty, ..place }).ok()?;
+        Some((entries.len, entries.cap))
     }
 
     /// Every word: the slots, then the parts.
@@ -743,6 +1396,93 @@ impl WordsMut for Heap {
         self.words.resize(end, Word::int(0));
         Ok(at)
     }
+
+    fn alloc_entries(&mut self, len: usize, stride: usize) -> Result<usize, RunError> {
+        if len == 0 {
+            return Ok(self.words.len());
+        }
+
+        let n = memory::entries_block(len, stride).ok_or_else(|| fault(Fault::ListTooLarge))?;
+        let block = self.alloc(n)?;
+        self.header(block, len)
+    }
+}
+
+impl Heap {
+    /// Write the header of a block of `cap` entries from `block`, giving
+    /// where its entries start.
+    fn header(&mut self, block: usize, cap: usize) -> Result<usize, RunError> {
+        let cap = i64::try_from(cap).map_err(|_| fault(Fault::ListTooLarge))?;
+        memory::put(self, Some(block), Word::int(cap))?;
+        block
+            .checked_add(memory::HEADER)
+            .ok_or_else(|| fault(Fault::OutsideMemory))
+    }
+
+    /// Free the `words` words from `start`, for a block of that size to
+    /// take.
+    fn free(&mut self, start: usize, words: usize) {
+        if words > 0 {
+            self.free.entry(words).or_default().push(start);
+        }
+    }
+
+    /// Copy the `n` words from `from` to `to`, which may overlap.
+    fn copy(&mut self, from: usize, n: usize, to: usize) -> Result<(), RunError> {
+        if n == 0 {
+            return Ok(());
+        }
+
+        let end = from.checked_add(n);
+        let fits = |at: usize| at.checked_add(n).is_some_and(|end| end <= self.words.len());
+
+        match end {
+            Some(end) if fits(from) && fits(to) => {
+                self.words.copy_within(from..end, to);
+                Ok(())
+            }
+            _ => Err(fault(Fault::OutsideMemory)),
+        }
+    }
+}
+
+/// The room a list or a map in a store has for entries when it grows
+/// past what it holds, and that it keeps when it shrinks.
+const MIN_CAPACITY: usize = 4;
+
+/// What [`Globals::open`] found it is to change: the list's or map's new
+/// block when it grows (its room, its words, and the block it frees), the
+/// words of the entries before the one opened and from it, where those
+/// start, and the new length.
+struct Opening {
+    grown: Option<Grown>,
+    before: usize,
+    after: usize,
+    from: usize,
+    new_len: usize,
+}
+
+/// A grown list's or map's room, the words of its new block, and its old
+/// block, (start, words), when it had one.
+type Grown = (usize, usize, Option<(usize, usize)>);
+
+/// A list or a map held in a store.
+struct Entries {
+    /// Where its reference word is.
+    place: Place,
+    kind: Kind,
+    start: usize,
+    len: usize,
+    /// The entries it has room for.
+    cap: usize,
+    /// The words of an entry.
+    stride: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Kind {
+    List(TypeId),
+    Map { key: TypeId, value: TypeId },
 }
 
 /// Where a part of a value is held: the value it is part of, the word it
@@ -763,6 +1503,25 @@ fn off_path(message: Message, global: u32, segs: &[Seg]) -> RunError {
         root: Root::Global(global),
         path: segs.into(),
     })
+}
+
+/// That a value of type `ty` has no part at `step`, from the part at
+/// `segs` of the value `global`.
+#[cold]
+#[inline(never)]
+fn no_step(step: &StepRepr, ty: TypeId, global: u32, segs: &[Seg]) -> RunError {
+    let step = match step {
+        StepRepr::Field(name) => PathStep::Field(cut(name)),
+        StepRepr::Key(key) => match (&key.0, key.as_int()) {
+            (_, Some(n)) => PathStep::Key(Key::Int(n)),
+            (Repr::String(s), _) => PathStep::Key(Key::string(s)),
+            _ => return fault(Fault::ValueChangedType),
+        },
+        StepRepr::Index(index) => PathStep::Index(*index),
+        StepRepr::Dynamic => return fault(Fault::DynamicStep),
+    };
+
+    off_path(Message::NoStep { ty, step }, global, segs)
 }
 
 /// Why a value could not be set in a [`Globals`] store.

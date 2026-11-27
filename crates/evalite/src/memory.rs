@@ -31,6 +31,51 @@ pub(crate) trait WordsMut: Words {
     /// Take `n` words, giving where they start. The caller has checked
     /// they fit, so running out is a fault.
     fn alloc(&mut self, n: usize) -> Result<usize, RunError>;
+
+    /// Take the words of `len` entries of `stride` words each, a list's or
+    /// a map's, giving where the entries start. A store puts a capacity
+    /// header before them ([`HEADER`]); a run's memory does not.
+    fn alloc_entries(&mut self, len: usize, stride: usize) -> Result<usize, RunError> {
+        let n = len
+            .checked_mul(stride)
+            .ok_or_else(|| fault(Fault::ListTooLarge))?;
+        self.alloc(n)
+    }
+}
+
+/// The words of the capacity header a store keeps just before the entries
+/// of a list or a map that has any: an `Int`, the entries the block has
+/// room for. The reference word keeps (start, len) as a run reads it, and
+/// a run never reads the header.
+pub(crate) const HEADER: usize = 1;
+
+/// The words of a store's block of `cap` entries of `stride` words: none
+/// when it has no room, else the header and the entries.
+pub(crate) fn entries_block(cap: usize, stride: usize) -> Option<usize> {
+    if cap == 0 {
+        return Some(0);
+    }
+
+    cap.checked_mul(stride)?.checked_add(HEADER)
+}
+
+/// The capacity of a store's list or map of `len` entries from `start`:
+/// the header before them, or none for an empty one, which has no block.
+pub(crate) fn capacity(
+    words: &(impl Words + ?Sized),
+    start: usize,
+    len: usize,
+) -> Result<usize, RunError> {
+    if len == 0 {
+        return Ok(0);
+    }
+
+    let header = get(words, start.checked_sub(HEADER))?.as_int();
+
+    usize::try_from(header)
+        .ok()
+        .filter(|cap| *cap >= len)
+        .ok_or_else(|| fault(Fault::BadCapacity))
 }
 
 /// A run's steps: those it may take, and those left. Reading a value
@@ -182,8 +227,9 @@ pub(crate) fn measure_at(
 }
 
 /// The words of each block the parts of `value`, measured against `ty`
-/// already, take when written, one entry per block of at least a word, in
-/// no particular order.
+/// already, take when a store writes it, one entry per block of at least a
+/// word, in no particular order: a list's and a map's include the
+/// [`HEADER`].
 pub(crate) fn parts(types: &Types, value: &Value, ty: TypeId) -> Result<Vec<usize>, RunError> {
     let mut blocks = Vec::new();
 
@@ -217,7 +263,7 @@ fn max_len() -> usize {
 
 /// Refuse a part `len` long, past [`max_len`].
 #[inline]
-fn check_len(len: usize) -> Result<(), RunError> {
+pub(crate) fn check_len(len: usize) -> Result<(), RunError> {
     let max = max_len();
 
     if len > max {
@@ -233,17 +279,29 @@ fn check_len(len: usize) -> Result<(), RunError> {
 /// What a walk does with the size of each block of parts it finds.
 trait Blocks {
     fn block(&mut self, words: usize);
+
+    /// A list's or a map's entries, `words` of them.
+    fn entries(&mut self, words: usize);
 }
 
 impl Blocks for () {
     #[inline]
     fn block(&mut self, _: usize) {}
+
+    #[inline]
+    fn entries(&mut self, _: usize) {}
 }
 
 impl Blocks for Vec<usize> {
     fn block(&mut self, words: usize) {
         if words > 0 {
             self.push(words);
+        }
+    }
+
+    fn entries(&mut self, words: usize) {
+        if words > 0 {
+            self.push(words.saturating_add(HEADER));
         }
     }
 }
@@ -282,7 +340,7 @@ fn walk<T: Trail>(
             (TypeNode::List(entry), Repr::List(items)) => {
                 check_len(items.len())?;
                 let words = items.len().saturating_mul(types.width(*entry));
-                blocks.block(words);
+                blocks.entries(words);
                 total = total.saturating_add(words);
                 work.reserve(items.len());
                 trail.reserve(items.len());
@@ -298,7 +356,7 @@ fn walk<T: Trail>(
                 check_len(entries.len())?;
                 let width = types.width(*value).saturating_add(1);
                 let words = entries.len().saturating_mul(width);
-                blocks.block(words);
+                blocks.entries(words);
                 total = total.saturating_add(words);
                 let parts = entries.len().saturating_mul(2);
                 work.reserve(parts);
@@ -435,11 +493,7 @@ pub(crate) fn write(
             }
             (TypeNode::List(entry), Repr::List(items)) => {
                 let width = types.width(*entry);
-                let n = items
-                    .len()
-                    .checked_mul(width)
-                    .ok_or_else(|| fault(Fault::ListTooLarge))?;
-                let at = words.alloc(n)?;
+                let at = words.alloc_entries(items.len(), width)?;
                 work.reserve(items.len());
 
                 for (n, item) in items.iter().enumerate() {
@@ -468,11 +522,7 @@ pub(crate) fn write(
                 let stride = width
                     .checked_add(1)
                     .ok_or_else(|| fault(Fault::ListTooLarge))?;
-                let n = entries
-                    .len()
-                    .checked_mul(stride)
-                    .ok_or_else(|| fault(Fault::ListTooLarge))?;
-                let at = words.alloc(n)?;
+                let at = words.alloc_entries(entries.len(), stride)?;
                 work.reserve(entries.len().saturating_mul(2));
 
                 for (n, (k, v)) in entries.iter().enumerate() {
@@ -674,8 +724,9 @@ pub(crate) fn read(
 }
 
 /// Each block of at least a word that the parts of the value of type `ty`
-/// held at `at` take, as (start, words), in no particular order: what
-/// [`write`] took for them.
+/// held at `at` in a store take, as (start, words), in no particular
+/// order: what [`write`] took for them, a list's and a map's from its
+/// [`HEADER`] to the end of its capacity.
 pub(crate) fn blocks(
     words: &(impl Words + ?Sized),
     types: &Types,
@@ -684,8 +735,12 @@ pub(crate) fn blocks(
 ) -> Result<Vec<(usize, usize)>, RunError> {
     let mut work = vec![(at, ty)];
     let mut out = Vec::new();
-    let mut block = |start: usize, n: Option<usize>| -> Result<(), RunError> {
-        let n = n.ok_or_else(|| fault(Fault::OutsideMemory))?;
+
+    let mut block = |start: Option<usize>, n: Option<usize>| -> Result<(), RunError> {
+        let (Some(start), Some(n)) = (start, n) else {
+            return Err(fault(Fault::OutsideMemory));
+        };
+
         inside(words, start, Some(n))?;
 
         if n > 0 {
@@ -693,6 +748,19 @@ pub(crate) fn blocks(
         }
 
         Ok(())
+    };
+
+    // The block of a list's or a map's entries: from its header to the end
+    // of its capacity, none when it is empty.
+    let entries = |start: usize, len: usize, stride: usize| {
+        inside(words, start, len.checked_mul(stride))?;
+
+        if len == 0 {
+            return Ok((Some(start), Some(0)));
+        }
+
+        let cap = capacity(words, start, len)?;
+        Ok::<_, RunError>((start.checked_sub(HEADER), entries_block(cap, stride)))
     };
 
     while let Some((at, ty)) = work.pop() {
@@ -714,12 +782,13 @@ pub(crate) fn blocks(
             }
             TypeNode::String => {
                 let (start, len) = word.as_reference()?;
-                block(start, Some(len.div_ceil(8)))?;
+                block(Some(start), Some(len.div_ceil(8)))?;
             }
             TypeNode::List(entry) => {
                 let (start, len) = word.as_reference()?;
                 let width = types.width(*entry);
-                block(start, len.checked_mul(width))?;
+                let (from, n) = entries(start, len, width)?;
+                block(from, n)?;
 
                 for n in 0..len {
                     work.push((n.saturating_mul(width).saturating_add(start), *entry));
@@ -728,7 +797,8 @@ pub(crate) fn blocks(
             TypeNode::Map { key, value } => {
                 let (start, len) = word.as_reference()?;
                 let stride = types.width(*value).saturating_add(1);
-                block(start, len.checked_mul(stride))?;
+                let (from, n) = entries(start, len, stride)?;
+                block(from, n)?;
 
                 for n in 0..len {
                     let at = n.saturating_mul(stride).saturating_add(start);
@@ -743,7 +813,7 @@ pub(crate) fn blocks(
                     return Err(fault(Fault::RecordWrongSize));
                 }
 
-                block(start, Some(len))?;
+                block(Some(start), Some(len))?;
 
                 for (offset, field) in types.field_offsets(fields) {
                     work.push((start.saturating_add(offset), field.ty));
@@ -767,6 +837,26 @@ pub(crate) fn find_key(
     stride: usize,
     key: &Value,
 ) -> Result<Option<usize>, RunError> {
+    let Some(Ok(n)) = search_key(words, start, len, stride, key)? else {
+        return Ok(None);
+    };
+
+    n.checked_mul(stride)
+        .and_then(|at| at.checked_add(start))
+        .map(Some)
+        .ok_or_else(|| fault(Fault::OutsideMemory))
+}
+
+/// As [`find_key`], giving the index of the entry of `key` as `Ok`, or as
+/// `Err` the index its entry would take to keep the keys in order. `None`
+/// when `key` is neither an `Int` nor a `String`.
+pub(crate) fn search_key(
+    words: &(impl Words + ?Sized),
+    start: usize,
+    len: usize,
+    stride: usize,
+    key: &Value,
+) -> Result<Option<Result<usize, usize>>, RunError> {
     inside(words, start, len.checked_mul(stride))?;
 
     let mut low = 0usize;
@@ -789,11 +879,14 @@ pub(crate) fn find_key(
         match order {
             Ordering::Less => low = mid.saturating_add(1),
             Ordering::Greater => high = mid,
-            Ordering::Equal => return Ok(Some(at)),
+            Ordering::Equal => return Ok(Some(Ok(mid))),
         }
     }
 
-    Ok(None)
+    match &key.0 {
+        Repr::Int(_) | Repr::String(_) => Ok(Some(Err(low))),
+        _ => Ok(None),
+    }
 }
 
 /// The order of the string `word` refers to and `bytes`, by their bytes.

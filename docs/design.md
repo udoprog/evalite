@@ -1,9 +1,9 @@
 # evalite design
 
 This document describes how evalite works, and the decisions behind it, for
-review. Sections 1 to 9 describe `main` as of Globals 3 (8823970e, updates
-by path). Section 10 is the globals store's plan: decided, and built up to
-Globals 3.
+review. Sections 1 to 9 describe `main` as of Globals 4 (e5e312bd, inserting
+and removing entries). Section 10 is the globals store's plan: decided, and
+built up to Globals 4.
 
 Every card that changes the design updates this file in the same commit,
 including each decision taken and the alternatives it was weighed against
@@ -464,6 +464,18 @@ Map<Int, Option<Int>>   ref(start, 3) ──> [k0][tag][v][k1][tag][v][k2][tag][
                                            stride = 1 + width(V) = 3
 ```
 
+**In a store** a list or a map that has entries also has a capacity: its
+block starts with a header word (`memory::HEADER`, an `Int`, the entries it
+has room for) and the reference points past it, at the entries, so a run
+sees exactly the layout above and never reads the header (section 7). An
+empty one has no block and no header. A run's own lists and maps have none.
+
+```text
+List<Int> in a store    ref(start, 2) ──────┐
+                                    [cap=4][e0][e1][ spare ][ spare ]
+                                            ^start
+```
+
 Setting a value refuses unsorted entries (`Fault::MapUnsorted`), and so
 does a host function's result. `Value::map` always sorts, so a host can't
 produce them through the public API.
@@ -473,7 +485,11 @@ produce them through the public API.
 reading it back (`read`), the sizes of the blocks a value's parts take
 (`parts`) and the blocks a held value's parts are in (`blocks`) are free
 functions over a `Words`/`WordsMut` trait: a word getter, the end of
-memory, a setter and an allocator. A run's memory and a `Globals` store
+memory, a setter and an allocator, plus `alloc_entries` for a list's or a
+map's entries, which a store overrides to write the capacity header (the
+default, a run's memory, allocates the entries alone). `parts` and `blocks`
+are only used by the store, so they count the header in a list's or map's
+block. A run's memory and a `Globals` store
 both implement it, so values have one layout and one checker wherever they
 are held. Every walk uses an explicit work list.
 
@@ -628,7 +644,8 @@ size, which the host supplies, and by the store's limit.
 Globals 1 (da3c369c) gave the `Environment` the layout. Globals 2
 (5885897e) holds the values in a `Globals` store that runs read in place
 (section 10). Globals 3 (8823970e) updates a part of a value in place by
-path.
+path. Globals 4 (e5e312bd) inserts and removes the entries of lists and
+maps, which have room to grow.
 
 **Slots.** `Environment` keeps `slots: Vec<Slot { name, ty, at }>` in
 declaration order, plus a name-ordered index (`names`) for lookup and for
@@ -686,7 +703,8 @@ holds the values declared when it is made; one declared later is not in
 it, and a program reading it is refused at load. Its memory:
 
 - `words`: the slot area (`env.slot_words()` words), then the heap of
-  parts, grown by bump allocation;
+  parts, grown by bump allocation. A list's or map's block is its capacity
+  header, then room for its capacity of entries (section 5);
 - `set`: a flag per word of the slot area, true at the first word of each
   set slot. `Instr::Global { at, .. }` checks `set[at]`; unset, it is
   `Message::Unset`, naming the program's global with that slot, as an
@@ -761,11 +779,62 @@ unset value), `NoStep { ty, step }` (a field the record lacks, or a step of
 the wrong kind: `Int has no field "max"`, `List<..> has no key 0`),
 `NoneOnPath`, `KeyMistyped` (`expected an Int key, found String`), and the
 run's `NoSuchKey` and `IndexOutOfRange` for a missing key or index.
-Inserting is Globals 4.
+Inserting is `insert`, below.
 
-The limit counts the heap, freed blocks included, and not the slots. It
-is kept inside 2^32 minus the slot area, so every store address fits a
-reference.
+**Inserting and removing** (Globals 4). `insert(&path, &value)`,
+`push(&path, &value)` and `remove(&path) -> Value` change how many entries
+a list or a map has. The path of an insert or a remove ends with the entry:
+a list's index or a map's key (`Path::value("skills").string_key("occult")`),
+and the path before it is `locate`d as `set_at`'s, then through any present
+options to the list or map (`locate_entries`). `push`'s path is to the list.
+
+- A list `insert` takes an index from 0 to `len` (`len` appends, as `push`
+  does); `remove` one below `len`. A map `insert` binary-searches the key
+  (`memory::search_key`, which gives the entry's index or the index that
+  keeps the keys in order): a key it has is replaced as `set_at` replaces
+  it; a new one is written at its index. A map `remove` of a missing key is
+  `NoSuchKey`.
+- **Room.** `set` writes a list or map with exactly the room it needs
+  (capacity = len), so a set value takes a header word more than before and
+  nothing else. An insert into a full one (`len == cap`) moves it to a new
+  block of `max(2 × cap, 4)` entries, copying the entries before the new one
+  and after it into place, and frees the old block; otherwise the entries
+  after it move one stride along (`copy_within`). A `remove` moves those
+  after it back. When the length falls below a quarter of the capacity and
+  the capacity is above 4, the capacity halves (at least 4) **in place**:
+  the header is rewritten and the block's second half is freed as a block
+  of its own. An emptied list or map frees its whole block. So the capacity
+  is at most `max(4, 4 × len)`, and 0 exactly when empty.
+- **Checks first.** Every operation finds the step, checks the value (and
+  key) against the entry's type with the path named, refuses a length past
+  what a reference holds (`memory::check_len`, as `set` does), and works
+  out the words it takes (the value's blocks and, when it grows, the new
+  block, against the free blocks and the old block, as `replace` does)
+  before it changes anything. So a failed insert leaves the store as it
+  was, and a remove takes no words and cannot fail for want of them. A
+  fault after the first change (a bug) leaves the value unset, as
+  `replace` does, rather than pointing at freed blocks.
+- **Cost.** O(path) steps and a binary search per key, plus the value, plus
+  the entries moved: those after the index, or all of them when it grows.
+  Growth is amortized O(1) words per entry added. A remove also reads the
+  removed value back, to give it, and walks it to free its blocks.
+
+Errors carry `InsertingAt`, `PushingOnto` or `RemovingAt { path }`,
+outermost. The new messages: `NotEntryPath` (a path to insert or remove at
+that ends with a field, or has no steps) and `NotList { ty }` (`push` onto
+something else); a step of the wrong kind is `NoStep`, an index past the end
+`IndexOutOfRange`. `Fault::BadCapacity` is a header below its length.
+
+The `update/*` benchmarks (`benches/README.md`) change single entries of a
+100 000-entry `Map<Int, {dice, rank}>`, 1 000 updates an iteration: a field
+by `set_at` takes 0.13 µs an update, an entry set by `insert` of a key the
+map has 0.43 µs, and a new key inserted then removed 4.9 µs an operation
+(each moves about half of the 300 000 entry words). Rebuilding the map with
+one entry changed and setting it whole takes 79 ms an update.
+
+The limit counts the heap, freed blocks and capacity headers and spare
+room included, and not the slots. It is kept inside 2^32 minus the slot
+area, so every store address fits a reference.
 ## 8. Stored formats and verification
 
 All stored forms are encoded with musli `storage` and start with a
@@ -1042,7 +1111,8 @@ approved the direction and reviews the decisions here. Globals 1 is built
 compatibility check. Globals 2 is built (sections 6.1 and 7): the store,
 `set`/`get`, set flags, the store limit, runs reading the store in place,
 and `Run::bind` removed. Globals 3 is built (section 7): `set_at`/`get_at`
-by path. The rest is not built yet. Breaking changes are
+by path. Globals 4 is built (sections 5 and 7): capacity, growth and
+shrinking, `insert`/`push`/`remove`. The rest is not built yet. Breaking changes are
 allowed (board rule, 2026-11-27).
 
 ### 10.1 Why
@@ -1085,18 +1155,19 @@ the sheet's values persistent:
   stack) only in the machine's own scratch memory. There is no bind per run,
   and `Run::bind` is removed. Reading an unset global is a run error naming
   it.
-- **In-place updates by path** (`set`, `set_at`, `get`, `get_at` built).
+- **In-place updates by path** (built).
   - Setting: `set(name, &Value)`, `set_at(path, &Value)`, `get`, `get_at`.
-  - Maps: `insert`/`remove`.
-  - Lists: `push`/`insert`/`remove`.
+  - Maps: `insert`/`remove`, the key the path's last step.
+  - Lists: `push`/`insert`/`remove`, the index the path's last step.
   - Every operation is type-checked against the declared type, with
     path-named errors as `set` gives (built for `set`).
-- **Amortized spare capacity.**
+- **Amortized spare capacity** (built).
   - Store lists and maps have a capacity, kept in a header word just before
     the entries. The reference word keeps (start, len), so runs see the
     run-time layout of section 5 unchanged.
   - Growth past capacity doubles (minimum 4).
-  - Shrinking below a quarter of capacity halves, so there's no thrash.
+  - Shrinking below a quarter of capacity halves, so there's no thrash. It
+    halves in place, freeing the second half of the block.
 - **Immediate freeing.** Values never share parts (every value is a tree), so
   replacing or removing a value frees its old parts at once, with no
   reference counts or tracing.
@@ -1136,7 +1207,7 @@ Store memory:
 | da3c369c | Globals 1 (built) | Environment-owned slots, layout fingerprint, stored `FORMAT` bump recording the fingerprint and read slots. Transitional: `Run::bind` remains and writes into the slot layout. The verifier checks every global read against the recorded (slot, type). |
 | 5885897e | Globals 2 (built) | `Globals` store with `set`/`get`, set flags, a word limit, runs reading the store read-only, `Run::bind` removed. Updates cli, compare, sockel, playground, benches (a one-store, many-formulas bench modelled on characterize) and docs. |
 | 8823970e | Globals 3 (built) | `set_at`/`get_at` by path, reusing the references path type. Literal steps only, existing keys and indexes only. O(path + new value), plus O(log n) per map step. |
-| e5e312bd | Globals 4 | Capacity, growth and shrink. Map `insert`/`remove` (binary search plus a `copy_within` shift). List `push`/`insert`/`remove`. Bench: 1 000 single-entry updates on a 100 000-entry map versus a whole-map set. |
+| e5e312bd | Globals 4 (built) | Capacity, growth and shrink. Map `insert`/`remove` (binary search plus a `copy_within` shift). List `push`/`insert`/`remove`. Bench: 1 000 single-entry updates on a 100 000-entry map versus a whole-map set. |
 | ae875cb2 | Globals 5 | Size-class free lists, compaction at more than half free, `stats()` (live, free, capacity). |
 | fbaa6f18 | Globals 6 | `to_bytes`/`from_bytes` of values, `migrate` between layouts. |
 
@@ -1189,6 +1260,19 @@ decisions):
 | Cost | O(path + old part + new part), plus a binary search per key | O(path + new part) as the card sketched: freeing the old part's blocks needs its blocks, found by walking it. Replacing an `Int` in a 100 000-entry map is still O(log n). |
 | How the error names the path | `while setting <path>` from `Path`'s `Display`, plus `at <prefix>` for a step error and `at <full path>` for a mismatch inside the value | Only `Seg`s: a failing step (a field the record lacks) has no `Seg`. |
 | Key lookup | `memory::find_key` over `Words`, comparing a string's words with the key's bytes | Writing the key into the store to reuse the machine's `find_key`: it charges fuel and needs scratch memory. |
+
+**Taken while building Globals 4** (worker, 2026-11-27, within the card's
+decisions):
+
+| Question | Picked | Alternatives and why not |
+|---|---|---|
+| The shape of `insert`/`remove` | One `insert(&path, &value)` and one `remove(&path)` for lists and maps, the path ending with the index or key; `push(&path_to_list, &value)`; `remove` gives the removed value | `insert(path_to_map, key, &value)` as the card sketched, with list versions beside it: two names for each operation, and a key passed apart from the path `set_at` already takes it in. |
+| The room a `set` gives | Exactly the entries it writes, plus the header | At least 4, or a power of two: a set value of small lists (a map of records holding lists) would take up to four times its words, for growth most never have. Growth doubles from there. |
+| An empty list or map | No block and no header; the first entry takes a block of 4 | A header-only block: a word for each empty list, and a capacity that says nothing. |
+| How a shrink halves | In place: rewrite the header, free the block's second half | Moving to a new block of half the room, as the card sketched: it copies the entries and needs free words, so a remove could fail at the limit. |
+| Where a grown block comes from | A new block, taken from the free lists or by bump, before the old one is freed | Growing in place when the block ends the heap: faster for the last list written, but a second path for little gain before Globals 5's compaction. |
+| A missing key or index on `remove` | `NoSuchKey`/`IndexOutOfRange`, as `set_at` | Ignoring it (`Option`): a host removing what is not there has a stale view. |
+| A path through an option to the list or map | Stepped through when present, as `set_at`'s steps are | Refusing it: `Path` has no unwrap step, so a list in an `Option` could not be pushed onto. |
 
 ### 10.5 Questions raised while writing this
 

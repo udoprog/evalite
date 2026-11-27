@@ -30,7 +30,8 @@ fn track(boxes: i64) -> Value {
 }
 
 /// The value bound to each of [`env`]'s names, and the words its parts
-/// take.
+/// take in a store, where a list or map that has entries takes a capacity
+/// header before them.
 fn binding(name: &str) -> (Value, usize) {
     match name {
         "wits" => (Value::int(2), 0),
@@ -45,18 +46,18 @@ fn binding(name: &str) -> (Value, usize) {
         "maybe" => (Value::none(), 0),
         "levels" => (
             Value::list(vec![Value::int(10), Value::int(20), Value::int(30)]),
-            3,
+            4,
         ),
         "grid" => (
             Value::list(vec![
                 Value::list(vec![Value::int(1), Value::int(2)]),
                 Value::list(vec![Value::int(3)]),
             ]),
-            5,
+            8,
         ),
         "name" => (Value::from("Essence"), 1),
-        "health" => (track(1), 3),
-        "tracks" => (Value::list(vec![track(2), track(3)]), 8),
+        "health" => (track(1), 4),
+        "tracks" => (Value::list(vec![track(2), track(3)]), 11),
         "specialties" => (
             Value::record([
                 ("athletics", Value::int(2)),
@@ -70,20 +71,20 @@ fn binding(name: &str) -> (Value, usize) {
                 ("a b", track(4)),
                 ("inner", Value::record([("deep", Value::bool(false))])),
             ]),
-            7,
+            8,
         ),
-        "maybe_track" => (Value::some(track(5)), 3),
-        // Two words an entry: the key, then the record.
+        "maybe_track" => (Value::some(track(5)), 4),
+        // The header, and two words an entry: the key, then the record.
         "ids" => (
             Value::map([
                 (int(0x1A2B_3C4D), Value::record([("dice", int(3))])),
                 (int(-4), Value::record([("dice", int(1))])),
                 (int(7), Value::record([("dice", int(2))])),
             ]),
-            9,
+            10,
         ),
-        // Three words an entry, an `Option<Int>` being tagged, and a word
-        // for each key's bytes.
+        // The header, three words an entry, an `Option<Int>` being tagged,
+        // and a word for each key's bytes.
         "tags" => (
             Value::map([
                 (Value::from("brawl"), Value::some(int(2))),
@@ -91,7 +92,7 @@ fn binding(name: &str) -> (Value, usize) {
                 (Value::from("athletics (long name)"), Value::some(int(5))),
                 (Value::from(""), Value::some(int(0))),
             ]),
-            17,
+            18,
         ),
         "empty" => (Value::map([]), 0),
         _ => panic!("no binding for {name}"),
@@ -1036,25 +1037,25 @@ fn memory_budget() {
 #[test]
 fn store_memory() {
     // `l.len()` takes 1 stack word; `l`'s entries are in the store, which
-    // a store of 3 words takes 3 of, and no more.
+    // they and their capacity header take 4 words of, and no more.
     let mut env = Environment::new();
     env.value("l", Type::list(Type::int())).unwrap();
     env.value("s", Type::string()).unwrap();
     let program = compile("l.len()", &env).unwrap();
     assert_eq!(program.memory().total(), 1);
 
-    let mut globals = Globals::with_limit(&env, 3);
-    assert_eq!(globals.limit(), 3);
+    let mut globals = Globals::with_limit(&env, 4);
+    assert_eq!(globals.limit(), 4);
     globals.set("l", &ints(&[1, 2, 3])).unwrap();
     let mut machine = Machine::new(Limits::new().memory(1));
     let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
     assert_eq!(outcome.value, int(3));
     assert_eq!(outcome.memory, 1);
 
-    let mut globals = Globals::with_limit(&env, 3);
+    let mut globals = Globals::with_limit(&env, 4);
     assert_eq!(
         set_chain(&globals.set("l", &ints(&[1, 2, 3, 4])).unwrap_err()),
-        "the value needs 4 words of memory, 3 are left: while setting `l`"
+        "the value needs 5 words of memory, 4 are left: while setting `l`"
     );
 
     // A string takes a word per 8 bytes.
@@ -1103,16 +1104,16 @@ fn replacing_frees() {
         }))
     };
 
-    // Three entries of a word, three records of two words, three strings
-    // of two words.
-    let mut globals = Globals::with_limit(&env, 15);
+    // A header and three entries of a word, three records of two words,
+    // three strings of two words.
+    let mut globals = Globals::with_limit(&env, 16);
     globals.set("tracks", &tracks(0)).unwrap();
-    assert_eq!(globals.heap_words(), 15);
+    assert_eq!(globals.heap_words(), 16);
 
     for n in 1..20 {
         globals.set("tracks", &tracks(n)).unwrap();
         globals.set("n", &int(n)).unwrap();
-        assert_eq!(globals.heap_words(), 15);
+        assert_eq!(globals.heap_words(), 16);
         assert_eq!(globals.get("tracks"), Some(tracks(n)));
     }
 
@@ -1126,28 +1127,29 @@ fn replacing_frees() {
 
     // A smaller value leaves blocks free, which a larger one takes back.
     globals.set("tracks", &Value::list([])).unwrap();
-    assert_eq!(globals.heap_words(), 15);
+    assert_eq!(globals.heap_words(), 16);
     globals.set("tracks", &tracks(7)).unwrap();
-    assert_eq!(globals.heap_words(), 15);
+    assert_eq!(globals.heap_words(), 16);
     assert_eq!(globals.get("tracks"), Some(tracks(7)));
 
     // A value takes the blocks of the one it replaces and those freed
     // before together: three strings of a word, from two of the old
-    // list's and one of `b`'s, beside a new block of three entries.
+    // list's and one of `b`'s, beside a new block of a header and three
+    // entries.
     let mut env = Environment::new();
     env.value("a", Type::list(Type::string())).unwrap();
     env.value("b", Type::string()).unwrap();
     let word = || Value::from("12345678");
 
-    let mut globals = Globals::with_limit(&env, 6);
+    let mut globals = Globals::with_limit(&env, 10);
     globals.set("b", &word()).unwrap();
-    globals.set("a", &Value::list([word()])).unwrap();
+    globals.set("a", &Value::list([word(), word()])).unwrap();
     globals.set("b", &Value::from("")).unwrap();
-    assert_eq!(globals.heap_words(), 3);
+    assert_eq!(globals.heap_words(), 6);
 
     let three = Value::list([word(), word(), word()]);
     globals.set("a", &three).unwrap();
-    assert_eq!(globals.heap_words(), 6);
+    assert_eq!(globals.heap_words(), 10);
     assert_eq!(globals.get("a"), Some(three));
     assert_eq!(globals.get("b"), Some(Value::from("")));
 }
@@ -1274,7 +1276,7 @@ fn address_space() {
     let error = machine.load(&program, &globals).unwrap_err();
     assert_eq!(
         chain(&error, &program),
-        "the store's 4 words and the machine's 4294967295 words are more than a run can address: while loading the program"
+        "the store's 5 words and the machine's 4294967295 words are more than a run can address: while loading the program"
     );
 }
 
@@ -1932,13 +1934,14 @@ fn word_budget() {
         "the program needs 12 words of memory, more than the 11 the machine allows"
     );
 
-    // A list of k `Option<Int>`s takes 2k words of the store.
+    // A list of k `Option<Int>`s takes 2k words of the store, and its
+    // header one.
     let program = compile("l.len()", &env).unwrap();
     assert_eq!(program.memory().total(), 1);
 
     for k in [1usize, 2, 7] {
         let list = Value::list(vec![Value::some(int(-1)); k]);
-        let words = 2 * k as u32;
+        let words = 2 * k as u32 + 1;
 
         let mut globals = Globals::with_limit(&env, words);
         globals.set("l", &list).unwrap();
@@ -1952,8 +1955,8 @@ fn word_budget() {
             set_chain(&globals.set("l", &list).unwrap_err()),
             format!(
                 "the value needs {} words of memory, {} are left: while setting `l`",
-                2 * k,
-                2 * k - 1
+                2 * k + 1,
+                2 * k
             )
         );
     }
@@ -2506,13 +2509,13 @@ fn map_setting_errors() {
         assert_eq!(set_chain(&error), *expected, "{name} = {value}");
     }
 
-    // The entries' words: three entries of a key and a one-word record,
-    // and each record's field.
+    // The entries' words: the header, three entries of a key and a
+    // one-word record, and each record's field.
     let mut globals = Globals::new(&env);
     let (ids, words) = binding("ids");
-    assert_eq!(words, 9);
+    assert_eq!(words, 10);
     globals.set("ids", &ids).unwrap();
-    assert_eq!(globals.heap_words(), 9);
+    assert_eq!(globals.heap_words(), 10);
     globals.set("tags", &binding("tags").0).unwrap();
     let outcome = machine.load(&program, &globals).unwrap().run().unwrap();
     assert_eq!(outcome.value, int(7));

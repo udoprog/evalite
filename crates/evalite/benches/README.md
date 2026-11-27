@@ -71,6 +71,13 @@ sheet's values plus a `catalog` map of 10 000 entries, in one store set
 once, and 400 small formulas over it, each reading two or three values, a
 quarter of them one entry of the catalog.
 
+`update/*` changes single entries of a 100 000-entry map in a store, 1 000
+updates an iteration: `set_at` a field of an entry, `insert_existing` a
+whole entry by a key the map has, and `insert_remove` a new key inserted
+between two and removed again, which moves the entries after it. Against
+them, `update/set_whole` is one update as a host without them makes it: the
+map rebuilt with one entry changed and set whole, timed per update.
+
 ## Profiling
 
 There is no `perf` on the usual machine; callgrind works. Build with debug
