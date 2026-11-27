@@ -261,8 +261,9 @@ record):
   field `_`.
 - Completion: a record literal's value hole wants the field of the record its
   place takes (`Up::RecordField`), not a sibling's type; a key hole in it is
-  offered no map key literals. Field names are not yet offered at a key hole
-  (a follow-up).
+  offered no map key literals. A key hole whose literal's place takes a record
+  is offered the record's fields not yet written, sorted by name, as
+  `CompletionKind::Key` (the cost is the record's size).
 - Highlighting: a name before a single `:` is a `Member`, as a field.
 
 ## 3. Pipeline

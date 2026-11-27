@@ -300,6 +300,7 @@ fn kind_id(kind: CompletionKind) -> &'static str {
         CompletionKind::Literal => "evalite-completion-literal",
         CompletionKind::Operator => "evalite-completion-operator",
         CompletionKind::Unwrap => "evalite-completion-unwrap",
+        CompletionKind::Key => "evalite-completion-key",
         _ => "evalite-completion-other",
     }
 }

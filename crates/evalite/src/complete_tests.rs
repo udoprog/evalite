@@ -1186,3 +1186,31 @@ fn siblings_tried_for_a_type_are_capped() {
     let labels = labels_in(&env, &text, 7);
     assert!(!labels.contains(&"name".to_owned()), "{labels:?}");
 }
+
+#[test]
+fn record_literal_keys() {
+    let ty = Type::record([
+        ("a", Type::bool()),
+        ("b", Type::int()),
+        ("c", Type::string()),
+    ]);
+
+    // Fields not yet written, sorted by name, wherever the hole is.
+    assert_eq!(labels("{b: 1, _: _}", 0, Some(&ty)), ["a", "c"]);
+    assert_eq!(labels("{a: true, b: 1, _: _}", 0, Some(&ty)), ["c"]);
+
+    // A first key, still a hole, is offered every field.
+    assert_eq!(labels("{_: _}", 0, Some(&ty)), ["a", "b", "c"]);
+
+    // Where no record is expected, no field names.
+    assert!(!labels("{b: 1, _: _}", 0, None).contains(&"a".to_owned()));
+
+    let s = s("{b: 1, _: _}");
+    let hole = s.holes()[0];
+    let found = s.complete(&env(), hole, Some(&ty)).unwrap();
+    assert_eq!(found[0].kind(), CompletionKind::Key);
+
+    let mut s = s;
+    s.apply(hole, &found[0]).unwrap();
+    assert_eq!(s.to_text(), "{b: 1, a: _}");
+}

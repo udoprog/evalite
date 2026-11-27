@@ -62,7 +62,7 @@ pub(crate) fn offers(source: &str, cursor: usize, env: &Environment) -> Option<O
     let after = chars.get(end..)?.iter().collect::<String>();
     let index = holes_in(&before);
 
-    let structure = Structure::from_text(&format!("{before}_{after}")).ok()?;
+    let structure = holed(&before, &after)?;
     let hole = *structure.holes().get(index)?;
     let completions = structure.complete(env, hole, None).ok()?;
 
@@ -136,6 +136,58 @@ pub(crate) fn accept(source: &str, at: &Offers, offer: &Offer) -> (String, usize
     }
 }
 
+/// The structure of `before` and `after` with a hole between them. Text being
+/// typed is rarely whole: groups are left open, and a map key has no `:`
+/// yet. So the hole is also tried as a key with a value, and with the
+/// unclosed groups closed.
+fn holed(before: &str, after: &str) -> Option<Structure> {
+    let closers = closers(before, after);
+
+    for hole in ["_", "_: _"] {
+        for close in ["", closers.as_str()] {
+            let text = format!("{before}{hole}{after}{close}");
+
+            if let Ok(structure) = Structure::from_text(&text) {
+                return Some(structure);
+            }
+        }
+    }
+
+    None
+}
+
+/// The closing brackets for the groups `before` and `after` leave open.
+fn closers(before: &str, after: &str) -> String {
+    let mut open = Vec::new();
+    let mut string = false;
+    let mut escaped = false;
+
+    for c in before.chars().chain(after.chars()) {
+        if string {
+            match (escaped, c) {
+                (true, _) => escaped = false,
+                (false, '\\') => escaped = true,
+                (false, '"') => string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match c {
+            '"' => string = true,
+            '(' => open.push(')'),
+            '[' => open.push(']'),
+            '{' => open.push('}'),
+            ')' | ']' | '}' if open.last() == Some(&c) => {
+                open.pop();
+            }
+            _ => {}
+        }
+    }
+
+    open.into_iter().rev().collect()
+}
+
 /// How many holes (`_` standing alone, outside strings) `text` has.
 fn holes_in(text: &str) -> usize {
     let mut count = 0usize;
@@ -180,6 +232,16 @@ mod tests {
         let mut env = Environment::new();
         env.value("wits", Type::int()).unwrap();
         env.value("bonus", Type::option(Type::int())).unwrap();
+        env.function(
+            "count",
+            [Type::record([
+                ("boxes", Type::int()),
+                ("bonus", Type::int()),
+                ("count", Type::int()),
+            ])],
+            Type::int(),
+        )
+        .unwrap();
         env.value(
             "m",
             Type::record([("athletics", Type::int()), ("Brawl (bar)", Type::int())]),
@@ -258,5 +320,21 @@ mod tests {
     #[test]
     fn holes_skip_strings_and_names() {
         assert_eq!(holes_in(r#"_ + "_" + my_var + _"#), 2);
+    }
+
+    #[test]
+    fn record_keys_of_a_first_key() {
+        for (source, cursor) in [("count({", 7), ("count({}", 7), ("count({bo", 9)] {
+            let labels = labels(source, cursor);
+            assert!(labels.iter().any(|l| l == "boxes"), "{source}: {labels:?}");
+        }
+
+        assert_eq!(labels("count({bo", 9), ["bonus", "boxes"]);
+    }
+
+    #[test]
+    fn record_keys_of_a_later_key() {
+        assert_eq!(labels("count({boxes: 1, co", 19), ["count"]);
+        assert_eq!(labels("count({boxes: 1, ", 17), ["bonus", "count"]);
     }
 }

@@ -46,6 +46,9 @@ pub enum CompletionKind {
     /// An optional value unwrapped with `!`, such as `bonus!`, which fails
     /// the run when it is absent.
     Unwrap,
+    /// A field's name at a key of a record literal, such as `boxes` in
+    /// `{boxes: 3}`.
+    Key,
 }
 
 /// How [`Structure::apply`] fills a hole with a [`Completion`].
@@ -679,7 +682,7 @@ impl Structure {
                     .map_err(CompleteKind::Receiver)?;
                 members(&program.result_type(), &want)
             }
-            _ => self.values(env, at, &want),
+            _ => self.values(env, at, &want, root),
         };
 
         let keep = {
@@ -1037,9 +1040,71 @@ impl Structure {
         }
     }
 
-    /// Expressions to put in node `at`'s place.
-    fn values(&self, env: &Environment, at: NodeId, want: &Want) -> Vec<Completion> {
+    /// When node `at` is a key of a map literal whose expected type is a
+    /// record, the record's fields not named by the other keys, by name
+    /// with their types. Bounded by the record's size.
+    fn record_keys(
+        &self,
+        env: &Environment,
+        at: NodeId,
+        root: Option<&Type>,
+    ) -> Option<Vec<(String, Type)>> {
+        let parent = self.parent(at)?;
+
+        let Some(Node(Repr::Map { entries })) = self.get(parent) else {
+            return None;
+        };
+
+        if !entries.iter().any(|(k, _)| *k == at) {
+            return None;
+        }
+
+        let Want::OneOf(patterns) = self.want(env, parent, root) else {
+            return None;
+        };
+
         let mut out = Vec::new();
+
+        for pattern in patterns {
+            if let Pattern::Type(Type(Kind::Record(fields))) = pattern {
+                for (name, ty) in fields {
+                    let written = entries.iter().any(|(k, _)| {
+                        *k != at && matches!(self.get(*k), Some(Node(Repr::Name(n))) if *n == name)
+                    });
+
+                    if !written && !out.iter().any(|(n, _): &(String, Type)| *n == name) {
+                        out.push((name, ty));
+                    }
+                }
+            }
+        }
+
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// Expressions to put in node `at`'s place.
+    fn values(
+        &self,
+        env: &Environment,
+        at: NodeId,
+        want: &Want,
+        root: Option<&Type>,
+    ) -> Vec<Completion> {
+        let mut out = Vec::new();
+
+        // A record literal's key: the expected record's fields not yet
+        // written, by name.
+        if let Some(names) = self.record_keys(env, at, root) {
+            for name in names {
+                let (label, ty) = (name.0, Some(name.1));
+                let expr = Repr::Name(label.clone());
+                offer(&mut out, label, CompletionKind::Key, ty, None, || {
+                    Expr::Literal(expr)
+                });
+            }
+
+            return out;
+        }
 
         if !want.is_open() {
             return out;
