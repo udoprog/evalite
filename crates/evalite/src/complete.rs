@@ -22,6 +22,10 @@ use crate::types::is_field_name;
 /// reach a wanted type.
 const MAX_STEPS: usize = 4096;
 
+/// The entries of a list or map tried, when looking for one whose type is
+/// known, each costing a compile of its own.
+const MAX_SIBLINGS: usize = 8;
+
 /// What a [`Completion`] offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -280,10 +284,11 @@ enum Pattern {
 }
 
 impl Pattern {
-    /// Whether every `Map<K, V>` fits it, whatever its `V`.
+    /// Whether every `Map<K, V>` fits it, whatever its `V` (and so what
+    /// its values are is not limited).
     fn takes_any_map(&self) -> bool {
         match self {
-            Self::Map => true,
+            Self::Map | Self::Keyed(_) => true,
             // A map's methods are generic over its `K` and `V`.
             Self::Method(name) => {
                 methods::find(&Type::map(Type::int(), Type::bool()), name).is_some()
@@ -465,28 +470,32 @@ impl Want {
         }
     }
 
-    /// The keys of the maps this takes: an `Int` or a `String`.
+    /// The keys of the maps this takes: an `Int` or a `String`, or the one
+    /// type a keyed map takes.
     fn map_key(self) -> Self {
-        let any = || {
-            Self::OneOf(vec![
-                Pattern::Type(Type::int()),
-                Pattern::Type(Type::string()),
-            ])
-        };
+        let mut out = Self::OneOf(Vec::new());
 
         match self {
-            Self::Any => any(),
-            Self::OneOf(patterns) if patterns.iter().any(Pattern::takes_any_map) => any(),
-            Self::OneOf(patterns) => Self::OneOf(
-                patterns
-                    .into_iter()
-                    .filter_map(|p| match p {
-                        Pattern::Type(Type(Kind::Map(k, _))) => Some(Pattern::Type(*k)),
-                        _ => None,
-                    })
-                    .collect(),
-            ),
+            Self::Any => {
+                out.push(Pattern::Type(Type::int()));
+                out.push(Pattern::Type(Type::string()));
+            }
+            Self::OneOf(patterns) => {
+                for p in patterns {
+                    match p {
+                        Pattern::Type(Type(Kind::Map(k, _))) => out.push(Pattern::Type(*k)),
+                        Pattern::Keyed(k) => out.push(Pattern::Type(k)),
+                        p if p.takes_any_map() => {
+                            out.push(Pattern::Type(Type::int()));
+                            out.push(Pattern::Type(Type::string()));
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
+
+        out
     }
 
     /// Lists and maps of what this takes, indexed by a key of type `key`
@@ -528,7 +537,10 @@ impl Want {
                                 out.push(Pattern::List);
                             }
 
-                            out.push(Pattern::Map);
+                            match key {
+                                Some(key) => out.push(Pattern::Keyed(key.clone())),
+                                None => out.push(Pattern::Map),
+                            }
                         }
                     }
                 }
@@ -722,6 +734,20 @@ impl Structure {
         Some(self.compile_at(id, env).ok()?.result_type())
     }
 
+    /// The type of the first of `siblings` whose is known. A hole has none,
+    /// and each of the others costs a compile of its own, so only the first
+    /// few are tried: a large list or map of holes is still linear.
+    fn sibling_type(
+        &self,
+        env: &Environment,
+        siblings: impl Iterator<Item = NodeId>,
+    ) -> Option<Type> {
+        siblings
+            .filter(|e| !self.get(*e).is_none_or(Node::is_hole))
+            .take(MAX_SIBLINGS)
+            .find_map(|e| self.type_of(env, e))
+    }
+
     /// The types node `at`'s place takes.
     fn want(&self, env: &Environment, mut at: NodeId, root: Option<&Type>) -> Want {
         // The places passed through on the way up to one whose type is
@@ -821,10 +847,8 @@ impl Structure {
                     continue;
                 }
                 Node(Repr::List { entries }) => {
-                    let sibling = entries
-                        .iter()
-                        .filter(|e| **e != at)
-                        .find_map(|e| self.type_of(env, *e));
+                    let sibling =
+                        self.sibling_type(env, entries.iter().copied().filter(|e| *e != at));
 
                     match sibling {
                         Some(ty) => Want::exactly(ty),
@@ -837,11 +861,13 @@ impl Structure {
                 }
                 Node(Repr::Map { entries }) => {
                     let key = entries.iter().any(|(k, _)| *k == at);
-                    let sibling = entries
-                        .iter()
-                        .map(|(k, v)| if key { *k } else { *v })
-                        .filter(|e| *e != at)
-                        .find_map(|e| self.type_of(env, e));
+                    let sibling = self.sibling_type(
+                        env,
+                        entries
+                            .iter()
+                            .map(|(k, v)| if key { *k } else { *v })
+                            .filter(|e| *e != at),
+                    );
 
                     match sibling {
                         Some(ty) => Want::exactly(ty),
@@ -934,6 +960,30 @@ impl Structure {
         want
     }
 
+    /// When node `at` is a map's key, or only under `-`s of one, how many
+    /// `-`s it is under.
+    fn key_negations(&self, at: NodeId) -> Option<usize> {
+        let mut node = at;
+        let mut negations = 0usize;
+
+        loop {
+            let parent = self.parent(node)?;
+
+            match self.get(parent)? {
+                Node(Repr::Map { entries }) => {
+                    return entries.iter().any(|(k, _)| *k == node).then_some(negations);
+                }
+                Node(Repr::Unary {
+                    op: UnaryOp::Neg, ..
+                }) => {
+                    negations = negations.saturating_add(1);
+                    node = parent;
+                }
+                _ => return None,
+            }
+        }
+    }
+
     /// Expressions to put in node `at`'s place.
     fn values(&self, env: &Environment, at: NodeId, want: &Want) -> Vec<Completion> {
         let mut out = Vec::new();
@@ -953,20 +1003,16 @@ impl Structure {
             _ => None,
         };
 
-        // A map's key: a literal.
-        let key = matches!(
-            self.parent(at).and_then(|p| self.get(p)),
-            Some(Node(Repr::Map { entries })) if entries.iter().any(|(k, _)| *k == at)
-        );
-
-        if key {
+        // A map's key: a literal. Under a `-` it is none: the text of a
+        // negative key is an integer, which is not a `-` node.
+        if let Some(negations) = self.key_negations(at) {
             let literals = [
                 ("0", Repr::Int(0), Type::int()),
                 ("\"\"", Repr::String(String::new()), Type::string()),
             ];
 
             for (label, repr, ty) in literals {
-                if want.fits(&ty) {
+                if negations == 0 && want.fits(&ty) {
                     let (label, ty) = (label.to_owned(), Some(ty));
                     offer(&mut out, label, CompletionKind::Literal, ty, None, || {
                         Expr::Literal(repr)

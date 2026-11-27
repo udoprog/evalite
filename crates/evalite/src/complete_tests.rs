@@ -1010,3 +1010,168 @@ fn map_completions() {
         "{receivers:?}"
     );
 }
+
+/// The environment of the map index tests.
+fn keyed_env() -> Environment {
+    let mut env = Environment::new();
+    let dice = Type::record([("dice", Type::int())]);
+    env.value("ids", Type::map(Type::int(), dice)).unwrap();
+    env.value("tags", Type::map(Type::string(), Type::bool()))
+        .unwrap();
+    env.value("lists", Type::map(Type::int(), Type::list(Type::int())))
+        .unwrap();
+    env.value("slists", Type::map(Type::string(), Type::list(Type::int())))
+        .unwrap();
+    env.value("wits", Type::int()).unwrap();
+    env.value("name", Type::string()).unwrap();
+    env
+}
+
+/// The labels at hole `n` of `text` in `env`.
+fn labels_in(env: &Environment, text: &str, n: usize) -> Vec<String> {
+    let s = s(text);
+    let hole = s.holes()[n];
+    s.complete(env, hole, None)
+        .unwrap_or_else(|e| panic!("{text:?}: {e}"))
+        .into_iter()
+        .map(|c| c.label)
+        .collect()
+}
+
+/// A receiver whose index is of a known type is offered only when it is
+/// keyed by that type, whatever it is wanted for after.
+#[test]
+fn map_index_receivers_take_the_key_type() {
+    let env = keyed_env();
+    let has = |text: &str, label: &str| labels_in(&env, text, 0).contains(&label.to_owned());
+
+    for (text, yes, no) in [
+        ("_[wits].dice", "ids", "tags"),
+        ("_[wits].dice", "ids", "slists"),
+        ("_[name].len()", "tags", "ids"),
+        ("_[name].len()", "slists", "lists"),
+        ("_[wits].len()", "lists", "tags"),
+        ("_[wits].len()", "lists", "slists"),
+    ] {
+        assert!(has(text, yes), "{text:?} offers {yes}");
+        assert!(!has(text, no), "{text:?} does not offer {no}");
+    }
+
+    // A `String` index reaches a record's field too, so it is `Int`s only
+    // that keep lists out.
+    assert!(!has("_[name].len()", "dots"));
+}
+
+/// A map literal's value is of any type however the map is indexed, and
+/// its key is of the index's type.
+#[test]
+fn indexed_map_literals_have_candidates() {
+    let env = keyed_env();
+
+    for text in ["{1: _}[wits]", r#"{"x": _}["a"]"#] {
+        let labels = labels_in(&env, text, 0);
+
+        for label in ["wits", "name", "0", "\"\"", "true", "[_]", "{_: _}"] {
+            assert!(
+                labels.contains(&label.to_owned()),
+                "{text:?} offers {label}: {labels:?}"
+            );
+        }
+    }
+
+    assert_eq!(labels_in(&env, r#"{_: 1}["a"]"#, 0), ["\"\""]);
+    assert_eq!(labels_in(&env, "{_: 1}[wits]", 0), ["0"]);
+    assert_eq!(labels_in(&env, "{_: 1}[name]", 0), ["\"\""]);
+    assert_eq!(labels_in(&env, "{_: 1}", 0), ["0", "\"\""]);
+
+    // Lists are indexed by an `Int` as maps keyed by one are.
+    assert_eq!(labels_in(&env, "{_: 1}[wits]", 0), ["0"]);
+    let labels = labels_in(&env, "[_][wits]", 0);
+    assert!(labels.contains(&"wits".to_owned()), "{labels:?}");
+}
+
+/// A key is a literal: nothing else is offered in it, as nothing else is
+/// a key.
+#[test]
+fn keys_hold_literals_only() {
+    let env = keyed_env();
+
+    // A `-` in a key is not a literal, so nothing under one is.
+    assert_eq!(labels_in(&env, "{-_: 1}", 0), Vec::<String>::new());
+    assert_eq!(labels_in(&env, "{1: 2, -_: 3}", 0), Vec::<String>::new());
+    assert_eq!(labels_in(&env, "{--_: 1}", 0), Vec::<String>::new());
+
+    // A value under a `-` is not a key.
+    let labels = labels_in(&env, "{1: -_}", 0);
+    assert!(labels.contains(&"wits".to_owned()), "{labels:?}");
+
+    // Each of the keys offered is one.
+    for text in ["{_: 1}", "{1: 2, _: 3}"] {
+        let s = s(text);
+        let hole = s.holes()[0];
+
+        for completion in s.complete(&env, hole, None).unwrap() {
+            let mut applied = s.clone();
+            applied.apply(hole, &completion).unwrap();
+            let text = applied.to_text();
+            assert!(crate::compile(&text, &env).is_ok(), "{text:?}");
+        }
+    }
+}
+
+/// Completion in a large list or map of holes is linear: a sibling that is
+/// a hole has no type, and is not compiled to find that out.
+#[test]
+fn completion_in_large_collections_is_linear() {
+    use std::time::Instant;
+
+    let env = Environment::new();
+    let options = Options::new().max_len(usize::MAX).max_depth(1_000_000);
+
+    let shapes: [fn(usize) -> String; 3] = [
+        |n| format!("{{{}}}", vec!["1: _"; n].join(", ")),
+        |n| format!("{{{}}}", vec!["_: 1"; n].join(", ")),
+        |n| format!("[{}]", vec!["_"; n].join(", ")),
+    ];
+
+    for shape in shapes {
+        let mut times = Vec::new();
+
+        for n in [5_000usize, 20_000] {
+            let s = Structure::from_text_with(&shape(n), &options).unwrap();
+            let holes = s.holes();
+            let hole = holes[holes.len() / 2];
+
+            let start = Instant::now();
+            assert!(!s.complete(&env, hole, None).unwrap().is_empty());
+            times.push(start.elapsed().as_secs_f64());
+        }
+
+        // Four times the input takes four times as long, not sixteen.
+        assert!(times[1] < times[0] * 10.0 + 0.05, "{times:?}");
+    }
+}
+
+/// Only the first siblings that are not holes are tried for a type.
+#[test]
+fn siblings_tried_for_a_type_are_capped() {
+    let env = keyed_env();
+    let failing = ["_ + 1"; 8];
+
+    // An entry that compiles is found past holes, however many.
+    let text = format!("[{}, 1, _]", vec!["_"; 100].join(", "));
+    let labels = labels_in(&env, &text, 100);
+    assert!(
+        labels.contains(&"wits".to_owned()) && !labels.contains(&"name".to_owned()),
+        "{labels:?}"
+    );
+
+    // Past the cap of those that do not, it is not looked for.
+    let text = format!("[{}, 1, _]", failing.join(", "));
+    let labels = labels_in(&env, &text, 8);
+    assert!(labels.contains(&"name".to_owned()), "{labels:?}");
+
+    let text = format!("[{}, 1, _]", failing[..7].join(", "));
+    let labels = labels_in(&env, &text, 7);
+    assert!(!labels.contains(&"name".to_owned()), "{labels:?}");
+}
