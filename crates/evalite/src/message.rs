@@ -234,6 +234,7 @@ pub(crate) enum Invalid {
     UnwrapNonOption,
     TestNonOption,
     WrapNonOption,
+    EmptyNonList,
     LenNonList,
     IndexNonMap,
     GetNonMap,
@@ -300,6 +301,9 @@ impl fmt::Display for Invalid {
             Self::UnwrapNonOption => "the instruction unwraps other than an option type",
             Self::TestNonOption => "the instruction tests other than an option type",
             Self::WrapNonOption => "the instruction makes other than an option type",
+            Self::EmptyNonList => {
+                "the instruction makes an empty value of other than a list or a map type"
+            }
             Self::LenNonList => "the instruction takes the length of other than a list or a map",
             Self::IndexNonMap => "the instruction looks up a key in other than a map of its type",
             Self::GetNonMap => "the instruction gets a key from other than a map of its type",

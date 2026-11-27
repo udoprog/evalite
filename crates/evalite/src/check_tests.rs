@@ -792,21 +792,9 @@ fn error_lists() {
             "entry 2 of this list is List<Bool>, but the first is List<Int>, a list's entries have one type",
             "[true]",
         ),
-        (
-            "[]",
-            "an empty list `[]` has no entry type, give it at least one entry",
-            "[]",
-        ),
-        (
-            "[].get(1)",
-            "an empty list `[]` has no entry type, give it at least one entry",
-            "[]",
-        ),
-        (
-            "[[]]",
-            "an empty list `[]` has no entry type, give it at least one entry",
-            "[]",
-        ),
+        ("[]", EMPTY_LIST, "[]"),
+        ("[].get(1)", EMPTY_LIST, "[]"),
+        ("[[]]", EMPTY_LIST, "[]"),
     ]);
 }
 
@@ -2888,16 +2876,8 @@ fn map_literals() {
     ]);
 
     errors(&[
-        (
-            "{}",
-            "an empty map `{}` has no key or value type, give it at least one entry",
-            "{}",
-        ),
-        (
-            "{1: {}}",
-            "an empty map `{}` has no key or value type, give it at least one entry",
-            "{}",
-        ),
+        ("{}", EMPTY_MAP, "{}"),
+        ("{1: {}}", EMPTY_MAP, "{}"),
         (
             "{wits: 1}",
             "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
@@ -3628,13 +3608,92 @@ fn option_literal_errors() {
     ]);
 }
 
-/// Checking `None`s that wait for a sibling's type, and `Some`s nested
-/// deep, is linear: each waiting `None` is given its type once.
+const EMPTY_LIST: &str = "an empty list `[]` needs a type from where it is used, such as beside a typed entry in a list or as an argument that takes a list, or give it at least one entry";
+const EMPTY_MAP: &str = "an empty map `{}` needs a type from where it is used, such as beside a typed entry in a list or as an argument that takes a map, or give it at least one entry";
+
+#[test]
+fn empty_literals() {
+    types(&[
+        ("[[], [1]]", "List<List<Int>>"),
+        ("[[1], []]", "List<List<Int>>"),
+        ("[[], [], levels]", "List<List<Int>>"),
+        ("[{}, {1: true}]", "List<Map<Int, Bool>>"),
+        (r#"{"a": [], "b": [name]}"#, "Map<String, List<String>>"),
+        (r#"{1: {}, 2: {"x": 1}}"#, "Map<Int, Map<String, Int>>"),
+        ("Some([1]).unwrap_or([])", "List<Int>"),
+        ("Some({1: 2}).unwrap_or({})", "Map<Int, Int>"),
+        ("[levels, ([])]", "List<List<Int>>"),
+    ]);
+}
+
+#[test]
+fn empty_literals_from_host_functions() {
+    let mut env = env();
+    env.function("total", [Type::list(Type::int())], Type::int())
+        .unwrap();
+    env.function(
+        "size",
+        [Type::map(Type::string(), Type::int())],
+        Type::int(),
+    )
+    .unwrap();
+
+    let program = compile("total([]) + size({})", &env).unwrap();
+    assert_eq!(program.result_type(), Type::int());
+}
+
+#[test]
+fn empty_literal_errors() {
+    errors(&[
+        ("[]", EMPTY_LIST, "[]"),
+        ("[].len()", EMPTY_LIST, "[]"),
+        ("{}", EMPTY_MAP, "{}"),
+        ("{}.len()", EMPTY_MAP, "{}"),
+        ("[[]]", EMPTY_LIST, "[]"),
+        // Only a sibling gives a waiting `[]` its type, not a sibling of
+        // what holds it.
+        ("[[[]], [[1]]]", EMPTY_LIST, "[]"),
+        (
+            "[1, []]",
+            "`[]` is a list, but an Int is expected here",
+            "[]",
+        ),
+        (
+            "[[], 1]",
+            "`[]` is a list, but an Int is expected here",
+            "[]",
+        ),
+        (
+            "[levels, {}]",
+            "`{}` is a map, but a List<Int> is expected here",
+            "{}",
+        ),
+        (
+            "[{}, levels]",
+            "`{}` is a map, but a List<Int> is expected here",
+            "{}",
+        ),
+        (
+            "wits.min([])",
+            "`[]` is a list, but an Int is expected here",
+            "[]",
+        ),
+        (
+            "Some(levels).unwrap_or({})",
+            "`{}` is a map, but a List<Int> is expected here",
+            "{}",
+        ),
+    ]);
+}
+
+/// Checking `None`s, `[]`s and `{}`s that wait for a sibling's type, and
+/// `Some`s nested deep, is linear: each waiting literal is given its type
+/// once.
 #[test]
 fn option_literals_are_linear() {
     let options = Options::new().max_len(usize::MAX).max_depth(usize::MAX);
 
-    let shapes: [fn(usize) -> String; 3] = [
+    let shapes: [fn(usize) -> String; 5] = [
         |n| format!("[{}Some(1)]", "None, ".repeat(n)),
         |n| {
             format!(
@@ -3643,6 +3702,8 @@ fn option_literals_are_linear() {
             )
         },
         |n| format!("{}None{}", "[Some(1), Some(".repeat(n), ")]".repeat(n)),
+        |n| format!("[{}[1]]", "[], ".repeat(n)),
+        |n| format!("[{}{{1: 2}}]", "{}, ".repeat(n)),
     ];
 
     for shape in shapes {

@@ -461,6 +461,14 @@ const CASES: &[(&str, &str)] = &[
     ("Some(bonus).unwrap_or(None)", "Some(2)"),
     ("[maybe_track, None].get(1)", "Some(None)"),
     ("[None, Some(3), None][1]! + 1", "4"),
+    // Empty
+    ("[[], [1]]", "[[], [1]]"),
+    ("[[], levels][0].len()", "0"),
+    ("[[], levels][0].get(0)", "None"),
+    ("[{}, {1: 2}]", "[{}, {1: 2}]"),
+    ("{1: {}, 2: {3: 4}}[1].len()", "0"),
+    ("Some([1]).unwrap_or([])", "[1]"),
+    ("[{}, ids][0].len()", "0"),
     // Len
     ("levels.len()", "3"),
     ("[1].len()", "1"),
@@ -574,6 +582,7 @@ fn every_instruction_is_covered() {
         Instr::MapGet(TypeId(0)),
         Instr::Some(TypeId(0)),
         Instr::None(TypeId(0)),
+        Instr::Empty(TypeId(0)),
     ];
 
     let mut seen = HashSet::new();
@@ -2103,7 +2112,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
     let n = |rng: &mut Rng| rng.below(5) as u32;
     let ty = |rng: &mut Rng| TypeId(rng.below(types as usize + 2) as u32);
 
-    match rng.below(38) {
+    match rng.below(39) {
         0 => Instr::Int([0, 1, -1, i64::MIN, i64::MAX][rng.below(5)]),
         1 => Instr::Bool(rng.below(2) == 0),
         2 => Instr::Const(n(rng)),
@@ -2153,6 +2162,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
         },
         35 => Instr::Some(ty(rng)),
         36 => Instr::None(ty(rng)),
+        37 => Instr::Empty(ty(rng)),
         _ => Instr::Call(n(rng)),
     }
 }
@@ -2192,6 +2202,7 @@ fn nudge(rng: &mut Rng, instr: Instr) -> Instr {
         Instr::MapGet(ty) => Instr::MapIndex(TypeId(d(ty.0))),
         Instr::Some(ty) => Instr::None(TypeId(d(ty.0))),
         Instr::None(ty) => Instr::Some(TypeId(d(ty.0))),
+        Instr::Empty(ty) => Instr::Empty(TypeId(d(ty.0))),
         Instr::Map { keys, map } if keys % 2 == 0 => Instr::Map { keys: d(keys), map },
         Instr::Map { keys, map } => Instr::Map {
             keys,

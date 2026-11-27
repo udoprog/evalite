@@ -260,9 +260,47 @@ impl<'a> Work<'a> {
 #[derive(Default)]
 struct Sibling {
     ty: Option<TypeId>,
-    /// Each `None` among them written before that type is known: where its
-    /// instruction is in the code and its value on the stack.
-    pending: Vec<(usize, usize)>,
+    /// Each `None`, `[]` or `{}` among them written before that type is
+    /// known: what it is, where its instruction is in the code and its
+    /// value on the stack.
+    pending: Vec<(Blank, usize, usize)>,
+}
+
+/// A literal typed only by its context: `None`, `[]` or `{}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Blank {
+    None,
+    List,
+    Map,
+}
+
+impl Blank {
+    /// Whether `node` is a type of this shape.
+    fn fits(self, node: Option<&TypeNode>) -> bool {
+        matches!(
+            (self, node),
+            (Blank::None, Some(TypeNode::Option(_)))
+                | (Blank::List, Some(TypeNode::List(_)))
+                | (Blank::Map, Some(TypeNode::Map { .. }))
+        )
+    }
+
+    /// Its instruction, of type `ty`.
+    fn instr(self, ty: TypeId) -> Instr {
+        match self {
+            Blank::None => Instr::None(ty),
+            Blank::List | Blank::Map => Instr::Empty(ty),
+        }
+    }
+
+    /// The error of it where `expected`, or no type, is expected.
+    fn error(self, expected: Option<Type>) -> ErrorKind {
+        match self {
+            Blank::None => ErrorKind::NoneType(expected),
+            Blank::List => ErrorKind::EmptyList(expected),
+            Blank::Map => ErrorKind::EmptyMap(expected),
+        }
+    }
 }
 
 /// A value the code so far leaves on the stack.
@@ -582,10 +620,9 @@ impl<'a> Compiler<'a> {
                 self.emit(Instr::Const(c));
                 self.push(ty, span);
             }
-            Syntax::Name if self.text(node) == "None" => match (want, expect) {
-                (None, Expect::Sibling(slot)) => self.defer_none(slot, span)?,
-                _ => self.none(want, span)?,
-            },
+            Syntax::Name if self.text(node) == "None" => {
+                self.contextual(Blank::None, want, expect, span)?;
+            }
             Syntax::Name => {
                 let name = self.text(node);
                 let (at, ty) = self.global(name, span)?;
@@ -704,6 +741,9 @@ impl<'a> Compiler<'a> {
                         .map(|n| Work::Enter(n, Expect::Nothing)),
                 );
             }
+            Syntax::List if exprs(node).next().is_none() => {
+                self.contextual(Blank::List, want, expect, span)?;
+            }
             Syntax::List => {
                 work.push(Work::List {
                     node,
@@ -718,7 +758,7 @@ impl<'a> Compiler<'a> {
                 let entries = parts.collect::<Vec<_>>();
                 self.push_siblings(work, entries, entry);
             }
-            Syntax::Map => self.map(node, want, work)?,
+            Syntax::Map => self.map(node, want, expect, work)?,
             kind => return Err(internal(format!("{kind:?} is not an expression"))),
         }
 
@@ -760,54 +800,71 @@ impl<'a> Compiler<'a> {
 
         sibling.ty = Some(ty);
         let pending = std::mem::take(&mut sibling.pending);
-        let option = matches!(self.types.get(ty), Some(TypeNode::Option(_)));
 
-        for (code, value) in pending {
+        for (shape, code, value) in pending {
+            let fits = shape.fits(self.types.get(ty));
+
             let Some(value) = self.values.get_mut(value) else {
                 continue;
             };
 
-            if option {
+            if fits {
                 value.ty = ty;
 
                 if let Some(instr) = self.code.get_mut(code) {
-                    *instr = Instr::None(ty);
+                    *instr = shape.instr(ty);
                 }
             } else {
                 value.ty = self.error;
                 let span = value.span;
                 let expected = self.ty(ty);
-                self.report(Diagnostic::new(span, ErrorKind::NoneType(Some(expected))));
+                self.report(Diagnostic::new(span, shape.error(Some(expected))));
             }
         }
     }
 
-    /// After the siblings of `slot`: each `None` still waiting has no type.
+    /// After the siblings of `slot`: each `None`, `[]` or `{}` still
+    /// waiting has no type.
     fn finish_slot(&mut self, slot: usize) {
         let pending = match self.siblings.get_mut(slot) {
             Some(sibling) => std::mem::take(&mut sibling.pending),
             None => return,
         };
 
-        for (_, value) in pending {
+        for (shape, _, value) in pending {
             if let Some(value) = self.values.get_mut(value) {
                 value.ty = self.error;
                 let span = value.span;
-                self.report(Diagnostic::new(span, ErrorKind::NoneType(None)));
+                self.report(Diagnostic::new(span, shape.error(None)));
             }
         }
     }
 
-    /// `None` among the siblings of `slot`, before any has a type: its
+    /// `None`, `[]` or `{}`, of the type `want` expects, or, among the
+    /// siblings of a slot that has no type yet, waiting for one.
+    fn contextual(
+        &mut self,
+        shape: Blank,
+        want: Option<TypeId>,
+        expect: Expect,
+        span: Span<u32>,
+    ) -> Result<(), Diagnostic> {
+        match (want, expect) {
+            (None, Expect::Sibling(slot)) => self.defer(shape, slot, span),
+            _ => self.typed(shape, want, span),
+        }
+    }
+
+    /// `shape` among the siblings of `slot`, before any has a type: its
     /// instruction is given its type when a later sibling has one.
-    fn defer_none(&mut self, slot: usize, span: Span<u32>) -> Result<(), Diagnostic> {
-        let at = (self.code.len(), self.values.len());
+    fn defer(&mut self, shape: Blank, slot: usize, span: Span<u32>) -> Result<(), Diagnostic> {
+        let (code, value) = (self.code.len(), self.values.len());
         let sibling = self
             .siblings
             .get_mut(slot)
-            .ok_or_else(|| internal("a `None` of no siblings"))?;
-        sibling.pending.push(at);
-        self.emit(Instr::None(self.pending));
+            .ok_or_else(|| internal("a literal of no siblings"))?;
+        sibling.pending.push((shape, code, value));
+        self.emit(shape.instr(self.pending));
         self.push(self.pending, span);
         Ok(())
     }
@@ -859,20 +916,22 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// `None`, of the option type `want` expects.
-    fn none(&mut self, want: Option<TypeId>, span: Span<u32>) -> Result<(), Diagnostic> {
+    /// `shape` of the type `want` expects.
+    fn typed(
+        &mut self,
+        shape: Blank,
+        want: Option<TypeId>,
+        span: Span<u32>,
+    ) -> Result<(), Diagnostic> {
         let Some(want) = want else {
-            return Err(Diagnostic::new(span, ErrorKind::NoneType(None)));
+            return Err(Diagnostic::new(span, shape.error(None)));
         };
 
-        if !matches!(self.types.get(want), Some(TypeNode::Option(_))) {
-            return Err(Diagnostic::new(
-                span,
-                ErrorKind::NoneType(Some(self.ty(want))),
-            ));
+        if !shape.fits(self.types.get(want)) {
+            return Err(Diagnostic::new(span, shape.error(Some(self.ty(want)))));
         }
 
-        self.emit(Instr::None(want));
+        self.emit(shape.instr(want));
         self.push(want, span);
         Ok(())
     }
@@ -1656,7 +1715,7 @@ impl<'a> Compiler<'a> {
         let span = *node.span();
 
         let Some(first) = values.first() else {
-            return Err(Diagnostic::new(span, ErrorKind::EmptyList));
+            return Err(internal("a list literal of no entries"));
         };
 
         let entry = first.ty;
@@ -1726,6 +1785,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         node: N<'a>,
         want: Option<TypeId>,
+        expect: Expect,
         work: &mut Vec<Work<'a>>,
     ) -> Result<(), Diagnostic> {
         // An `Error` part is an entry without its `:`, already reported.
@@ -1735,7 +1795,7 @@ impl<'a> Compiler<'a> {
             .collect::<Vec<_>>();
 
         if parts.is_empty() {
-            return Err(Diagnostic::new(*node.span(), ErrorKind::EmptyMap));
+            return self.contextual(Blank::Map, want, expect, *node.span());
         }
 
         let mut entries = Vec::with_capacity(parts.len());

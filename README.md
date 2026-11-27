@@ -101,8 +101,10 @@ compiled, and nothing converts implicitly:
 - `Bool`: `true` or `false`.
 - `String`: a literal such as `"Essence (1e)"`. `\"` and `\\` are its only
   escapes.
-- `List<T>`: `[10, 11, 12]`, one or more entries of one type, so `[]` is an
-  error.
+- `List<T>`: `[10, 11, 12]`, entries of one type. An empty `[]` takes its
+  type from where it is written, as `None` does (below): `[[], [1]]`,
+  `total([])`, `opt.unwrap_or([])`. With nothing to give it a type it is
+  an error.
 - Records, such as `{boxes: Int, count: List<Int>}`: a field is read with
   `.boxes`, or with `["Brawl (bar)"]` when its name is not a plain name.
 - `Map<K, V>`: values by key, the key an `Int` or a `String`, which come
@@ -113,7 +115,8 @@ compiled, and nothing converts implicitly:
   sorted. A literal's keys are integers, decimal or hexadecimal and
   optionally negated, or strings, all of one type and each given once
   (`0x10` and `16` are the same key); its values are of one type, and
-  evaluated in key order. Like `[]`, `{}` is an error.
+  evaluated in key order. Like `[]`, an empty `{}` takes its type from
+  where it is written (`[{}, {1: 2}]`), and is an error without one.
 - `Option<T>`: a value that may be absent, which comes from a name or a
   function declared with it, or from `list.get(i)`. It is never used as a `T`:
   unwrap it with `x.unwrap_or(0)`, which gives `0` when it is absent, or

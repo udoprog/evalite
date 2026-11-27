@@ -809,6 +809,12 @@ impl<'a> Run<'a> {
 
                 return Ok(next);
             }
+            Instr::Empty(_) => {
+                // An empty list or map takes no words; where it points is
+                // never read.
+                let at = self.alloc(0)?;
+                Word::reference(at, 0)?
+            }
             Instr::Len => {
                 let (_, len) = self.pop()?.as_reference()?;
                 Word::int(i64::try_from(len).map_err(|_| fault(Fault::ListTooLongToCount))?)

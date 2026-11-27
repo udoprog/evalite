@@ -494,8 +494,9 @@ pub(crate) enum ErrorKind {
         expected: Type,
         found: Type,
     },
-    /// `[]`, whose entry type is unknown.
-    EmptyList,
+    /// `[]` where no list type is expected, or where the type given is
+    /// expected, which is not a list.
+    EmptyList(Option<Type>),
     /// A map key other than an integer or string literal.
     MapKeyLiteral,
     /// A map key of another type than the first key, counting entries
@@ -515,8 +516,9 @@ pub(crate) enum ErrorKind {
         expected: Type,
         found: Type,
     },
-    /// `{}`, whose key and value types are unknown.
-    EmptyMap,
+    /// `{}` where no map type is expected, or where the type given is
+    /// expected, which is not a map.
+    EmptyMap(Option<Type>),
     /// `None` where no option type is expected, or where the type given
     /// is expected, which is not an option.
     NoneType(Option<Type>),
@@ -914,8 +916,13 @@ impl fmt::Display for Diagnostic {
                 f,
                 "entry {index} of this list is {found}, but the first is {expected}, a list's entries have one type"
             ),
-            ErrorKind::EmptyList => {
-                f.write_str("an empty list `[]` has no entry type, give it at least one entry")
+            ErrorKind::EmptyList(None) => f.write_str(
+                "an empty list `[]` needs a type from where it is used, such as beside a typed entry in a list or as an argument that takes a list, or give it at least one entry",
+            ),
+            ErrorKind::EmptyList(Some(expected)) => {
+                let expected = expected.to_string();
+                let a = article(&expected);
+                write!(f, "`[]` is a list, but {a} {expected} is expected here")
             }
             ErrorKind::MapKeyLiteral => f.write_str(
                 "a map's keys are integer or string literals, such as `1`, `-0x2A` or `\"x\"`",
@@ -939,9 +946,14 @@ impl fmt::Display for Diagnostic {
                 f,
                 "the value of entry {index} of this map is {found}, but the first is {expected}, a map's values have one type"
             ),
-            ErrorKind::EmptyMap => f.write_str(
-                "an empty map `{}` has no key or value type, give it at least one entry",
+            ErrorKind::EmptyMap(None) => f.write_str(
+                "an empty map `{}` needs a type from where it is used, such as beside a typed entry in a list or as an argument that takes a map, or give it at least one entry",
             ),
+            ErrorKind::EmptyMap(Some(expected)) => {
+                let expected = expected.to_string();
+                let a = article(&expected);
+                write!(f, "`{{}}` is a map, but {a} {expected} is expected here")
+            }
             ErrorKind::NoneType(None) => f.write_str(
                 "`None` needs a type from where it is used, such as beside `Some(...)` in a list or as an argument of an option",
             ),

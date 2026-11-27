@@ -95,7 +95,7 @@ Comparisons do not chain: `a < b < c` is an error.
 | `Int` | i64. `-12` is `-` applied to `12`, folded to a constant. Hex literals `0x1A` keep their spelling in structures. |
 | `Bool` | `true`, `false`. |
 | `String` | Literals with only `\"` and `\\` escapes. No string operators. Strings are used as arguments, map keys and record indexes. |
-| `List<T>` | `[a, b]`: one or more entries of one type. `[]` is an error. |
+| `List<T>` | `[a, b]`: entries of one type. `[]` takes its type from context, like `None` (empty literals, below). |
 | `Option<T>` | Comes from declared names and functions, `list.get(i)` and `map.get(k)`. It nests: `Option<Option<Int>>` is `None`, `Some(None)` or `Some(Some(1))`. |
 | records | `{boxes: Int, "Brawl (bar)": Int}`, with fields sorted by name. Read with `.boxes`, or `["Brawl (bar)"]` for a field that isn't a valid name. Expressions have no record literals. |
 | `Map<K, V>` | `K` is `Int` or `String`, which is checked at declaration (`DeclareError`) and in stored tables. Read with `m[k]` (a run error when missing) or `m.get(k)`. |
@@ -124,6 +124,21 @@ Not covered (gaps, each a later card if wanted): a path call's arguments
 being one (`[Some(None), Some(Some(1))]`, as `[Some(None)]` waits on nothing
 it is a sibling of), and a program's declared result type, which the compile
 API does not have. An explicit annotation (`None::<T>`) is phase 4 (8838ea9b).
+
+**Empty literals (phase 3):** `[]` is a `List<T>` and `{}` a `Map<K, V>` of
+the expected type, from the same places as `None` (`[[], [1]]`,
+`{1: [], 2: [true]}`, `[{}, {1: 2}]`, `total([])`, `opt.unwrap_or([])`).
+Without one each is a compile error (`` an empty list `[]` needs a type from
+where it is used ``, ending "or give it at least one entry"); where the
+expected type is of another kind, `` `[]` is a list, but an Int is expected
+here ``. The same gaps as `None` apply: `[[[]], [[1]]]` does not check, since
+the innermost `[]` is a sibling only of nothing. `[].len()` is an error: a
+receiver has no expected type. A record with no fields is not given by `{}`
+here; whether `{}` can mean one is left to the record literal card
+(be43c072). Alternatives: keep `[]`/`{}` errors and require an entry
+(the old rule, which leaves no way to write an empty default); a distinct
+spelling per kind (`List::new()`), which still needs the type from context
+or an annotation.
 
 **Operators:**
 
@@ -195,7 +210,8 @@ written once as `sig::Shape` with one type variable `T`:
   `Map<String, V>`.
 - A duplicate key is a compile error that points at both keys. `0x10` and
   `16` count as duplicates.
-- All values have one type. `{}` is an error.
+- All values have one type. `{}` is an empty map typed from context (empty
+  literals, section 2).
 - Braces nest against `max_depth`.
 - The literal compiles to the map layout of section 5. The checker sorts the
   keys once (O(n log n), finding repeats in the same pass) into a constant
@@ -310,24 +326,27 @@ two have one checker and identical errors (section 9).
 - Expected types (2, option literals):
   - types are still found bottom-up; the expected type is only passed down,
     as `Work::Enter(node, Expect)`, where `Expect` is nothing, a `TypeId`,
-    or a *sibling slot*. Only `None` needs it; every other expression is
+    or a *sibling slot*. Only `None`, `[]` and `{}` need it; every other expression is
     still checked against its context where the context takes it, so a
     mismatch reads as before;
   - a sibling slot (`Compiler::siblings`) is one group: a list's entries, a
     map's values (in key order, as they are compiled), the operands of `==`.
     `Work::Settle` after each sibling gives the slot the first non-error
     type; an entry entered later reads it in O(1);
-  - a `None` entered before its slot has a type is *pending*: it emits
-    `Instr::None` of a placeholder type (`TypeId(u32::MAX - 1)`, like the
-    error type never in the table) and records (instruction, stack value) in
-    the slot. When the slot gets its type each pending `None` is patched once,
-    or reported if the type is not an option; `Work::Finish` after the last
-    sibling reports what is still pending. No code before a pending `None` is
-    truncated (constant folding stops at `None`), so the index stays valid;
+  - a `None`, `[]` or `{}` entered before its slot has a type is *pending*:
+    it emits `Instr::None` or `Instr::Empty` of a placeholder type
+    (`TypeId(u32::MAX - 1)`, like the error type never in the table) and
+    records (`Blank` kind, instruction, stack value) in the slot. When the
+    slot gets its type each pending literal is patched once, or reported if
+    the type is not of its kind (an option, a list, a map); `Work::Finish`
+    after the last sibling reports what is still pending. No code before a
+    pending literal is truncated (constant folding stops at `None` and
+    `Empty`), so the index stays valid;
   - every expected type is a `TypeId` handle, copied, never a cloned `Type`.
     Host function parameters and a method's resolved parameters are interned
     once per call, as checking the call already does. So the walk stays
-    linear (`check_tests::option_literals_are_linear`);
+    linear (`check_tests::option_literals_are_linear`, which covers `[]` and
+    `{}` too);
   - alternatives: unification with type variables (a fresh variable per
     `None`, solved at the end) handles every nesting, but needs a
     substitution table, an occurs check and a second pass to emit typed code,
@@ -620,6 +639,7 @@ The `Instr` enum in `program.rs`:
 | `Min(n)`, `Max(n)`, `Clamp` | `Int` folds. `Clamp` errors when low > high |
 | `UnwrapOr(opt)`, `Unwrap(opt)`, `IsSome(opt)`, `IsNone(opt)` | options, tagged or niche, decided by `opt`'s type |
 | `Some(opt)`, `None(opt)` | make an option of type `opt`: `Some` puts a present tag below its value when `opt` is tagged and is a no-op in a niche; `None` pushes an absent tag and zeros, or `Word::NONE` |
+| `Empty(ty)` | push an empty list or map of type `ty` (the verifier refuses any other type): a reference of length 0, which takes no words and whose start is never read |
 | `Len` | a list's or map's length from its reference |
 | `Call(f)` | call host function `f` |
 | `MapIndex(map)`, `MapGet(map)` | binary search. A missing key is an error naming the key, or an absent option |
@@ -991,10 +1011,11 @@ the number alone and checks it before it decodes the body, so bytes of a
 later format whose body changed layout are refused as `WrongFormat`, not
 `NotDecoded`.
 
-**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 9 (4 added `Map`,
+**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 10 (4 added `Map`,
 5 map literals, 6 each global's slot and the layout fingerprint, 7 dropped
 `Memory::globals`, as a program's values are in the store, not the
-machine, 8 moved the number ahead of the body, 9 added `Some` and `None`). The body is
+machine, 8 moved the number ahead of the body, 9 added `Some` and `None`, 10 added
+`Empty`). The body is
 `Stored { types, constants, globals, functions, code, result, memory, layout }`,
 where each global is (name, type, slot). `layout` is last, so a length
 prefix's offset doesn't depend on its varint width.
