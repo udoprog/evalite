@@ -94,3 +94,23 @@ most of the rest. `run_with` was 10%, reading the result 1% of that.
 The run loop costs about 5 ns an instruction (`stage/long`). Calling
 `Program::globals()` for every evaluation (`sheet/evaluate_lookup`)
 nearly doubles the time, since it builds each `Type` again.
+
+## The globals store (2026-11-27, Globals 2, 5885897e)
+
+Against `main` at `2e27ac8`, back to back, `--warm-up-time 1
+--measurement-time 3`. `characterize/evaluate` on `main` was the same
+formulas with each one's values bound on every run, in a machine of 2^16
+words to hold the catalog:
+
+| Bench | `main` (bind per run) | store | Change |
+|---|---|---|---|
+| `sheet/evaluate` (108 values) | 36.1 µs | 11.7 µs | −68% |
+| `characterize/evaluate` (400 formulas, 10 000-entry catalog) | 99.1 ms | 31.2 µs | −99.97% |
+| `stage/long` (370 global reads) | 3.13 µs (`load_bind_run`) | 3.14 µs (`load_run`) | ≈ |
+
+Binding was most of a run's cost, and all of it for a formula reading one
+entry of a large map: `characterize` on `main` copied the whole catalog
+into every run that read it. With the store, loading copies no values, and
+`sheet/set` (12.6 µs) is what setting every value of the sheet costs, once.
+The run loop pays a comparison per word read from memory, to tell the
+store's words from the machine's; the stack and one-word globals skip it.

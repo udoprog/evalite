@@ -502,8 +502,18 @@ impl<'a> Run<'a> {
                     return Err(self.unset(at));
                 }
 
-                self.push_from(at, types.width(ty))?;
-                return Ok(next);
+                match types.width(ty) {
+                    // Most values are a word, read straight from the store.
+                    1 => self
+                        .store
+                        .get(at)
+                        .copied()
+                        .ok_or_else(|| fault(Fault::OutsideMemory))?,
+                    width => {
+                        self.push_from(at, width)?;
+                        return Ok(next);
+                    }
+                }
             }
             Instr::Neg => {
                 let a = self.pop_int()?;
@@ -1036,9 +1046,15 @@ impl<'a> Run<'a> {
         Ok(())
     }
 
+    /// Push `word`. The stack is in the machine's words, so it is
+    /// written there without asking which memory holds it.
+    #[inline]
     fn push(&mut self, word: Word) -> Result<(), RunError> {
         let at = self.reserve(1)?;
-        self.put(Some(at), word)
+        *at.checked_sub(self.base)
+            .and_then(|at| self.words.get_mut(at))
+            .ok_or_else(|| fault(Fault::StackOutsideMemory))? = word;
+        Ok(())
     }
 
     /// Push the `n` words from `from`.
@@ -1091,7 +1107,14 @@ impl<'a> Run<'a> {
             .sp
             .checked_sub(1)
             .ok_or_else(|| fault(Fault::EmptyStack))?;
-        let word = self.get(self.stack_base.checked_add(sp))?;
+        // The stack is in the machine's words.
+        let word = self
+            .stack_base
+            .checked_add(sp)
+            .and_then(|at| at.checked_sub(self.base))
+            .and_then(|at| self.words.get(at))
+            .copied()
+            .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
         self.sp = sp;
         Ok(word)
     }

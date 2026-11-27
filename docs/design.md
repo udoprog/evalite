@@ -517,7 +517,12 @@ unchanged, so references into the store and into scratch look alike:
   (`left()`), so the program's own lists always fit.
 - `Outcome::memory` is the peak of `len - base`, plus the peak of `sp`, plus
   the constants: the machine's words only.
-- The hot loop pays one comparison per word read for the dispatch.
+- A read that may be in either memory pays one comparison for the
+  dispatch. Pushes and pops skip it, as the stack is always the machine's,
+  and so does a one-word `Instr::Global`, always the store's. Benchmarks
+  against bind-per-run: `sheet/evaluate` 36.1 → 11.7 µs, a characterize
+  sheet of 400 formulas over a 10 000-entry map 99 ms → 31 µs, and the
+  370-read `stage/long` unchanged (`benches/README.md`).
 
 ### 6.2 Instructions
 
