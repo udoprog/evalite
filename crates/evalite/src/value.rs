@@ -1,5 +1,6 @@
 //! Values bound to a program and given back by one.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::btree_map;
 use std::fmt;
@@ -9,11 +10,11 @@ use crate::message::Found;
 use crate::types::is_field_name;
 
 /// A value bound to a program or given back by one: an `Int`, a `Bool`, a
-/// `String`, a list, a record, or an option.
+/// `String`, a list, a record, a map, or an option.
 ///
 /// It is opaque. Build one with [`Value::int`], [`Value::bool`],
-/// [`Value::string`], [`Value::list`], [`Value::record`], [`Value::none`]
-/// and [`Value::some`] (or `From`), and read one back with the `as_*`
+/// [`Value::string`], [`Value::list`], [`Value::record`], [`Value::map`],
+/// [`Value::none`] and [`Value::some`] (or `From`), and read one back with the `as_*`
 /// try-decoders, which give `None` when the value is of another shape and
 /// never panic.
 ///
@@ -54,6 +55,31 @@ pub(crate) enum Repr {
     None,
     /// A present `Option<T>`.
     Some(Box<Value>),
+    /// A map's entries, sorted by key with each key once: `Int`s, then
+    /// `String`s, then any other keys, which bind to no map, as given.
+    Map(Vec<(Value, Value)>),
+}
+
+/// The order of map keys: `Int`s by value, then `String`s by their bytes,
+/// then every other key, as equal.
+pub(crate) fn key_order(a: &Value, b: &Value) -> Ordering {
+    match (&a.0, &b.0) {
+        (Repr::Int(a), Repr::Int(b)) => a.cmp(b),
+        (Repr::String(a), Repr::String(b)) => a.cmp(b),
+        (Repr::Int(_), _) => Ordering::Less,
+        (_, Repr::Int(_)) => Ordering::Greater,
+        (Repr::String(_), _) => Ordering::Less,
+        (_, Repr::String(_)) => Ordering::Greater,
+        _ => Ordering::Equal,
+    }
+}
+
+/// Whether `a` and `b` are the same `Int` or `String` key.
+fn same_key(a: &Value, b: &Value) -> bool {
+    matches!(
+        (&a.0, &b.0),
+        (Repr::Int(_), Repr::Int(_)) | (Repr::String(_), Repr::String(_))
+    ) && key_order(a, b) == Ordering::Equal
 }
 
 impl Value {
@@ -124,6 +150,43 @@ impl Value {
         Self(Repr::Record(
             fields.into_iter().map(|(k, v)| (k.into(), v)).collect(),
         ))
+    }
+
+    /// A map of these entries, each a key and its value, which should be
+    /// of the map type's key and value types for it to bind; binding checks
+    /// that. A key given twice keeps its last value, and the entries are
+    /// kept in key order, so two maps of the same entries are equal however
+    /// they were given.
+    ///
+    /// ```
+    /// use evalite::Value;
+    ///
+    /// let map = Value::map([
+    ///     (Value::int(0x2A), Value::string("b")),
+    ///     (Value::int(1), Value::string("a")),
+    ///     (Value::int(0x2A), Value::string("c")),
+    /// ]);
+    /// assert_eq!(map.to_string(), r#"{1: "a", 42: "c"}"#);
+    /// assert_eq!(map.as_map().map(<[_]>::len), Some(2));
+    ///
+    /// let named = Value::map([(Value::string("x"), Value::int(1))]);
+    /// assert_eq!(named.to_string(), r#"{"x": 1}"#);
+    /// ```
+    pub fn map(entries: impl IntoIterator<Item = (Value, Value)>) -> Self {
+        let mut entries = entries.into_iter().collect::<Vec<_>>();
+        // Stable, so of a key given twice the last is last.
+        entries.sort_by(|(a, _), (b, _)| key_order(a, b));
+
+        let mut kept = Vec::<(Value, Value)>::with_capacity(entries.len());
+
+        for (key, value) in entries {
+            match kept.last_mut() {
+                Some(last) if same_key(&last.0, &key) => last.1 = value,
+                _ => kept.push((key, value)),
+            }
+        }
+
+        Self(Repr::Map(kept))
     }
 
     /// An absent `Option<T>`.
@@ -306,6 +369,30 @@ impl Value {
         }
     }
 
+    /// The entries of the map it is, each a key and its value, in key
+    /// order, or `None` if it is anything else.
+    ///
+    /// ```
+    /// use evalite::Value;
+    ///
+    /// let map = Value::map([(Value::int(7), Value::bool(true)), (Value::int(-1), Value::bool(false))]);
+    /// let keys: Vec<i64> = map
+    ///     .as_map()
+    ///     .map(|entries| entries.iter().filter_map(|(k, _)| k.as_int()).collect())
+    ///     .unwrap_or_default();
+    /// assert_eq!(keys, [-1, 7]);
+    ///
+    /// assert_eq!(Value::map([]).as_map(), Some(&[][..]));
+    /// assert!(Value::list([]).as_map().is_none());
+    /// assert!(Value::record([("a", Value::int(1))]).as_map().is_none());
+    /// ```
+    pub fn as_map(&self) -> Option<&[(Value, Value)]> {
+        match &self.0 {
+            Repr::Map(entries) => Some(entries),
+            _ => None,
+        }
+    }
+
     /// The option it is: `Some(None)` when absent, `Some(Some(value))` when
     /// present, and `None` if it is not an option.
     ///
@@ -344,6 +431,7 @@ impl Value {
             Repr::Record(_) => Found::Record,
             Repr::None => Found::None,
             Repr::Some(_) => Found::Some,
+            Repr::Map(_) => Found::Map,
         }
     }
 }
@@ -425,7 +513,8 @@ enum Piece<'a> {
 
 impl fmt::Display for Value {
     /// Values as evalite writes them: `3`, `true`, `"Brawl"`, `[1, 2]`,
-    /// `{athletics: 2, "Brawl (bar)": 1}`, `none` and `some(2)`.
+    /// `{athletics: 2, "Brawl (bar)": 1}`, maps as `{1: "a", 42: "b"}`,
+    /// `none` and `some(2)`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut stack = vec![Piece::Value(self)];
 
@@ -453,6 +542,20 @@ impl fmt::Display for Value {
 
                         for (n, item) in items.iter().enumerate().rev() {
                             stack.push(Piece::Value(item));
+
+                            if n > 0 {
+                                stack.push(Piece::Text(", "));
+                            }
+                        }
+                    }
+                    Repr::Map(entries) => {
+                        f.write_str("{")?;
+                        stack.push(Piece::Text("}"));
+
+                        for (n, (key, value)) in entries.iter().enumerate().rev() {
+                            stack.push(Piece::Value(value));
+                            stack.push(Piece::Text(": "));
+                            stack.push(Piece::Value(key));
 
                             if n > 0 {
                                 stack.push(Piece::Text(", "));

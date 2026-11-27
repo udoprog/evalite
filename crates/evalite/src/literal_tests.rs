@@ -232,3 +232,103 @@ fn quotes_at_most_some_of_the_input() {
     );
     assert_eq!(span, 0..1000);
 }
+
+/// Map types and values read back what they print, keys in any order, and
+/// a key given twice, a key of another type or a map keyed by other than
+/// `Int` or `String` is refused where it is.
+#[test]
+fn maps_round_trip() {
+    let types = [
+        Type::map(Type::int(), Type::string()),
+        Type::map(
+            Type::string(),
+            Type::map(Type::int(), Type::option(Type::int())),
+        ),
+        Type::list(Type::map(
+            Type::int(),
+            Type::record([("dice", Type::int())]),
+        )),
+    ];
+
+    for ty in &types {
+        assert_eq!(&Type::parse(&ty.to_string()).unwrap(), ty, "{ty}");
+    }
+
+    assert_eq!(
+        Type::parse(" Map < String , Int > ").unwrap(),
+        Type::map(Type::string(), Type::int())
+    );
+
+    let ty = &types[1];
+    let value = Value::map([
+        (
+            Value::from("b \"q\""),
+            Value::map([
+                (Value::int(-1), Value::none()),
+                (Value::int(3), Value::some(Value::int(4))),
+            ]),
+        ),
+        (Value::from(""), Value::map([])),
+    ]);
+    assert_eq!(Value::parse(&value.to_string(), ty).unwrap(), value);
+    assert_eq!(
+        Value::parse(r#" { "" : { } , "b \"q\"" : {3: some(4), -1: none} } "#, ty).unwrap(),
+        value
+    );
+
+    let ty = &types[2];
+    let value = Value::parse("[{7: {dice: 2}}, {}]", ty).unwrap();
+    assert_eq!(value.to_string(), "[{7: {dice: 2}}, {}]");
+
+    for (text, ty, error) in [
+        (
+            r#"{"a": 1, "b": 2, "a": 3}"#,
+            "Map<String, Int>",
+            (r#"the key "a" is given twice"#, 17..20),
+        ),
+        (
+            "{1: 1, 1: 1}",
+            "Map<Int, Int>",
+            ("the key 1 is given twice", 7..8),
+        ),
+        (
+            r#"{"a": 1}"#,
+            "Map<Int, Int>",
+            ("expected an Int, found `\"`", 1..2),
+        ),
+        ("{1 2}", "Map<Int, Int>", ("expected `:`, found `2`", 3..4)),
+        (
+            "{1: 2",
+            "Map<Int, Int>",
+            ("expected `}`, found the end", 5..5),
+        ),
+        (
+            "[1]",
+            "Map<Int, Int>",
+            ("expected a Map<Int, Int> such as `{..}`, found `[`", 0..1),
+        ),
+    ] {
+        let (message, range) = value_error(text, ty);
+        assert_eq!((message.as_str(), range), error, "{text:?}");
+    }
+
+    for (text, error) in [
+        (
+            "Map<Bool, Int>",
+            ("a map's keys are Int or String, found Bool", 4..8),
+        ),
+        (
+            "Map< List<Int> , Int>",
+            ("a map's keys are Int or String, found List<Int>", 5..14),
+        ),
+        ("Map<Int Int>", ("expected `,`, found `Int`", 8..11)),
+        ("Map<Int, Int", ("expected `>`, found the end", 12..12)),
+    ] {
+        let (message, range) = type_error(text);
+        assert_eq!((message.as_str(), range), error, "{text:?}");
+    }
+
+    // A map is a level of nesting, as a list is.
+    let deep = format!("{}Int{}", "Map<Int, ".repeat(64), ">".repeat(64));
+    assert_eq!(type_error(&deep).0, "this type nests more than 64 levels");
+}

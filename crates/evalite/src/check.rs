@@ -156,7 +156,7 @@ enum Work<'a> {
     Unwrap(N<'a>),
     /// After an index's receiver.
     Index(N<'a>),
-    /// After a list index's index.
+    /// After a list's index or a map's key.
     IndexExit(N<'a>),
     /// After a list's entries, whose code starts at `start`.
     List {
@@ -832,6 +832,7 @@ impl<'a> Compiler<'a> {
         }
 
         let found = values.iter().map(|v| self.ty(v.ty)).collect::<Vec<_>>();
+        let associated = associated.for_receiver(found.first());
 
         let ret = match associated.call(&found) {
             Ok(ret) => self.intern(&ret, span)?,
@@ -1072,7 +1073,7 @@ impl<'a> Compiler<'a> {
 
         let error = match self.types.get(receiver.ty) {
             _ if receiver.ty == self.error => None,
-            Some(TypeNode::List(_)) => {
+            Some(TypeNode::List(_) | TypeNode::Map { .. }) => {
                 work.push(Work::IndexExit(node));
                 work.push(Work::Enter(index));
                 return Ok(());
@@ -1122,11 +1123,28 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
 
-        let Some(TypeNode::List(entry)) = self.types.get(list.ty) else {
-            return Err(internal("indexing other than a list"));
-        };
+        let entry = match self.types.get(list.ty) {
+            Some(TypeNode::List(entry)) => *entry,
+            Some(TypeNode::Map { key, value }) => {
+                let (key, value) = (*key, *value);
 
-        let entry = *entry;
+                if index.ty != key {
+                    return Err(Diagnostic::new(
+                        index.span,
+                        ErrorKind::KeyType {
+                            map: self.ty(list.ty),
+                            key: self.ty(key),
+                            found: self.ty(index.ty),
+                        },
+                    ));
+                }
+
+                self.emit(Instr::MapIndex(list.ty));
+                self.push(value, *node.span());
+                return Ok(());
+            }
+            _ => return Err(internal("indexing other than a list or a map")),
+        };
 
         if index.ty != self.int {
             return Err(Diagnostic::new(

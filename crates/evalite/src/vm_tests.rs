@@ -73,6 +73,27 @@ fn binding(name: &str) -> (Value, usize) {
             7,
         ),
         "maybe_track" => (Value::some(track(5)), 3),
+        // Two words an entry: the key, then the record.
+        "ids" => (
+            Value::map([
+                (int(0x1A2B_3C4D), Value::record([("dice", int(3))])),
+                (int(-4), Value::record([("dice", int(1))])),
+                (int(7), Value::record([("dice", int(2))])),
+            ]),
+            9,
+        ),
+        // Three words an entry, an `Option<Int>` being tagged, and a word
+        // for each key's bytes.
+        "tags" => (
+            Value::map([
+                (Value::from("brawl"), Value::some(int(2))),
+                (Value::from("athletics"), Value::none()),
+                (Value::from("athletics (long name)"), Value::some(int(5))),
+                (Value::from(""), Value::some(int(0))),
+            ]),
+            17,
+        ),
+        "empty" => (Value::map([]), 0),
         _ => panic!("no binding for {name}"),
     }
 }
@@ -109,8 +130,23 @@ fn compile_in(source: &str, extra: &[(&str, Type, Value)]) -> Program {
         .unwrap();
     env.function("many", [Type::int()], Type::list(Type::int()))
         .unwrap();
+    env.value("ids", ids_type()).unwrap();
+    env.value("tags", tags_type()).unwrap();
+    env.value("empty", Type::map(Type::string(), Type::bool()))
+        .unwrap();
+    env.function("lookup", [], ids_type()).unwrap();
 
     compile(source, &env).unwrap_or_else(|e| panic!("{source:?}: {e}"))
+}
+
+/// `ids`: records by `Int` key.
+fn ids_type() -> Type {
+    Type::map(Type::int(), Type::record([("dice", Type::int())]))
+}
+
+/// `tags`: optional values by `String` key.
+fn tags_type() -> Type {
+    Type::map(Type::string(), Type::option(Type::int()))
 }
 
 /// `host` and some functions that misbehave.
@@ -123,6 +159,10 @@ fn test_host(name: &str, args: Vec<Value>) -> Result<Value, String> {
             Value::record([("a", Value::none())]),
         ])),
         ("many", [Value(Repr::Int(n))]) => Ok(Value::list(vec![Value::int(0); *n as usize])),
+        ("lookup", []) => Ok(Value::map([
+            (int(2), Value::record([("dice", int(20))])),
+            (int(1), Value::record([("dice", int(10))])),
+        ])),
         _ => host(name, args),
     }
 }
@@ -372,6 +412,39 @@ const CASES: &[(&str, &str)] = &[
         r#"{"Brawl (bar)": 4, "a b": {boxes: 4, count: [4]}, inner: {deep: false}}"#,
     ),
     ("name", r#""Essence""#),
+    // MapIndex, MapGet, and Len of a map
+    ("ids[439041101].dice", "3"),
+    ("ids[-4].dice", "1"),
+    ("ids[7]", "{dice: 2}"),
+    ("ids[wits + 5].dice", "2"),
+    ("ids.get(7)", "some({dice: 2})"),
+    ("ids.get(8)", "none"),
+    ("ids.len()", "3"),
+    ("Map::len(ids)", "3"),
+    ("Map::get(ids, -4)", "some({dice: 1})"),
+    ("Map::get(tags, \"brawl\")", "some(some(2))"),
+    ("tags[\"brawl\"]", "some(2)"),
+    ("tags[\"athletics\"]", "none"),
+    ("tags[\"athletics (long name)\"]!", "5"),
+    ("tags[\"\"]", "some(0)"),
+    ("tags.get(\"brawl\")", "some(some(2))"),
+    ("tags.get(\"athletics\")", "some(none)"),
+    ("tags.get(\"athletic\")", "none"),
+    ("tags.get(\"athleticsz\")", "none"),
+    ("tags.get(\"\")", "some(some(0))"),
+    ("tags.get(\"zzz\").is_none()", "true"),
+    ("tags.len()", "4"),
+    ("empty.len()", "0"),
+    ("empty.get(\"a\")", "none"),
+    ("lookup()[2].dice", "20"),
+    ("lookup().get(3)", "none"),
+    ("[ids][0][7].dice", "2"),
+    ("ids", "{-4: {dice: 1}, 7: {dice: 2}, 439041101: {dice: 3}}"),
+    (
+        "tags",
+        r#"{"": some(0), "athletics": none, "athletics (long name)": some(5), "brawl": some(2)}"#,
+    ),
+    ("empty", "{}"),
 ];
 
 #[test]
@@ -430,6 +503,8 @@ fn every_instruction_is_covered() {
         Instr::Unwrap(TypeId(0)),
         Instr::Len,
         Instr::Call(0),
+        Instr::MapIndex(TypeId(0)),
+        Instr::MapGet(TypeId(0)),
     ];
 
     let mut seen = HashSet::new();
@@ -1202,6 +1277,9 @@ fn conforms(value: &Value, ty: &Type) -> bool {
                     .iter()
                     .all(|(name, ty)| map.get(name).is_some_and(|v| conforms(v, ty)))
         }
+        (Type(Kind::Map(key, value)), Value(Repr::Map(entries))) => entries
+            .iter()
+            .all(|(k, v)| conforms(k, key) && conforms(v, value)),
         _ => false,
     }
 }
@@ -1222,6 +1300,9 @@ fn value_of(rng: &mut Rng, ty: &Type) -> Value {
                 .iter()
                 .map(|(name, ty)| (name.clone(), value_of(rng, ty))),
         ),
+        Type(Kind::Map(key, value)) => {
+            Value::map((0..rng.below(4)).map(|_| (value_of(rng, key), value_of(rng, value))))
+        }
     }
 }
 
@@ -1548,7 +1629,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
     let n = |rng: &mut Rng| rng.below(5) as u32;
     let ty = |rng: &mut Rng| TypeId(rng.below(types as usize + 2) as u32);
 
-    match rng.below(33) {
+    match rng.below(35) {
         0 => Instr::Int([0, 1, -1, i64::MIN, i64::MAX][rng.below(5)]),
         1 => Instr::Bool(rng.below(2) == 0),
         2 => Instr::Const(n(rng)),
@@ -1590,6 +1671,8 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
         29 => Instr::IsNone(ty(rng)),
         30 => Instr::Len,
         31 => Instr::Unwrap(ty(rng)),
+        32 => Instr::MapIndex(ty(rng)),
+        33 => Instr::MapGet(ty(rng)),
         _ => Instr::Call(n(rng)),
     }
 }
@@ -1625,6 +1708,8 @@ fn nudge(rng: &mut Rng, instr: Instr) -> Instr {
         Instr::IsSome(ty) => Instr::IsNone(TypeId(d(ty.0))),
         Instr::IsNone(ty) => Instr::IsSome(TypeId(d(ty.0))),
         Instr::Unwrap(ty) => Instr::Unwrap(TypeId(d(ty.0))),
+        Instr::MapIndex(ty) => Instr::MapGet(TypeId(d(ty.0))),
+        Instr::MapGet(ty) => Instr::MapIndex(TypeId(d(ty.0))),
         Instr::Call(f) => Instr::Call(d(f)),
         Instr::Int(n) => Instr::Int(n.wrapping_add(1)),
         Instr::Bool(b) => Instr::Bool(!b),
@@ -1674,10 +1759,16 @@ fn tamper(rng: &mut Rng, stored: &mut Stored) {
             }
         }
         _ => {
-            let fresh = match rng.below(4) {
+            let id = |rng: &mut Rng| TypeId(rng.below(types as usize) as u32);
+
+            let fresh = match rng.below(5) {
                 0 => TypeNode::Int,
-                1 => TypeNode::Option(TypeId(rng.below(types as usize) as u32)),
-                2 => TypeNode::List(TypeId(rng.below(types as usize) as u32)),
+                1 => TypeNode::Option(id(rng)),
+                2 => TypeNode::List(id(rng)),
+                3 => TypeNode::Map {
+                    key: id(rng),
+                    value: id(rng),
+                },
                 _ => TypeNode::Record(vec![]),
             };
             stored.types.push(fresh);
@@ -1896,4 +1987,228 @@ fn hexadecimal_integers_evaluate() {
     assert_eq!(eval("0x7FFFFFFFFFFFFFFF").as_int(), Some(i64::MAX));
     assert_eq!(eval("0x1A2B3C4D").as_int(), Some(0x1A2B_3C4D));
     assert_eq!(eval("0x0010 == 16").as_bool(), Some(true));
+}
+
+/// A missing key fails a run naming the key, as an index out of range
+/// does; `get` gives `none` instead.
+#[test]
+fn map_lookup_errors() {
+    assert_eq!(fails("ids[8].dice"), "the map has no key 8");
+    assert_eq!(
+        fails("ids[-9223372036854775807 - 1]"),
+        "the map has no key -9223372036854775808"
+    );
+    assert_eq!(fails("tags[name]"), r#"the map has no key "Essence""#);
+    assert_eq!(fails(r#"empty["a"]"#), r#"the map has no key "a""#);
+    assert_eq!(
+        fails_chain("ids[wits]"),
+        "the map has no key 2: while running instruction 2: while running the program"
+    );
+
+    // A long key is cut short where it is named.
+    let long = "k".repeat(100);
+    let message = fails_in(&format!("tags[{long:?}]"), &[]);
+    assert_eq!(
+        message,
+        format!("the map has no key \"{}…\"", "k".repeat(64))
+    );
+}
+
+/// A bound map is checked entry by entry, keys first, naming where a value
+/// is mistyped by its key.
+#[test]
+fn map_binding_errors() {
+    let program = compile_in("ids.len() + tags.len()", &[]);
+    let mut machine = Machine::default();
+    let dice = |n| Value::record([("dice", int(n))]);
+
+    let cases: &[(&str, Value, &str)] = &[
+        (
+            "ids",
+            Value::list([]),
+            "expected Map<Int, {dice: Int}>, found a list: while binding `ids`",
+        ),
+        (
+            "ids",
+            Value::record([("dice", int(1))]),
+            "expected Map<Int, {dice: Int}>, found a record: while binding `ids`",
+        ),
+        (
+            "ids",
+            Value::map([(int(1), dice(1)), (int(5), int(5))]),
+            "expected {dice: Int}, found Int: at `ids[5]`: while binding `ids`",
+        ),
+        (
+            "ids",
+            Value::map([(int(1), dice(1)), (Value::from("x"), dice(2))]),
+            "expected Int, found String: at `ids[key #1]`: while binding `ids`",
+        ),
+        (
+            "tags",
+            Value::map([(Value::from("a b"), Value::some(Value::bool(true)))]),
+            r#"expected Option<Int>, found some(Bool): at `tags["a b"]`: while binding `tags`"#,
+        ),
+        (
+            "tags",
+            Value::map([(int(1), Value::none())]),
+            "expected String, found Int: at `tags[key #0]`: while binding `tags`",
+        ),
+    ];
+
+    for (name, value, expected) in cases {
+        let mut run = machine.load(&program).unwrap();
+        let error = run.bind(name, value).unwrap_err();
+        assert!(!error.is_fault(), "{name}: {error:#}");
+        assert_eq!(chain(&error, &program), *expected, "{name} = {value}");
+    }
+
+    // The entries' words: three entries of a key and a one-word record,
+    // and each record's field.
+    let mut run = machine.load(&program).unwrap();
+    let (ids, words) = binding("ids");
+    assert_eq!(words, 9);
+    run.bind("ids", &ids).unwrap();
+    run.bind("tags", &binding("tags").0).unwrap();
+    assert_eq!(run.run().unwrap().value, int(7));
+}
+
+/// A map binds and reads back in key order however its entries were
+/// given, a key given twice keeping its last value, and the lookup finds
+/// every key of a large map and none between them.
+#[test]
+fn maps_bind_in_key_order() {
+    let ty = Type::map(Type::int(), Type::int());
+    let keys: Vec<i64> = (0..200).map(|n| n * 3 - 300).collect();
+    let map = Value::map(keys.iter().rev().map(|k| (int(*k), int(k * 2))));
+    let extra = [("big", ty.clone(), map.clone())];
+    let limits = Limits::new().memory(4096);
+
+    let outcome = eval_in("big", &extra, limits).unwrap();
+    assert_eq!(outcome.value, map);
+
+    for k in [
+        -300,
+        -297,
+        0,
+        297,
+        294,
+        -301,
+        -299,
+        1,
+        298,
+        i64::MIN + 1,
+        i64::MAX,
+    ] {
+        let got = eval_in(&format!("big.get({k})"), &extra, limits)
+            .unwrap()
+            .value;
+        let expected = if keys.contains(&k) {
+            Value::some(int(k * 2))
+        } else {
+            Value::none()
+        };
+        assert_eq!(got, expected, "{k}");
+    }
+
+    let twice = Value::map([(int(1), int(1)), (int(0), int(0)), (int(1), int(2))]);
+    assert_eq!(twice.to_string(), "{0: 0, 1: 2}");
+    assert_eq!(
+        Value::map([(int(2), int(0)), (int(1), int(0))]),
+        Value::map([(int(1), int(0)), (int(2), int(0))])
+    );
+
+    // Strings are ordered by their bytes, past the first word of them.
+    let ty = Type::map(Type::string(), Type::int());
+    let names = [
+        "",
+        "a",
+        "ab",
+        "abcdefgh",
+        "abcdefghi",
+        "abcdefgg",
+        "b",
+        "é",
+        "\u{ff}",
+    ];
+    let map = Value::map(
+        names
+            .iter()
+            .enumerate()
+            .map(|(n, s)| (Value::from(*s), int(n as i64))),
+    );
+    let extra = [("named", ty, map)];
+
+    for (n, s) in names.iter().enumerate() {
+        let got = eval_in(&format!("named[{s:?}]"), &extra, limits)
+            .unwrap()
+            .value;
+        assert_eq!(got, int(n as i64), "{s:?}");
+    }
+
+    for s in ["abc", "abcdefgha", "c", "aa", "abcdefg"] {
+        let got = eval_in(&format!("named.get({s:?})"), &extra, limits)
+            .unwrap()
+            .value;
+        assert_eq!(got, Value::none(), "{s:?}");
+    }
+}
+
+/// Programs over maps, tampered with, are refused or run without a fault.
+#[test]
+fn tampered_map_programs_never_fault() {
+    let sources = [
+        "ids[7].dice",
+        "ids.get(wits).is_some()",
+        "tags[\"brawl\"].unwrap_or(0) + tags.len()",
+        "tags.get(name)",
+        "lookup()[1]",
+        "[ids.len(), empty.len()]",
+    ];
+    let mut rng = Rng(0x3a95_00c1);
+    let (mut refused, mut ran) = (0, 0);
+
+    for round in 0..2_000 {
+        let source = sources[rng.below(sources.len())];
+        let bytes = compile_in(source, &[]).to_bytes().unwrap();
+        let mut stored: Stored = musli::storage::from_slice(&bytes).unwrap();
+
+        for _ in 0..=rng.below(3) {
+            tamper(&mut rng, &mut stored);
+        }
+
+        let Ok(program) = Program::from_bytes(&musli::storage::to_vec(&stored).unwrap()) else {
+            refused += 1;
+            continue;
+        };
+
+        let limit = u32::try_from(program.memory().total()).unwrap() + 4096;
+        let mut machine = Machine::new(Limits::new().memory(limit).fuel(100_000));
+        let mut run = machine.load(&program).unwrap();
+
+        for (name, ty) in run.globals() {
+            run.bind(name, &value_of(&mut rng, ty)).unwrap();
+        }
+
+        let functions = program.functions();
+        let mut host_rng = Rng(rng.next());
+        let mut host = |name: &str, _: Vec<Value>| {
+            let (_, _, ret) = functions.iter().find(|(n, ..)| *n == name).unwrap();
+            Ok(value_of(&mut host_rng, ret))
+        };
+
+        match run.run_with(&mut host) {
+            Ok(outcome) => {
+                ran += 1;
+                assert!(
+                    conforms(&outcome.value, &program.result_type()),
+                    "{round}: {source:?}"
+                );
+            }
+            Err(error) if error.is_fault() => panic!("{round}: {source:?}: {error:#}"),
+            Err(_) => ran += 1,
+        }
+    }
+
+    assert!(refused > 500, "only {refused} were refused");
+    assert!(ran > 100, "only {ran} ran");
 }

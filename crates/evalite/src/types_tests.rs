@@ -3,7 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use crate::types::{FieldNode, TypeNode, Types};
+use crate::types::{FieldNode, TypeId, TypeNode, Types};
 use crate::*;
 
 fn record(a: Type) -> Type {
@@ -63,4 +63,77 @@ fn intern_refuses_too_deep() {
 
     let mut types = Types::new();
     assert_eq!(types.intern(&ty), None);
+}
+
+/// A map interns as its key and value, each once, and builds back.
+#[test]
+fn maps_intern() {
+    let mut types = Types::new();
+    let ty = Type::map(Type::int(), Type::map(Type::string(), Type::int()));
+    let id = types.intern(&ty).unwrap();
+
+    assert_eq!(types.intern(&ty), Some(id));
+    assert_eq!(types.to_type(id), Some(ty));
+    assert_eq!(types.size(id), 5);
+
+    let other = types
+        .intern(&Type::map(Type::string(), Type::int()))
+        .unwrap();
+    assert!(other < id);
+    assert_eq!(
+        types.get(id),
+        Some(&TypeNode::Map {
+            key: types.find(&TypeNode::Int).unwrap(),
+            value: other,
+        })
+    );
+
+    // The key and value are not interchangeable.
+    let swapped = types
+        .intern(&Type::map(Type::string(), Type::string()))
+        .unwrap();
+    assert_ne!(swapped, other);
+}
+
+/// A stored map must be keyed by `Int` or `String`.
+#[test]
+fn stored_maps_need_scalar_keys() {
+    let int = TypeId(0);
+    let bool = TypeId(1);
+
+    let ok = vec![
+        TypeNode::Int,
+        TypeNode::Bool,
+        TypeNode::Map {
+            key: int,
+            value: bool,
+        },
+    ];
+    assert!(Types::from_stored(ok).is_ok());
+
+    for key in [bool, TypeId(2)] {
+        let nodes = vec![
+            TypeNode::Int,
+            TypeNode::Bool,
+            TypeNode::List(int),
+            TypeNode::Map { key, value: int },
+        ];
+        let error = Types::from_stored(nodes).unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "the type is a map keyed by other than Int or String: at type 3"
+        );
+    }
+
+    let later = vec![
+        TypeNode::Int,
+        TypeNode::Map {
+            key: int,
+            value: TypeId(1),
+        },
+    ];
+    assert_eq!(
+        format!("{:#}", Types::from_stored(later).unwrap_err()),
+        "the type refers to a later type: at type 1"
+    );
 }

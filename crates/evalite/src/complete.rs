@@ -269,6 +269,8 @@ enum Pattern {
     Option,
     /// Any record.
     Record,
+    /// Any `Map<K, V>`.
+    Map,
     /// A type with this method.
     Method(String),
     /// A record with this field.
@@ -317,6 +319,7 @@ impl Want {
                 Pattern::List => matches!(ty, Type(Kind::List(_))),
                 Pattern::Option => matches!(ty, Type(Kind::Option(_))),
                 Pattern::Record => matches!(ty, Type(Kind::Record(_))),
+                Pattern::Map => matches!(ty, Type(Kind::Map(..))),
                 Pattern::Method(name) => receiver_methods(ty).any(|m| m.name == name),
                 Pattern::Field(name) => {
                     matches!(ty, Type(Kind::Record(fields)) if fields.contains_key(name))
@@ -340,6 +343,7 @@ impl Want {
             Pattern::Type(ty) => shape.bind(ty, &mut None),
             Pattern::List => matches!(shape, Shape::List(_) | Shape::Var),
             Pattern::Option => matches!(shape, Shape::Option(_) | Shape::Var),
+            Pattern::Map => matches!(shape, Shape::Map(..) | Shape::Var),
             Pattern::Record | Pattern::Field(_) => shape == Shape::Var,
             Pattern::Method(name) => {
                 shape == Shape::Var
@@ -381,13 +385,17 @@ impl Want {
             match &ty {
                 Cow::Borrowed(ty) => match *ty {
                     Type(Kind::Record(fields)) => stack.extend(fields.values().map(Cow::Borrowed)),
-                    Type(Kind::List(entry)) => stack.push(Cow::Borrowed(&**entry)),
+                    Type(Kind::List(entry)) | Type(Kind::Map(_, entry)) => {
+                        stack.push(Cow::Borrowed(&**entry));
+                    }
                     _ => {}
                 },
                 Cow::Owned(Type(Kind::Record(fields))) => {
                     stack.extend(fields.values().cloned().map(Cow::Owned));
                 }
-                Cow::Owned(Type(Kind::List(entry))) => stack.push(Cow::Owned((**entry).clone())),
+                Cow::Owned(Type(Kind::List(entry)) | Type(Kind::Map(_, entry))) => {
+                    stack.push(Cow::Owned((**entry).clone()));
+                }
                 Cow::Owned(_) => {}
             }
 
@@ -696,20 +704,21 @@ impl Structure {
                 Node(Repr::Field {
                     name: Some(name), ..
                 }) => Want::OneOf(vec![Pattern::Field(name.clone())]),
-                Node(Repr::Index { receiver, index }) if *receiver == at => {
-                    Want::OneOf(match self.get(*index) {
-                        Some(Node(Repr::String(name))) => vec![Pattern::Field(name.clone())],
-                        Some(Node(Repr::Hole)) => vec![Pattern::List, Pattern::Record],
-                        _ => {
-                            steps_up.push(Up::ListOf);
-                            at = parent;
-                            continue;
-                        }
-                    })
-                }
+                Node(Repr::Index { receiver, index }) if *receiver == at => Want::OneOf(match self
+                    .get(*index)
+                {
+                    Some(Node(Repr::String(name))) => vec![Pattern::Field(name.clone())],
+                    Some(Node(Repr::Hole)) => vec![Pattern::List, Pattern::Map, Pattern::Record],
+                    _ => {
+                        steps_up.push(Up::ListOf);
+                        at = parent;
+                        continue;
+                    }
+                }),
                 Node(Repr::Index { receiver, index }) if *index == at => {
                     match self.type_of(env, *receiver) {
                         Some(Type(Kind::List(_))) => Want::exactly(Type(Kind::Int)),
+                        Some(Type(Kind::Map(key, _))) => Want::exactly(*key),
                         Some(Type(Kind::Record(_))) => Want::exactly(Type(Kind::String)),
                         _ => Want::Any,
                     }
@@ -1154,7 +1163,7 @@ impl Described {
 pub(crate) enum Step<S> {
     /// Its field `name`.
     Field(S),
-    /// An entry of a list, `[_]`.
+    /// An entry of a list or a map's value, `[_]`.
     Entry,
 }
 
@@ -1284,7 +1293,7 @@ fn paths(out: &mut Vec<Completion>, described: &mut Described, name: &str, ty: &
                     }
                 }
             }
-            Type(Kind::List(entry)) if want.reachable(entry) => {
+            Type(Kind::List(entry)) | Type(Kind::Map(_, entry)) if want.reachable(entry) => {
                 let mut path = path.clone();
                 path.push(Step::Entry);
                 next.push((joined(&label, "[_]"), path, &**entry));

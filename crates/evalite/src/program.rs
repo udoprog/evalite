@@ -7,7 +7,7 @@ use crate::message::{Invalid, Message, StoreError};
 use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 3;
+pub(crate) const FORMAT: u32 = 4;
 
 /// How many nodes the globals' types may have together, each written out
 /// in full.
@@ -15,9 +15,12 @@ const MAX_GLOBAL_TYPE_NODES: usize = 1 << 21;
 
 /// One instruction of a stack machine over words of memory. A value takes
 /// the words its type's layout gives it: one for an `Int`, a `Bool` (0 or
-/// 1), and a string, list or record (a reference packing where its parts
-/// are and how many there are). An option of a `Bool`, string, list or
-/// record is one word with [`Word::NONE`](crate::word::Word::NONE) for
+/// 1), and a string, list, record or map (a reference packing where its
+/// parts are and how many there are). A map's parts are its entries in key
+/// order, each its key's word then its value's words, so a key is found by
+/// binary search; `Int` keys are ordered by value and `String` keys by
+/// their bytes. An option of a `Bool`, string, list, record or map is one
+/// word with [`Word::NONE`](crate::word::Word::NONE) for
 /// absent; an option of an `Int` or of an option is tagged, a word for
 /// present or not, then its value's words, so `Option<Int>` is two words
 /// and `Option<Option<Int>>` three. Operands are pushed in
@@ -90,10 +93,15 @@ pub(crate) enum Instr {
     Unwrap(TypeId),
     IsSome(TypeId),
     IsNone(TypeId),
-    /// A list's length.
+    /// A list's length, or a map's entries.
     Len,
     /// Call one of the program's host functions.
     Call(u32),
+    /// `map[key]` of this map type, an error when the key is missing.
+    MapIndex(TypeId),
+    /// `map.get(key)` of this map type: an `Option` of its value type,
+    /// absent when the key is missing.
+    MapGet(TypeId),
 }
 
 /// A value in a constant list.
@@ -734,11 +742,31 @@ impl Verifier<'_> {
                     self.find(TypeNode::Bool)?
                 }
                 Instr::Len => {
-                    stack
-                        .pop()
-                        .and_then(|l| self.entry(l))
-                        .ok_or_else(|| fail(Invalid::LenNonList))?;
+                    let counted = stack.pop().and_then(|ty| match self.types.get(ty)? {
+                        TypeNode::List(_) | TypeNode::Map { .. } => Some(()),
+                        _ => None,
+                    });
+
+                    counted.ok_or_else(|| fail(Invalid::LenNonList))?;
                     self.find(TypeNode::Int)?
+                }
+                Instr::MapIndex(map) | Instr::MapGet(map) => {
+                    let invalid = match instr {
+                        Instr::MapIndex(_) => Invalid::IndexNonMap,
+                        _ => Invalid::GetNonMap,
+                    };
+
+                    let Some(TypeNode::Map { key, value }) = self.types.get(map) else {
+                        return Err(fail(invalid));
+                    };
+
+                    need(stack.pop(), Some(*key))?;
+                    need(stack.pop(), Some(map)).map_err(|_| fail(invalid))?;
+
+                    match instr {
+                        Instr::MapIndex(_) => *value,
+                        _ => self.find(TypeNode::Option(*value))?,
+                    }
                 }
                 Instr::Call(f) => {
                     let function =

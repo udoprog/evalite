@@ -14,20 +14,24 @@ use crate::types::Kind;
 pub(crate) enum Shape {
     Int,
     Bool,
+    String,
     /// The type variable `T`, bound by the first argument that holds it.
     Var,
     List(&'static Shape),
     /// `Option<T>`.
     Option(&'static Shape),
+    /// `Map<K, V>`, its key's shape then its value's.
+    Map(&'static Shape, &'static Shape),
 }
 
 impl Shape {
     /// Whether it holds `T`.
     pub(crate) fn is_generic(self) -> bool {
         match self {
-            Self::Int | Self::Bool => false,
+            Self::Int | Self::Bool | Self::String => false,
             Self::Var => true,
             Self::List(inner) | Self::Option(inner) => inner.is_generic(),
+            Self::Map(key, value) => key.is_generic() || value.is_generic(),
         }
     }
 
@@ -35,7 +39,9 @@ impl Shape {
     /// is met, and requiring the bound type every time after.
     pub(crate) fn bind(self, ty: &Type, t: &mut Option<Type>) -> bool {
         match (self, ty) {
-            (Self::Int, Type(Kind::Int)) | (Self::Bool, Type(Kind::Bool)) => true,
+            (Self::Int, Type(Kind::Int))
+            | (Self::Bool, Type(Kind::Bool))
+            | (Self::String, Type(Kind::String)) => true,
             (Self::Var, ty) => match t {
                 Some(bound) => bound == ty,
                 None => {
@@ -45,6 +51,7 @@ impl Shape {
             },
             (Self::List(inner), Type(Kind::List(entry))) => inner.bind(entry, t),
             (Self::Option(inner), Type(Kind::Option(value))) => inner.bind(value, t),
+            (Self::Map(k, v), Type(Kind::Map(key, value))) => k.bind(key, t) && v.bind(value, t),
             _ => false,
         }
     }
@@ -55,9 +62,11 @@ impl Shape {
         Some(match self {
             Self::Int => Type::int(),
             Self::Bool => Type::bool(),
+            Self::String => Type::string(),
             Self::Var => t?.clone(),
             Self::List(inner) => Type::list(inner.resolve(t)?),
             Self::Option(inner) => Type::option(inner.resolve(t)?),
+            Self::Map(key, value) => Type::map(key.resolve(t)?, value.resolve(t)?),
         })
     }
 
@@ -76,9 +85,11 @@ impl fmt::Display for Shape {
         match self {
             Self::Int => f.write_str("Int"),
             Self::Bool => f.write_str("Bool"),
+            Self::String => f.write_str("String"),
             Self::Var => f.write_str("T"),
             Self::List(inner) => write!(f, "List<{inner}>"),
             Self::Option(inner) => write!(f, "Option<{inner}>"),
+            Self::Map(key, value) => write!(f, "Map<{key}, {value}>"),
         }
     }
 }

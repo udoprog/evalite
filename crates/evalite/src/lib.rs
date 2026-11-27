@@ -102,6 +102,11 @@
 //!   error.
 //! - Records, such as `{boxes: Int, count: List<Int>}`: a field is read with
 //!   `.boxes`, or with `["Brawl (bar)"]` when its name is not a plain name.
+//! - `Map<K, V>`: values by key, the key an `Int` or a `String`, which come
+//!   from a name or a function declared with one. `m[k]` is the value of key
+//!   `k`, an error when it is missing, and `m.get(k)` an `Option<V>`, `none`
+//!   when it is missing. A lookup is a binary search of the keys, which are
+//!   held sorted.
 //! - `Option<T>`: a value that may be absent, which comes from a name or a
 //!   function declared with it, or from `list.get(i)`. It is never used as a `T`:
 //!   unwrap it with `x.unwrap_or(0)`, which gives `0` when it is absent, or
@@ -111,16 +116,17 @@
 //!   `x!!` unwraps both.
 //!
 //! Types and values are written the same way outside an expression, such as
-//! in a form or on a command line: [`Type::parse`] reads `Option<List<Int>>`
-//! or `{boxes: Int}`, and [`Value::parse`] reads a value of a type, such as
-//! `some([1, -2])` or `{boxes: 7}`. Both read back what `Display` prints.
+//! in a form or on a command line: [`Type::parse`] reads `Option<List<Int>>`,
+//! `Map<Int, String>` or `{boxes: Int}`, and [`Value::parse`] reads a value
+//! of a type, such as `some([1, -2])`, `{1: "a", 42: "b"}` or `{boxes: 7}`.
+//! Both read back what `Display` prints.
 //!
 //! Operators, tightest first. Binary operators are left-associative, except
 //! comparisons, which do not chain (`a < b < c` is an error):
 //!
 //! | Operators                    | Takes                        | Gives  |
 //! |------------------------------|------------------------------|--------|
-//! | `x.field`, `x.method(..)`, `list[i]` | a record, any value, a `List<T>` and an `Int` | its type |
+//! | `x.field`, `x.method(..)`, `list[i]`, `map[k]` | a record, any value, a `List<T>` and an `Int`, a `Map<K, V>` and a `K` | its type |
 //! | postfix `x!`                 | an `Option<T>`               | `T`, or an error when absent |
 //! | unary `-`, `!`               | `Int`, `Bool`                | the same |
 //! | `*` `/` `%`                  | `Int`s                       | `Int`  |
@@ -139,6 +145,7 @@
 //! | `Int`       | `abs() -> Int`, `min(Int) -> Int`, `max(Int) -> Int`, `clamp(Int, Int) -> Int` |
 //! | `Option<T>` | `unwrap_or(T) -> T`, `is_some() -> Bool`, `is_none() -> Bool` |
 //! | `List<T>`   | `get(Int) -> Option<T>`, `len() -> Int`                      |
+//! | `Map<K, V>` | `get(K) -> Option<V>`, `len() -> Int`                        |
 //!
 //! `list.get(i)` is the entry at an index from 0, or `none` when the index
 //! is out of range, so `[10, 20].get(1)` is `some(20)`, an `Option<Int>`,
@@ -148,6 +155,33 @@
 //! an absent entry (`some(none)`). `list[i]` is the entry itself, and an
 //! error out of range.
 //!
+//! A map is read the same way, by its keys, as in
+//! `specialties[1001].dice` or `tags.get("brawl").unwrap_or(0)`:
+//!
+//! ```
+//! use evalite::{Environment, Machine, Type, Value};
+//!
+//! let mut env = Environment::new();
+//! env.value("specialties", Type::map(Type::int(), Type::record([("dice", Type::int())])))?;
+//!
+//! let program = evalite::compile("specialties[1001].dice + specialties.len()", &env)?;
+//! let specialties = Value::map([
+//!     (Value::int(1001), Value::record([("dice", Value::int(2))])),
+//!     (Value::int(7), Value::record([("dice", Value::int(1))])),
+//! ]);
+//!
+//! let mut machine = Machine::default();
+//! let mut run = machine.load(&program)?;
+//! run.bind("specialties", &specialties)?;
+//! assert_eq!(run.run()?.value(), &Value::int(4));
+//!
+//! let program = evalite::compile("specialties[3].dice", &env)?;
+//! let mut run = machine.load(&program)?;
+//! run.bind("specialties", &specialties)?;
+//! assert_eq!(run.run().unwrap_err().to_string(), "the map has no key 3");
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! A type's functions are called by path, as in `Int::min(a, b, c)`:
 //!
 //! | Function                    | Gives                              |
@@ -156,8 +190,8 @@
 //! | `Int::max(Int, ...) -> Int` | the greatest of one or more `Int`s |
 //!
 //! Every method is a function of its type too, taking the receiver first, so
-//! `Int::abs(x)` is `x.abs()` and `Option::unwrap_or(bonus, 0)` is
-//! `bonus.unwrap_or(0)`.
+//! `Int::abs(x)` is `x.abs()`, `Option::unwrap_or(bonus, 0)` is
+//! `bonus.unwrap_or(0)` and `Map::get(m, k)` is `m.get(k)`.
 //!
 //! Every other name, value or function, is one the caller declares, with its
 //! type, and the caller runs its functions when a program calls them. A
@@ -221,7 +255,8 @@
 //! more than the machine has. Running out of fuel stops the run. There are no
 //! loops, so most expressions use a few dozen steps. Faults are errors, never
 //! panics: `Int` overflow, division by zero, `list[i]` past either end
-//! (`list.get(i)` gives `none` instead), `x!` of an absent option, `clamp` with its
+//! (`list.get(i)` gives `none` instead), `map[k]` of a missing key
+//! (`map.get(k)` gives `none` instead), `x!` of an absent option, `clamp` with its
 //! bounds the wrong way round, and a host function's failure or wrongly typed
 //! result.
 //!

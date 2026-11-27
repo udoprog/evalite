@@ -15,11 +15,11 @@ pub const MAX_TYPE_DEPTH: usize = 64;
 /// so a few nodes can stand for more than a program could hold.
 pub(crate) const MAX_TYPE_NODES: usize = 1 << 16;
 
-/// The type of a value: `Int`, `Bool`, `String`, `List<T>`, `Option<T>`
-/// or a record.
+/// The type of a value: `Int`, `Bool`, `String`, `List<T>`, `Option<T>`,
+/// `Map<K, V>` or a record.
 ///
 /// It is opaque. Build one with [`Type::int`], [`Type::bool`],
-/// [`Type::string`], [`Type::list`], [`Type::option`] and
+/// [`Type::string`], [`Type::list`], [`Type::option`], [`Type::map`] and
 /// [`Type::record`], and look into one with the `is_*` and `as_*`
 /// try-accessors, which give `false` or `None` for any other type.
 ///
@@ -52,6 +52,8 @@ pub(crate) enum Kind {
     Option(Box<Type>),
     /// Named fields, read with `.name` or `["name"]`.
     Record(BTreeMap<String, Type>),
+    /// Values by key, read with `[key]`: the key type, then the value type.
+    Map(Box<Type>, Box<Type>),
 }
 
 impl Type {
@@ -120,6 +122,31 @@ impl Type {
         Self(Kind::Record(
             fields.into_iter().map(|(k, t)| (k.into(), t)).collect(),
         ))
+    }
+
+    /// `Map<K, V>`, values of type `value` by keys of type `key`, read with
+    /// `m[key]` and `m.get(key)`. A key is an `Int` or a `String`: a map of
+    /// any other key type is refused where it is declared, as
+    /// [`Environment::value`](crate::Environment::value) does.
+    ///
+    /// ```
+    /// use evalite::{Environment, Type};
+    ///
+    /// let ty = Type::map(Type::int(), Type::record([("dice", Type::int())]));
+    /// assert_eq!(ty.to_string(), "Map<Int, {dice: Int}>");
+    ///
+    /// let mut env = Environment::new();
+    /// env.value("specialties", ty)?;
+    ///
+    /// let error = env.value("bad", Type::map(Type::bool(), Type::int())).unwrap_err();
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     "the type of `bad` has a map keyed by other than Int or String, a map's keys are Int or String"
+    /// );
+    /// # Ok::<_, evalite::DeclareError>(())
+    /// ```
+    pub fn map(key: Type, value: Type) -> Self {
+        Self(Kind::Map(Box::new(key), Box::new(value)))
     }
 
     /// Whether it is `Int`.
@@ -226,6 +253,25 @@ impl Type {
         }
     }
 
+    /// The key and value types of the `Map<K, V>` it is, or `None` if it is
+    /// another type.
+    ///
+    /// ```
+    /// use evalite::Type;
+    ///
+    /// let ty = Type::map(Type::string(), Type::list(Type::int()));
+    /// assert_eq!(ty.as_map(), Some((&Type::string(), &Type::list(Type::int()))));
+    ///
+    /// assert_eq!(Type::int().as_map(), None);
+    /// assert_eq!(Type::list(ty).as_map(), None);
+    /// ```
+    pub fn as_map(&self) -> Option<(&Type, &Type)> {
+        match &self.0 {
+            Kind::Map(key, value) => Some((key, value)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_option(&self) -> bool {
         matches!(self.0, Kind::Option(..))
     }
@@ -297,9 +343,12 @@ pub(crate) fn is_field_name(name: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TypeFault {
     TooDeep,
+    /// A map whose key type is neither `Int` nor `String`.
+    MapKey,
 }
 
-/// Check that `ty` is a type evalite has: at most [`MAX_TYPE_DEPTH`] deep.
+/// Check that `ty` is a type evalite has: at most [`MAX_TYPE_DEPTH`] deep,
+/// and each map keyed by `Int` or `String`.
 pub(crate) fn check_type(ty: &Type) -> Result<(), TypeFault> {
     let mut stack = vec![(ty, 1usize)];
 
@@ -314,6 +363,14 @@ pub(crate) fn check_type(ty: &Type) -> Result<(), TypeFault> {
             Type(Kind::Int) | Type(Kind::Bool) | Type(Kind::String) => {}
             Type(Kind::List(entry)) | Type(Kind::Option(entry)) => stack.push((entry, next)),
             Type(Kind::Record(fields)) => stack.extend(fields.values().map(|t| (t, next))),
+            Type(Kind::Map(key, value)) => {
+                if !matches!(key.0, Kind::Int | Kind::String) {
+                    return Err(TypeFault::MapKey);
+                }
+
+                stack.push((key, next));
+                stack.push((value, next));
+            }
         }
     }
 
@@ -327,8 +384,9 @@ enum Piece<'a> {
 }
 
 impl fmt::Display for Type {
-    /// Types as written in evalite: `Int`, `List<Int>`, `Option<Int>`, and
-    /// records as `{athletics: Int, "Brawl (bar)": Option<Int>}`.
+    /// Types as written in evalite: `Int`, `List<Int>`, `Option<Int>`,
+    /// `Map<Int, String>`, and records as
+    /// `{athletics: Int, "Brawl (bar)": Option<Int>}`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut stack = vec![Piece::Type(self)];
 
@@ -353,6 +411,13 @@ impl fmt::Display for Type {
                         f.write_str("Option<")?;
                         stack.push(Piece::Text(">"));
                         stack.push(Piece::Type(value));
+                    }
+                    Type(Kind::Map(key, value)) => {
+                        f.write_str("Map<")?;
+                        stack.push(Piece::Text(">"));
+                        stack.push(Piece::Type(value));
+                        stack.push(Piece::Text(", "));
+                        stack.push(Piece::Type(key));
                     }
                     Type(Kind::Record(fields)) => {
                         f.write_str("{")?;
@@ -404,6 +469,11 @@ pub(crate) enum TypeNode {
     Option(TypeId),
     /// Fields sorted by name, each name once.
     Record(Vec<FieldNode>),
+    /// Values by key, the key an `Int` or a `String`.
+    Map {
+        key: TypeId,
+        value: TypeId,
+    },
 }
 
 /// The types a program uses, each once, every part before what holds it.
@@ -567,6 +637,9 @@ impl Types {
             TypeNode::Record(fields) => {
                 self.hash_parts(3, fields.iter().map(|f| (f.name.as_str(), f.ty)))
             }
+            TypeNode::Map { key, value } => {
+                self.hash_parts(4, [("", *key), ("", *value)].into_iter())
+            }
         }
     }
 
@@ -592,7 +665,13 @@ impl Types {
     pub(crate) fn has_niche(&self, id: TypeId) -> bool {
         matches!(
             self.get(id),
-            Some(TypeNode::Bool | TypeNode::String | TypeNode::List(_) | TypeNode::Record(_))
+            Some(
+                TypeNode::Bool
+                    | TypeNode::String
+                    | TypeNode::List(_)
+                    | TypeNode::Record(_)
+                    | TypeNode::Map { .. }
+            )
         )
     }
 
@@ -656,6 +735,10 @@ impl Types {
             TypeNode::Record(fields) => fields
                 .iter()
                 .fold(1usize, |n, f| n.saturating_add(self.size(f.ty))),
+            TypeNode::Map { key, value } => self
+                .size(*key)
+                .saturating_add(self.size(*value))
+                .saturating_add(1),
         }
     }
 
@@ -681,6 +764,7 @@ impl Types {
             TypeNode::Int | TypeNode::Bool | TypeNode::String => 0,
             TypeNode::List(id) | TypeNode::Option(id) => self.depth(*id),
             TypeNode::Record(fields) => fields.iter().map(|f| self.depth(f.ty)).max().unwrap_or(0),
+            TypeNode::Map { key, value } => self.depth(*key).max(self.depth(*value)),
         }
         .saturating_add(1);
 
@@ -750,6 +834,12 @@ impl Types {
                         Type(Kind::Record(fields)) => {
                             steps.extend(fields.values().rev().map(Step::Visit));
                         }
+                        // The key is built first, so it is found below the
+                        // value.
+                        Type(Kind::Map(key, value)) => {
+                            steps.push(Step::Visit(value));
+                            steps.push(Step::Visit(key));
+                        }
                         Type(Kind::Int) | Type(Kind::Bool) | Type(Kind::String) => {}
                     }
                 }
@@ -760,6 +850,11 @@ impl Types {
                         Type(Kind::String) => TypeNode::String,
                         Type(Kind::List(_)) => TypeNode::List(done.pop()?),
                         Type(Kind::Option(_)) => TypeNode::Option(done.pop()?),
+                        Type(Kind::Map(..)) => {
+                            let value = done.pop()?;
+                            let key = done.pop()?;
+                            TypeNode::Map { key, value }
+                        }
                         Type(Kind::Record(fields)) => {
                             let at = done.len().checked_sub(fields.len())?;
                             let ids = done.get(at..)?;
@@ -889,6 +984,9 @@ impl Types {
                 TypeNode::String => Type::string(),
                 TypeNode::List(t) => Type::list(part(&built, *t)?),
                 TypeNode::Option(t) => Type::option(part(&built, *t)?),
+                TypeNode::Map { key, value } => {
+                    Type::map(part(&built, *key)?, part(&built, *value)?)
+                }
                 TypeNode::Record(fields) => {
                     let mut record = BTreeMap::new();
 
@@ -907,8 +1005,9 @@ impl Types {
     }
 
     /// Check a stored table: each part before what holds it, each node
-    /// once, records sorted, and nothing nested past [`MAX_TYPE_DEPTH`] or with more than
-    /// [`MAX_TYPE_NODES`] nodes written out.
+    /// once, records sorted, maps keyed by `Int` or `String`, and nothing
+    /// nested past [`MAX_TYPE_DEPTH`] or with more than [`MAX_TYPE_NODES`]
+    /// nodes written out.
     pub(crate) fn from_stored(nodes: Vec<TypeNode>) -> Result<Self, StoreError> {
         let mut types = Self::new();
 
@@ -934,6 +1033,11 @@ impl Types {
                 {
                     return Err(fail(Invalid::FieldsUnsorted));
                 }
+                TypeNode::Map { key, .. }
+                    if !matches!(types.get(*key), Some(TypeNode::Int | TypeNode::String)) =>
+                {
+                    return Err(fail(Invalid::MapKeyType));
+                }
                 _ => {}
             }
 
@@ -958,5 +1062,6 @@ fn parts(node: &TypeNode) -> Vec<TypeId> {
         TypeNode::Int | TypeNode::Bool | TypeNode::String => Vec::new(),
         TypeNode::List(t) | TypeNode::Option(t) => vec![*t],
         TypeNode::Record(fields) => fields.iter().map(|f| f.ty).collect(),
+        TypeNode::Map { key, value } => vec![*key, *value],
     }
 }

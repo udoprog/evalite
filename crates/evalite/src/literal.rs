@@ -13,6 +13,7 @@ use syntree::Span;
 
 use crate::error::{Diagnostic, ErrorKind};
 use crate::types::Kind;
+use crate::value::key_order;
 use crate::{DEFAULT_MAX_LEN, MAX_TYPE_DEPTH, Type, Value};
 
 /// The most of the input an error quotes.
@@ -60,7 +61,7 @@ impl fmt::Display for Expected<'_> {
 
 impl Type {
     /// Parse a type as it is displayed: `Int`, `Bool`, `String`,
-    /// `List<T>`, `Option<T>` or a record such as
+    /// `List<T>`, `Option<T>`, `Map<K, V>` or a record such as
     /// `{boxes: Int, "Brawl (bar)": Option<Int>}`. Whitespace may surround
     /// any part.
     ///
@@ -68,7 +69,8 @@ impl Type {
     ///
     /// A [`Diagnostic`] spanning the first mistake in `text`, when it is
     /// not a type, nests more than [`MAX_TYPE_DEPTH`] levels, names a
-    /// record field twice, or is longer than [`DEFAULT_MAX_LEN`] bytes.
+    /// record field twice, keys a map by other than `Int` or `String`, or
+    /// is longer than [`DEFAULT_MAX_LEN`] bytes.
     ///
     /// ```
     /// use evalite::Type;
@@ -80,10 +82,15 @@ impl Type {
     /// ]));
     /// assert_eq!(Type::parse(&ty.to_string())?, ty);
     /// assert_eq!("Option<Bool>".parse::<Type>()?, Type::option(Type::bool()));
+    /// assert_eq!(Type::parse("Map<Int, {dice: Int}>")?, Type::map(Type::int(), Type::record([("dice", Type::int())])));
     ///
     /// let error = Type::parse("List<Float>").unwrap_err();
-    /// assert_eq!(error.to_string(), "unknown type `Float`, expected Int, Bool, String, Option<T>, List<T> or {name: T}");
+    /// assert_eq!(error.to_string(), "unknown type `Float`, expected Int, Bool, String, Option<T>, List<T>, Map<K, V> or {name: T}");
     /// assert_eq!(error.span().range(), 5..10);
+    ///
+    /// let error = Type::parse("Map<Bool, Int>").unwrap_err();
+    /// assert_eq!(error.to_string(), "a map's keys are Int or String, found Bool");
+    /// assert_eq!(error.span().range(), 4..8);
     ///
     /// let error = Type::parse("Option<Int").unwrap_err();
     /// assert_eq!(error.to_string(), "expected `>`, found the end");
@@ -114,9 +121,11 @@ impl FromStr for Type {
 
 impl Value {
     /// Parse a value of type `ty` as it is displayed: `3`, `-2`, `true`,
-    /// `"text"`, `none`, `some(2)`, `[1, 2]` or `{boxes: 7}`. A string is
-    /// in quotes, escaping only `\"` and `\\`, and a record gives each of
-    /// its fields once, in any order. Whitespace may surround any part.
+    /// `"text"`, `none`, `some(2)`, `[1, 2]`, `{boxes: 7}`, or a map such
+    /// as `{1: "a", 42: "b"}`. A string is in quotes, escaping only `\"`
+    /// and `\\`, a record gives each of its fields once, in any order, and
+    /// a map each of its keys at most once, in any order. Whitespace may
+    /// surround any part.
     ///
     /// # Errors
     ///
@@ -143,6 +152,15 @@ impl Value {
     /// let error = Value::parse("bare", &Type::string()).unwrap_err();
     /// assert_eq!(error.to_string(), "expected a string in quotes, such as `\"Brawl\"`, found `bare`");
     ///
+    /// let ty = Type::map(Type::int(), Type::string());
+    /// let value = Value::parse(r#"{42: "b", 1: "a"}"#, &ty)?;
+    /// assert_eq!(value, Value::map([(Value::int(1), Value::from("a")), (Value::int(42), Value::from("b"))]));
+    /// assert_eq!(Value::parse(&value.to_string(), &ty)?, value);
+    ///
+    /// let error = Value::parse(r#"{1: "a", 1: "b"}"#, &ty).unwrap_err();
+    /// assert_eq!(error.to_string(), "the key 1 is given twice");
+    /// assert_eq!(error.span().range(), 9..10);
+    ///
     /// let error = Value::parse("1 2", &Type::int()).unwrap_err();
     /// assert_eq!(error.to_string(), "expected the end, found `2`");
     ///
@@ -162,6 +180,14 @@ impl Value {
 enum TypeFrame {
     Option,
     List,
+    /// `Map<`, its key type being parsed, which starts at `at`.
+    MapKey {
+        at: usize,
+    },
+    /// `Map<K, `, its value type being parsed.
+    MapValue {
+        key: Type,
+    },
     Record {
         fields: BTreeMap<String, Type>,
         /// The field whose type is being parsed, and where its name is.
@@ -182,6 +208,15 @@ enum ValueFrame<'t> {
         values: BTreeMap<String, Value>,
         name: String,
         at: Span<u32>,
+    },
+    /// A map's entries so far, and where each key is; the key next is
+    /// parsed when `key` is `None`, else its value.
+    Map {
+        key_ty: &'t Type,
+        value_ty: &'t Type,
+        entries: Vec<(Value, Value)>,
+        spans: Vec<Span<u32>>,
+        key: Option<Value>,
     },
 }
 
@@ -384,6 +419,12 @@ impl<'a> Cursor<'a> {
                     "Int" => Type::int(),
                     "Bool" => Type::bool(),
                     "String" => Type::string(),
+                    "Map" => {
+                        self.expect('<')?;
+                        self.skip_space();
+                        stack.push(TypeFrame::MapKey { at: self.at });
+                        continue 'open;
+                    }
                     "Option" | "List" => {
                         self.expect('<')?;
                         stack.push(if word == "List" {
@@ -413,6 +454,19 @@ impl<'a> Cursor<'a> {
                     Some(TypeFrame::List) => {
                         self.expect('>')?;
                         done = Type::list(done);
+                    }
+                    Some(TypeFrame::MapKey { at }) => {
+                        if !done.is_int() && !done.is_string() {
+                            return self.fail(at, self.at, ErrorKind::MapKeyType(done));
+                        }
+
+                        self.expect(',')?;
+                        stack.push(TypeFrame::MapValue { key: done });
+                        continue 'open;
+                    }
+                    Some(TypeFrame::MapValue { key }) => {
+                        self.expect('>')?;
+                        done = Type::map(key, done);
                     }
                     Some(TypeFrame::Record {
                         mut fields,
@@ -537,6 +591,28 @@ impl<'a> Cursor<'a> {
                     ty = entry;
                     continue 'open;
                 }
+            } else if let Some((key_ty, value_ty)) = ty.as_map() {
+                if !self.eat('{') {
+                    return self.unexpected(|found| ErrorKind::ExpectedValue {
+                        ty: ty.clone(),
+                        found,
+                    });
+                }
+
+                if self.eat('}') {
+                    Value::map([])
+                } else {
+                    self.skip_space();
+                    stack.push(ValueFrame::Map {
+                        key_ty,
+                        value_ty,
+                        entries: Vec::new(),
+                        spans: vec![Self::span(self.at, self.at)],
+                        key: None,
+                    });
+                    ty = key_ty;
+                    continue 'open;
+                }
             } else {
                 if !self.eat('{') {
                     return self.unexpected(|found| ErrorKind::ExpectedValue {
@@ -624,6 +700,61 @@ impl<'a> Cursor<'a> {
 
                         done = self.finish_record(record, values)?;
                     }
+                    Some(ValueFrame::Map {
+                        key_ty,
+                        value_ty,
+                        entries,
+                        mut spans,
+                        key: None,
+                    }) => {
+                        // The key's span runs from where it starts to here.
+                        if let Some(span) = spans.last_mut() {
+                            *span = Span::new(span.start, Self::span(self.at, self.at).end);
+                        }
+
+                        self.expect(':')?;
+                        stack.push(ValueFrame::Map {
+                            key_ty,
+                            value_ty,
+                            entries,
+                            spans,
+                            key: Some(done),
+                        });
+                        ty = value_ty;
+                        continue 'open;
+                    }
+                    Some(ValueFrame::Map {
+                        key_ty,
+                        value_ty,
+                        mut entries,
+                        mut spans,
+                        key: Some(key),
+                    }) => {
+                        entries.push((key, done));
+
+                        if self.eat(',') {
+                            self.skip_space();
+                            spans.push(Self::span(self.at, self.at));
+                            stack.push(ValueFrame::Map {
+                                key_ty,
+                                value_ty,
+                                entries,
+                                spans,
+                                key: None,
+                            });
+                            ty = key_ty;
+                            continue 'open;
+                        }
+
+                        if !self.eat('}') {
+                            return self.unexpected(|found| ErrorKind::ExpectedChar {
+                                expected: '}',
+                                found,
+                            });
+                        }
+
+                        done = finish_map(entries, &spans)?;
+                    }
                 }
             }
         }
@@ -649,6 +780,33 @@ impl<'a> Cursor<'a> {
 
         Ok(Value::record(values))
     }
+}
+
+/// The map of `entries`, whose keys are at `spans`, if no key is given
+/// twice; the second of a repeated key is the one refused.
+fn finish_map(entries: Vec<(Value, Value)>, spans: &[Span<u32>]) -> Result<Value, Diagnostic> {
+    let mut order = (0..entries.len()).collect::<Vec<_>>();
+    let key = |n: usize| entries.get(n).map(|(k, _)| k);
+    // Stable, so of a repeated key the earlier is first.
+    order.sort_by(|a, b| match (key(*a), key(*b)) {
+        (Some(a), Some(b)) => key_order(a, b),
+        _ => std::cmp::Ordering::Equal,
+    });
+
+    for pair in order.windows(2) {
+        if let [a, b] = pair
+            && let (Some(first), Some(second)) = (key(*a), key(*b))
+            && key_order(first, second) == std::cmp::Ordering::Equal
+        {
+            let at = spans.get(*b).copied().unwrap_or(Span::new(0, 0));
+            return Err(Diagnostic::new(
+                at,
+                ErrorKind::DuplicateKey(second.to_string()),
+            ));
+        }
+    }
+
+    Ok(Value::map(entries))
 }
 
 /// The type of field `name` of the record `ty`.

@@ -47,6 +47,8 @@ pub(crate) enum Message {
     DivideByZero { op: Op, a: i64 },
     /// `list[index]` past either end of the list.
     IndexOutOfRange { index: i64, len: u64 },
+    /// `map[key]` of a key the map does not have.
+    NoSuchKey { key: Key },
     /// `option!` of an absent option.
     UnwrapNone,
     /// `value.clamp(low, high)` with `low` above `high`.
@@ -109,6 +111,40 @@ pub(crate) enum Message {
     AtSpan { at: u32 },
 }
 
+/// A map key, as an error names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Key {
+    Int(i64),
+    /// A `String` key, cut to [`MAX_KEY_SHOWN`] characters.
+    String(Box<str>),
+}
+
+/// The most characters of a `String` key an error shows.
+pub(crate) const MAX_KEY_SHOWN: usize = 64;
+
+impl Key {
+    /// The key `s`, cut short when it is long.
+    pub(crate) fn string(s: &str) -> Self {
+        match s.char_indices().nth(MAX_KEY_SHOWN) {
+            Some((at, _)) => {
+                let mut cut = s.get(..at).unwrap_or_default().to_owned();
+                cut.push('…');
+                Self::String(cut.into())
+            }
+            None => Self::String(s.into()),
+        }
+    }
+}
+
+impl fmt::Display for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Int(n) => write!(f, "{n}"),
+            Self::String(s) => write!(f, "{s:?}"),
+        }
+    }
+}
+
 /// Why stored bytes are not something evalite would make, by what is
 /// wrong with them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +154,7 @@ pub(crate) enum Invalid {
     TypeRepeated,
     TypeTooDeep,
     TypeTooLarge,
+    MapKeyType,
     UnknownType,
     MissingType,
     EmptyConstantList,
@@ -144,6 +181,8 @@ pub(crate) enum Invalid {
     UnwrapNonOption,
     TestNonOption,
     LenNonList,
+    IndexNonMap,
+    GetNonMap,
     NoSuchFunction,
     EndStackDisagrees,
     JumpIntoNothing,
@@ -166,6 +205,7 @@ impl fmt::Display for Invalid {
             Self::TypeRepeated => "the type repeats an earlier type",
             Self::TypeTooDeep => "the type nests too deeply",
             Self::TypeTooLarge => "the type is too large",
+            Self::MapKeyType => "the type is a map keyed by other than Int or String",
             Self::UnknownType => "a type is not in the type table",
             Self::MissingType => "a type it needs is not in the type table",
             Self::EmptyConstantList => "the constant is an empty list",
@@ -193,7 +233,9 @@ impl fmt::Display for Invalid {
             Self::NoOperands => "the instruction takes no operands",
             Self::UnwrapNonOption => "the instruction unwraps other than an option type",
             Self::TestNonOption => "the instruction tests other than an option type",
-            Self::LenNonList => "the instruction takes the length of other than a list",
+            Self::LenNonList => "the instruction takes the length of other than a list or a map",
+            Self::IndexNonMap => "the instruction looks up a key in other than a map of its type",
+            Self::GetNonMap => "the instruction gets a key from other than a map of its type",
             Self::NoSuchFunction => "the instruction calls a function there is not",
             Self::EndStackDisagrees => "a jump lands at the end with another stack",
             Self::JumpIntoNothing => "a jump lands inside nothing",
@@ -239,6 +281,7 @@ pub(crate) enum Found {
     String,
     List,
     Record,
+    Map,
     None,
     Some,
     /// A record without field `field` of the record type `record`.
@@ -272,7 +315,7 @@ pub(crate) enum Root {
 }
 
 /// One step of a value path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Seg {
     /// Field `field` of the record type `record`.
     Field {
@@ -280,6 +323,10 @@ pub(crate) enum Seg {
         field: u32,
     },
     Index(u64),
+    /// The value of a map's key.
+    Key(Key),
+    /// The key of a map's entry, from 0 in key order.
+    KeyOf(u64),
 }
 
 /// A program that is not one evalite made, by what it did wrong. Programs
@@ -317,6 +364,8 @@ pub(crate) enum Fault {
     RecordWrongSize,
     RecordNotRecordType,
     ListLostEntries,
+    MapLostEntries,
+    MapUnsorted,
     RecordLostFields,
     OptionLostValue,
     ReadAsSeveral,
@@ -356,6 +405,8 @@ impl Fault {
             Self::RecordWrongSize => "a record of the wrong size",
             Self::RecordNotRecordType => "a record of other than a record type",
             Self::ListLostEntries => "a list lost entries",
+            Self::MapLostEntries => "a map lost entries",
+            Self::MapUnsorted => "a map whose keys are not sorted and unique",
             Self::RecordLostFields => "a record lost fields",
             Self::OptionLostValue => "an option lost its value",
             Self::ReadAsSeveral => "a value read as several",
@@ -428,6 +479,7 @@ impl fmt::Display for Shown<'_> {
                     Found::String => f.write_str("String")?,
                     Found::List => f.write_str("a list")?,
                     Found::Record => f.write_str("a record")?,
+                    Found::Map => f.write_str("a map")?,
                     Found::None => f.write_str("none")?,
                     Found::Some => f.write_str("some(..)")?,
                     Found::RecordWithout { record, field } => {
@@ -479,6 +531,7 @@ impl fmt::Display for Shown<'_> {
                     plural(*len, "entry", "entries")
                 )
             }
+            Message::NoSuchKey { key } => write!(f, "the map has no key {key}"),
             Message::UnwrapNone => f.write_str("`!` found no value: the optional value is none"),
             Message::ClampBounds { low, high } => write!(
                 f,
@@ -513,6 +566,8 @@ impl fmt::Display for Shown<'_> {
                             None => f.write_str("._")?,
                         },
                         Seg::Index(i) => write!(f, "[{i}]")?,
+                        Seg::Key(key) => write!(f, "[{key}]")?,
+                        Seg::KeyOf(n) => write!(f, "[key #{n}]")?,
                     }
                 }
 

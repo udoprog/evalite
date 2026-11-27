@@ -3,10 +3,12 @@
 //! step limit on how long it runs.
 
 use crate::Type;
-use crate::message::{Context, Fault, Found, Location, Message, Op, Root, RunError, Seg};
+use std::cmp::Ordering;
+
+use crate::message::{Context, Fault, Found, Key, Location, Message, Op, Root, RunError, Seg};
 use crate::program::{Constant, HostFunction, Instr, Program, Scalar};
 use crate::types::{TypeId, TypeNode};
-use crate::value::{Repr, Value};
+use crate::value::{Repr, Value, key_order};
 use crate::word::Word;
 
 /// The memory a [`Machine`] has unless [`Limits::memory`] says otherwise,
@@ -335,6 +337,8 @@ pub struct Run<'a> {
 enum Read {
     Visit(usize, TypeId),
     List(usize),
+    /// A map of this many entries.
+    Map(usize),
     Record(TypeId),
     Some,
 }
@@ -727,10 +731,113 @@ impl<'a> Run<'a> {
                 self.call(f, host)?;
                 return Ok(next);
             }
+            Instr::MapIndex(map) | Instr::MapGet(map) => {
+                let Some(TypeNode::Map { key, value }) = types.get(map) else {
+                    return Err(fault(Fault::NoSuchType));
+                };
+
+                let strings = matches!(types.get(*key), Some(TypeNode::String));
+                let width = types.width(*value);
+                let tagged = !types.has_niche(*value);
+
+                let needle = self.pop()?;
+                let (start, len) = self.pop()?.as_reference()?;
+                let found = self.find_key(start, len, width, needle, strings)?;
+
+                match (instr, found) {
+                    (_, Some(at)) => {
+                        if tagged && matches!(instr, Instr::MapGet(..)) {
+                            self.push(Word::present(true))?;
+                        }
+
+                        let from = at
+                            .checked_add(1)
+                            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                        self.push_from(from, width)?;
+                    }
+                    (Instr::MapIndex(..), None) => {
+                        let key = if strings {
+                            let (at, len) = needle.as_reference()?;
+                            Key::string(&self.string(at, len)?)
+                        } else {
+                            Key::Int(needle.as_int())
+                        };
+
+                        return Err(RunError::new(Message::NoSuchKey { key }));
+                    }
+                    (_, None) if tagged => self.push_absent(width)?,
+                    (_, None) => self.push(Word::NONE)?,
+                }
+
+                return Ok(next);
+            }
         };
 
         self.push(push)?;
         Ok(next)
+    }
+
+    /// Where the entry of key `needle` starts in the map of `len` entries
+    /// from `start`, whose values are `width` words, found by binary
+    /// search; `strings` when its keys are strings, else `Int`s.
+    fn find_key(
+        &self,
+        start: usize,
+        len: usize,
+        width: usize,
+        needle: Word,
+        strings: bool,
+    ) -> Result<Option<usize>, RunError> {
+        let stride = width
+            .checked_add(1)
+            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+        self.inside(start, len.checked_mul(stride))?;
+
+        let mut low = 0usize;
+        let mut high = len;
+
+        while low < high {
+            let mid = low.saturating_add(high.saturating_sub(low) / 2);
+            let at = mid
+                .checked_mul(stride)
+                .and_then(|at| at.checked_add(start))
+                .ok_or_else(|| fault(Fault::OutsideMemory))?;
+            let probe = self.get(Some(at))?;
+
+            let order = if strings {
+                self.compare_strings(probe, needle)?
+            } else {
+                probe.as_int().cmp(&needle.as_int())
+            };
+
+            match order {
+                Ordering::Less => low = mid.saturating_add(1),
+                Ordering::Greater => high = mid,
+                Ordering::Equal => return Ok(Some(at)),
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// The order of the strings `a` and `b` refer to, by their bytes.
+    fn compare_strings(&self, a: Word, b: Word) -> Result<Ordering, RunError> {
+        let (a_at, a_len) = a.as_reference()?;
+        let (b_at, b_len) = b.as_reference()?;
+        let common = a_len.min(b_len);
+
+        for n in 0..common.div_ceil(8) {
+            let x = self.get(a_at.checked_add(n))?.as_bytes();
+            let y = self.get(b_at.checked_add(n))?.as_bytes();
+            let take = common.saturating_sub(n.saturating_mul(8)).min(8);
+            let order = x.get(..take).cmp(&y.get(..take));
+
+            if order != Ordering::Equal {
+                return Ok(order);
+            }
+        }
+
+        Ok(a_len.cmp(&b_len))
     }
 
     fn call(&mut self, f: u32, host: &mut dyn Host) -> Result<(), RunError> {
@@ -1015,6 +1122,28 @@ impl<'a> Run<'a> {
 
                     continue;
                 }
+                (TypeNode::Map { key, value }, Repr::Map(entries)) => {
+                    let width = types.width(*value).saturating_add(1);
+                    total = total.saturating_add(entries.len().saturating_mul(width));
+                    let parts = entries.len().saturating_mul(2);
+                    work.reserve(parts);
+                    trail.reserve(parts);
+
+                    for (i, (k, v)) in entries.iter().enumerate() {
+                        let key_node = trail.child(node, || Seg::KeyOf(count(i)));
+                        let value_node = trail.child(node, || match &k.0 {
+                            Repr::Int(n) => Seg::Key(Key::Int(*n)),
+                            Repr::String(s) => Seg::Key(Key::string(s)),
+                            _ => Seg::KeyOf(count(i)),
+                        });
+
+                        // The key is checked first.
+                        work.push((v, *value, value_node, None));
+                        work.push((k, *key, key_node, None));
+                    }
+
+                    continue;
+                }
                 // Both are sorted by name, so equal names pairwise is an
                 // exact match, found without a lookup.
                 (TypeNode::Record(fields), Repr::Record(map))
@@ -1140,6 +1269,43 @@ impl<'a> Run<'a> {
 
                     Word::reference(at, items.len())?
                 }
+                (TypeNode::Map { key, value }, Repr::Map(entries)) => {
+                    // A map's entries are in key order, each key once, as
+                    // `Value::map` keeps them, for the lookup to find them.
+                    let sorted = entries.windows(2).all(|pair| match pair {
+                        [(a, _), (b, _)] => key_order(a, b) == Ordering::Less,
+                        _ => true,
+                    });
+
+                    if !sorted {
+                        return Err(fault(Fault::MapUnsorted));
+                    }
+
+                    let width = types.width(*value);
+                    let stride = width
+                        .checked_add(1)
+                        .ok_or_else(|| fault(Fault::ListTooLarge))?;
+                    let words = entries
+                        .len()
+                        .checked_mul(stride)
+                        .ok_or_else(|| fault(Fault::ListTooLarge))?;
+                    let at = self.alloc(words)?;
+                    work.reserve(entries.len().saturating_mul(2));
+
+                    for (n, (k, v)) in entries.iter().enumerate() {
+                        let dest = n
+                            .checked_mul(stride)
+                            .and_then(|n| n.checked_add(at))
+                            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                        let value_dest = dest
+                            .checked_add(1)
+                            .ok_or_else(|| fault(Fault::OutsideMemory))?;
+                        work.push((k, *key, dest));
+                        work.push((v, *value, value_dest));
+                    }
+
+                    Word::reference(at, entries.len())?
+                }
                 (TypeNode::Record(fields), Repr::Record(map)) => {
                     let words = types.record_words(fields);
                     let at = self.alloc(words)?;
@@ -1221,6 +1387,18 @@ impl<'a> Run<'a> {
                                 steps.push(Read::Visit(at, *entry));
                             }
                         }
+                        TypeNode::Map { key, value } => {
+                            let (start, len) = word.as_reference()?;
+                            let stride = types.width(*value).saturating_add(1);
+                            self.inside(start, len.checked_mul(stride))?;
+                            steps.push(Read::Map(len));
+
+                            for n in (0..len).rev() {
+                                let at = n.saturating_mul(stride).saturating_add(start);
+                                steps.push(Read::Visit(at.saturating_add(1), *value));
+                                steps.push(Read::Visit(at, *key));
+                            }
+                        }
                         TypeNode::Record(fields) => {
                             let (start, len) = word.as_reference()?;
 
@@ -1249,6 +1427,21 @@ impl<'a> Run<'a> {
                         .ok_or_else(|| fault(Fault::ListLostEntries))?;
                     let items = out.split_off(at);
                     out.push(Value(Repr::List(items)));
+                }
+                Read::Map(n) => {
+                    let at = n
+                        .checked_mul(2)
+                        .and_then(|parts| out.len().checked_sub(parts))
+                        .ok_or_else(|| fault(Fault::MapLostEntries))?;
+                    let mut parts = out.split_off(at).into_iter();
+                    let mut entries = Vec::with_capacity(n);
+
+                    while let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                        entries.push((key, value));
+                    }
+
+                    // Written in key order, so read back in it.
+                    out.push(Value(Repr::Map(entries)));
                 }
                 Read::Record(ty) => {
                     let Some(TypeNode::Record(fields)) = types.get(ty) else {
@@ -1401,7 +1594,7 @@ fn mistyped(mismatch: Mismatch, root: Root, nodes: &[(usize, Option<Seg>)]) -> R
     let mut path = Vec::new();
 
     while let Some((parent, Some(seg))) = nodes.get(node) {
-        path.push(*seg);
+        path.push(seg.clone());
         node = *parent;
     }
 

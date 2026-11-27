@@ -333,7 +333,7 @@ fn unwrap_hint() {
         ),
         (
             "bonus[0]",
-            &format!("Option<Int> cannot be indexed, only a List or a record can{HINT}"),
+            &format!("Option<Int> cannot be indexed, only a List, a Map or a record can{HINT}"),
             "bonus",
         ),
     ]);
@@ -747,12 +747,12 @@ fn error_fields_and_indices() {
         ),
         (
             "wits[0]",
-            "Int cannot be indexed, only a List or a record can",
+            "Int cannot be indexed, only a List, a Map or a record can",
             "wits",
         ),
         (
             r#""abc"[0]"#,
-            "String cannot be indexed, only a List or a record can",
+            "String cannot be indexed, only a List, a Map or a record can",
             r#""abc""#,
         ),
         (
@@ -1576,6 +1576,16 @@ fn tampered_programs() {
         (
             "1",
             Box::new(|s| {
+                s.types.push(TypeNode::Map {
+                    key: TypeId(1),
+                    value: TypeId(0),
+                })
+            }),
+            "the type is a map keyed by other than Int or String: at type 2: while verifying the program",
+        ),
+        (
+            "1",
+            Box::new(|s| {
                 for n in 0..64 {
                     s.types.push(TypeNode::List(TypeId(n + 1)));
                 }
@@ -1704,7 +1714,7 @@ fn stored_bytes_errors() {
 
     assert_eq!(
         format!("{:#}", load(&stored).unwrap_err()),
-        "it was stored in format 4, this evalite reads format 3: while reading a stored program"
+        "it was stored in format 5, this evalite reads format 4: while reading a stored program"
     );
 
     let error = Program::from_bytes(&[]).unwrap_err();
@@ -2275,4 +2285,126 @@ fn capped_diagnostics_keep_the_earliest() {
             .all(|e| matches!(e.kind(), ErrorKind::ListEntry { .. }))
     );
     assert_eq!(errors[MAX_DIAGNOSTICS].kind(), &ErrorKind::MoreErrors(200));
+}
+
+/// The environment of the map tests: records by `Int` key and options by
+/// `String` key.
+fn map_env() -> Environment {
+    let mut env = env();
+    let dice = Type::record([("dice", Type::int())]);
+    env.value("ids", Type::map(Type::int(), dice)).unwrap();
+    env.value("tags", Type::map(Type::string(), Type::option(Type::int())))
+        .unwrap();
+    env
+}
+
+/// `m[k]` gives a map's value type and `get` an option of it, the key of
+/// its key type; a map is no record, and has no other methods.
+#[test]
+fn maps() {
+    let env = map_env();
+    let type_in = |source: &str| match compile(source, &env) {
+        Ok(program) => program.result_type().to_string(),
+        Err(error) => panic!("{source:?}: {error}"),
+    };
+
+    for (source, expected) in [
+        ("ids", "Map<Int, {dice: Int}>"),
+        ("ids[1]", "{dice: Int}"),
+        ("ids[wits].dice", "Int"),
+        ("ids.get(1)", "Option<{dice: Int}>"),
+        ("ids.get(1)!.dice", "Int"),
+        ("ids.len()", "Int"),
+        ("Map::get(ids, 2)", "Option<{dice: Int}>"),
+        ("Map::len(tags)", "Int"),
+        ("tags[\"a\"]", "Option<Int>"),
+        ("tags[name]", "Option<Int>"),
+        ("tags.get(name)", "Option<Option<Int>>"),
+        ("[ids, ids][0][3]", "{dice: Int}"),
+    ] {
+        assert_eq!(type_in(source), expected, "{source:?}");
+    }
+
+    for (source, message, at) in [
+        (
+            "ids[\"a\"]",
+            "a Map<Int, {dice: Int}> is indexed by its key, a Int, found String",
+            "\"a\"",
+        ),
+        (
+            "tags[1]",
+            "a Map<String, Option<Int>> is indexed by its key, a String, found Int",
+            "1",
+        ),
+        (
+            "ids.get(name)",
+            "argument 1 of `get` on Map<Int, {dice: Int}> must be Int, found String",
+            "name",
+        ),
+        (
+            "Map::get(tags, 1)",
+            "argument 2 of `Map::get` must be String, found Int",
+            "1",
+        ),
+        (
+            "ids.dice",
+            "Map<Int, {dice: Int}> has no fields, so no `.dice`",
+            "dice",
+        ),
+        (
+            "ids.keys()",
+            "Map<Int, {dice: Int}> has no method `keys`, its methods are `get` and `len`",
+            "keys",
+        ),
+        (
+            "ids == ids",
+            "`==` takes two Ints or two Bools, found Map<Int, {dice: Int}> and Map<Int, {dice: Int}>",
+            "ids == ids",
+        ),
+    ] {
+        let (actual, range) = error_in(source, &env);
+        assert_eq!(actual, message, "{source:?}");
+        assert_eq!(&source[range.clone()], at, "{source:?}: {range:?}");
+    }
+}
+
+/// A map is keyed by `Int` or `String`, and any other key is refused where
+/// the type is declared.
+#[test]
+fn map_keys_are_int_or_string() {
+    let mut env = Environment::new();
+    let message = "the type of `m` has a map keyed by other than Int or String, a map's keys are Int or String";
+
+    for key in [
+        Type::bool(),
+        Type::list(Type::int()),
+        Type::option(Type::int()),
+        Type::record([("a", Type::int())]),
+        Type::map(Type::int(), Type::int()),
+    ] {
+        let ty = Type::map(key.clone(), Type::int());
+        assert_eq!(
+            env.value("m", ty.clone()).unwrap_err().to_string(),
+            message,
+            "{key}"
+        );
+        assert_eq!(
+            env.function("m", [ty.clone()], Type::int())
+                .unwrap_err()
+                .to_string(),
+            message
+        );
+        assert_eq!(
+            env.function("m", [], Type::list(ty))
+                .unwrap_err()
+                .to_string(),
+            message
+        );
+    }
+
+    env.value(
+        "m",
+        Type::map(Type::int(), Type::map(Type::string(), Type::int())),
+    )
+    .unwrap();
 }

@@ -888,3 +888,71 @@ fn hexadecimal_integers_add_no_candidates() {
     let all = labels("_", 0, Some(&Type::int()));
     assert!(all.iter().all(|label| !label.starts_with("0x")), "{all:?}");
 }
+
+/// A map's members are `get` and `len`, its values are reached by `[_]` as
+/// a list's entries are, and its index takes its key type.
+#[test]
+fn map_completions() {
+    let mut env = Environment::new();
+    let dice = Type::record([("dice", Type::int())]);
+    env.value("ids", Type::map(Type::int(), dice.clone()))
+        .unwrap();
+    env.value("tags", Type::map(Type::string(), Type::bool()))
+        .unwrap();
+    env.value("wits", Type::int()).unwrap();
+    env.value("name", Type::string()).unwrap();
+
+    let labels = |text: &str, root: Option<&Type>| -> Vec<String> {
+        let s = s(text);
+        let hole = s.holes()[0];
+        s.complete(&env, hole, root)
+            .unwrap_or_else(|e| panic!("{text:?}: {e}"))
+            .into_iter()
+            .map(|c| c.label)
+            .collect()
+    };
+
+    let members = labels("ids._", None);
+    assert_eq!(members, ["get(_)", "len()"], "ids._");
+    assert_eq!(labels("tags._", None), ["get(_)", "len()"], "tags._");
+
+    let int = labels("_", Some(&Type::int()));
+    for label in ["ids.len()", "ids[_].dice", "tags.len()", "wits"] {
+        assert!(int.contains(&label.to_owned()), "{label} in {int:?}");
+    }
+
+    let bool = labels("_", Some(&Type::bool()));
+    assert!(bool.contains(&"tags[_]".to_owned()), "{bool:?}");
+
+    let option = labels("_", Some(&Type::option(dice.clone())));
+    assert!(option.contains(&"ids.get(_)".to_owned()), "{option:?}");
+
+    // The index of a map takes its key type.
+    let key = labels("ids[_]", None);
+    assert!(
+        key.contains(&"wits".to_owned()) && !key.contains(&"name".to_owned()),
+        "{key:?}"
+    );
+    let key = labels("tags[_]", None);
+    assert!(
+        key.contains(&"name".to_owned()) && !key.contains(&"wits".to_owned()),
+        "{key:?}"
+    );
+    let key = labels("ids.get(_)", None);
+    assert!(
+        key.contains(&"wits".to_owned()) && !key.contains(&"name".to_owned()),
+        "{key:?}"
+    );
+
+    // A map is indexed as a list is.
+    let receivers = labels("_[_]", None);
+    assert!(
+        receivers.contains(&"ids".to_owned()) && receivers.contains(&"tags".to_owned()),
+        "{receivers:?}"
+    );
+    let receivers = labels("_.len()", None);
+    assert!(
+        receivers.contains(&"ids".to_owned()) && receivers.contains(&"tags".to_owned()),
+        "{receivers:?}"
+    );
+}

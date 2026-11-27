@@ -95,6 +95,8 @@ const fn method(
 
 const OPTION: Shape = Shape::Option(&T);
 const LIST: Shape = Shape::List(&T);
+const INT_MAP: Shape = Shape::Map(&Shape::Int, &T);
+const STRING_MAP: Shape = Shape::Map(&Shape::String, &T);
 
 /// Every method, by receiver, in name order.
 pub(crate) const METHODS: &[MethodSig] = &[
@@ -146,6 +148,28 @@ pub(crate) const METHODS: &[MethodSig] = &[
     method(LIST, "len", Signature::new(&[], Shape::Int), |_, _| {
         Some(Instr::Len)
     }),
+    // A map's methods, once per key type, as `T` is its value type.
+    method(
+        INT_MAP,
+        "get",
+        Signature::new(&[Shape::Int], Shape::Option(&T)),
+        |map, _| Some(Instr::MapGet(map)),
+    ),
+    method(INT_MAP, "len", Signature::new(&[], Shape::Int), |_, _| {
+        Some(Instr::Len)
+    }),
+    method(
+        STRING_MAP,
+        "get",
+        Signature::new(&[Shape::String], Shape::Option(&T)),
+        |map, _| Some(Instr::MapGet(map)),
+    ),
+    method(
+        STRING_MAP,
+        "len",
+        Signature::new(&[], Shape::Int),
+        |_, _| Some(Instr::Len),
+    ),
 ];
 
 /// The methods a value of type `ty` has, in name order.
@@ -212,6 +236,24 @@ pub(crate) enum Associated {
 }
 
 impl Associated {
+    /// The method of the same type and name as this one whose receiver is
+    /// `receiver`, as a map's methods are once per key type; itself when
+    /// none is, or it is a function.
+    pub(crate) fn for_receiver(self, receiver: Option<&Type>) -> Self {
+        let (Self::Method(method), Some(receiver)) = (self, receiver) else {
+            return self;
+        };
+
+        METHODS
+            .iter()
+            .find(|m| {
+                m.name == method.name
+                    && type_name(m.receiver) == type_name(method.receiver)
+                    && m.bind(receiver).is_some()
+            })
+            .map_or(self, Self::Method)
+    }
+
     /// What calling it with `args` gives, or why it does not take them.
     pub(crate) fn call(self, args: &[Type]) -> Result<Type, Mismatch> {
         match self {
@@ -229,7 +271,8 @@ fn type_name(shape: Shape) -> Option<&'static str> {
         Shape::Bool => Some("Bool"),
         Shape::List(_) => Some("List"),
         Shape::Option(_) => Some("Option"),
-        Shape::Var => None,
+        Shape::Map(..) => Some("Map"),
+        Shape::String | Shape::Var => None,
     }
 }
 

@@ -472,12 +472,14 @@ pub(crate) enum ErrorKind {
     NoFields { receiver: Type, field: String },
     /// `.name` or `["name"]` on a record without that field.
     UnknownField { field: String, fields: Vec<String> },
-    /// `[...]` after a value that is neither a list nor a record.
+    /// `[...]` after a value that is not a list, a map or a record.
     NotIndexable(Type),
     /// `!` after a value that is not an option.
     UnwrapNonOption(Type),
     /// A list indexed by other than an `Int`.
     IndexType { list: Type, found: Type },
+    /// A map indexed by other than its key type.
+    KeyType { map: Type, key: Type, found: Type },
     /// A record indexed by other than a string literal.
     RecordIndex,
     /// A list entry of another type than the first entry, counting from 1.
@@ -518,6 +520,10 @@ pub(crate) enum ErrorKind {
     IntegerTooSmall,
     /// A record field given twice.
     DuplicateField(String),
+    /// A map key given twice, as written.
+    DuplicateKey(String),
+    /// A map type keyed by other than `Int` or `String`.
+    MapKeyType(Type),
     /// A field the record type does not have.
     NoSuchField { ty: Type, field: String },
     /// A field of the record type that is given no value.
@@ -834,7 +840,10 @@ impl fmt::Display for Diagnostic {
                 write!(f, ", its fields are {}", list(shown, "and"))
             }
             ErrorKind::NotIndexable(ty) => {
-                write!(f, "{ty} cannot be indexed, only a List or a record can")?;
+                write!(
+                    f,
+                    "{ty} cannot be indexed, only a List, a Map or a record can"
+                )?;
                 unwrap_hint(f, std::slice::from_ref(ty))
             }
             ErrorKind::UnwrapNonOption(ty) => write!(
@@ -843,6 +852,9 @@ impl fmt::Display for Diagnostic {
             ),
             ErrorKind::IndexType { list, found } => {
                 write!(f, "a {list} is indexed by an Int, found {found}")
+            }
+            ErrorKind::KeyType { map, key, found } => {
+                write!(f, "a {map} is indexed by its key, a {key}, found {found}")
             }
             ErrorKind::RecordIndex => f.write_str(
                 "a record is indexed by a string literal naming its field, such as `m[\"name\"]`",
@@ -875,7 +887,7 @@ impl fmt::Display for Diagnostic {
             ErrorKind::ExpectedType(found) => write!(f, "expected a type, found {found}"),
             ErrorKind::UnknownType(name) => write!(
                 f,
-                "unknown type `{name}`, expected Int, Bool, String, Option<T>, List<T> or {{name: T}}"
+                "unknown type `{name}`, expected Int, Bool, String, Option<T>, List<T>, Map<K, V> or {{name: T}}"
             ),
             ErrorKind::LiteralTooDeep => write!(
                 f,
@@ -896,6 +908,10 @@ impl fmt::Display for Diagnostic {
                 write!(f, "this integer is too small, the smallest is {}", i64::MIN)
             }
             ErrorKind::DuplicateField(name) => write!(f, "the field `{name}` is given twice"),
+            ErrorKind::DuplicateKey(key) => write!(f, "the key {key} is given twice"),
+            ErrorKind::MapKeyType(ty) => {
+                write!(f, "a map's keys are Int or String, found {ty}")
+            }
             ErrorKind::NoSuchField { ty, field } => write!(f, "{ty} has no field `{field}`"),
             ErrorKind::MissingField(name) => write!(f, "the field `{name}` has no value"),
         }

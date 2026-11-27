@@ -60,6 +60,8 @@ pub(crate) enum DeclareKind {
     /// A type nesting more than [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH)
     /// levels.
     TypeTooDeep,
+    /// A map whose key type is neither `Int` nor `String`.
+    MapKey,
 }
 
 impl DeclareError {
@@ -85,6 +87,10 @@ impl fmt::Display for DeclareError {
                 f,
                 "the type of `{name}` nests more than {} levels",
                 crate::MAX_TYPE_DEPTH
+            ),
+            DeclareKind::MapKey => write!(
+                f,
+                "the type of `{name}` has a map keyed by other than Int or String, a map's keys are Int or String"
             ),
         }
     }
@@ -122,8 +128,9 @@ impl Environment {
     /// # Errors
     ///
     /// Returns a [`DeclareError`] when `name` is not a valid name (lowercase
-    /// letters, digits and `_`, starting with a letter or `_`), or `ty` nests
-    /// deeper than [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH).
+    /// letters, digits and `_`, starting with a letter or `_`), `ty` nests
+    /// deeper than [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH), or `ty` has a
+    /// [`Type::map`] keyed by other than `Int` or `String`.
     pub fn value(&mut self, name: &str, ty: Type) -> Result<(), DeclareError> {
         check_name(name)?;
         check(name, &ty)?;
@@ -141,7 +148,8 @@ impl Environment {
     ///
     /// Returns a [`DeclareError`] when `name` is not a valid name, or a
     /// parameter or `ret` nests deeper than
-    /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH).
+    /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH) or has a map keyed by other
+    /// than `Int` or `String`.
     pub fn function(
         &mut self,
         name: &str,
@@ -228,5 +236,6 @@ fn check_name(name: &str) -> Result<(), DeclareError> {
 fn check(name: &str, ty: &Type) -> Result<(), DeclareError> {
     check_type(ty).map_err(|fault| match fault {
         TypeFault::TooDeep => DeclareError::new(DeclareKind::TypeTooDeep, name),
+        TypeFault::MapKey => DeclareError::new(DeclareKind::MapKey, name),
     })
 }
