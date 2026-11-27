@@ -958,12 +958,31 @@ impl<'a> Run<'a> {
 
     /// Check `value` is of type `ty`, giving the words its parts take;
     /// a mismatch names its path from `root`.
+    ///
+    /// The walk keeps no path, as most values are of their type; a mismatch
+    /// is found again with one, to name where it is.
     fn measure(&self, value: &Value, ty: TypeId, root: Root) -> Result<usize, RunError> {
+        match self.walk(value, ty, &mut NoPaths) {
+            Ok(total) => Ok(total),
+            Err(Stop::Fault(error)) => Err(error),
+            Err(Stop::Mismatch(_)) => {
+                let mut nodes = Nodes::default();
+
+                match self.walk(value, ty, &mut nodes) {
+                    Err(Stop::Mismatch(mismatch)) => Err(mistyped(mismatch, root, &nodes.0)),
+                    Err(Stop::Fault(error)) => Err(error),
+                    // The same walk, so the same mismatch.
+                    Ok(_) => Err(fault(Fault::ValueChangedType)),
+                }
+            }
+        }
+    }
+
+    /// Walk `value` of type `ty`, giving the words its parts take, with
+    /// `trail` keeping the path to each part.
+    fn walk<T: Trail>(&self, value: &Value, ty: TypeId, trail: &mut T) -> Result<usize, Stop> {
         let program = self.program;
         let types = &program.types;
-        // Each node's parent and the step to it; the root has none. Neither
-        // is allocated for a value without parts, as most bound values are.
-        let mut nodes = Vec::<(usize, Option<Seg>)>::new();
         let mut work = Vec::new();
         let mut next = Some((value, ty, 0usize, None));
         let mut total = 0usize;
@@ -986,14 +1005,12 @@ impl<'a> Run<'a> {
                 (TypeNode::List(entry), Repr::List(items)) => {
                     let width = types.width(*entry);
                     total = total.saturating_add(items.len().saturating_mul(width));
-
-                    if !items.is_empty() && nodes.is_empty() {
-                        nodes.push((0, None));
-                    }
+                    work.reserve(items.len());
+                    trail.reserve(items.len());
 
                     for (i, item) in items.iter().enumerate() {
-                        work.push((item, *entry, nodes.len(), None));
-                        nodes.push((node, Some(Seg::Index(count(i)))));
+                        let child = trail.child(node, || Seg::Index(count(i)));
+                        work.push((item, *entry, child, None));
                     }
 
                     continue;
@@ -1005,21 +1022,15 @@ impl<'a> Run<'a> {
                         && fields.iter().zip(map.keys()).all(|(f, k)| f.name == *k) =>
                 {
                     total = total.saturating_add(types.record_words(fields));
-
-                    if !fields.is_empty() && nodes.is_empty() {
-                        nodes.push((0, None));
-                    }
+                    work.reserve(fields.len());
+                    trail.reserve(fields.len());
 
                     for (n, (field, value)) in fields.iter().zip(map.values()).enumerate() {
-                        let field_id = u32::try_from(n).unwrap_or(u32::MAX);
-                        work.push((value, field.ty, nodes.len(), None));
-                        nodes.push((
-                            node,
-                            Some(Seg::Field {
-                                record: ty,
-                                field: field_id,
-                            }),
-                        ));
+                        let child = trail.child(node, || Seg::Field {
+                            record: ty,
+                            field: u32::try_from(n).unwrap_or(u32::MAX),
+                        });
+                        work.push((value, field.ty, child, None));
                     }
 
                     continue;
@@ -1036,22 +1047,16 @@ impl<'a> Run<'a> {
                         (None, true) => Found::RecordWithExtra,
                         (None, false) => {
                             total = total.saturating_add(types.record_words(fields));
-
-                            if nodes.is_empty() {
-                                nodes.push((0, None));
-                            }
+                            work.reserve(fields.len());
+                            trail.reserve(fields.len());
 
                             for (n, field) in fields.iter().enumerate() {
                                 if let Some(value) = map.get(&field.name) {
-                                    let field_id = u32::try_from(n).unwrap_or(u32::MAX);
-                                    work.push((value, field.ty, nodes.len(), None));
-                                    nodes.push((
-                                        node,
-                                        Some(Seg::Field {
-                                            record: ty,
-                                            field: field_id,
-                                        }),
-                                    ));
+                                    let child = trail.child(node, || Seg::Field {
+                                        record: ty,
+                                        field: u32::try_from(n).unwrap_or(u32::MAX),
+                                    });
+                                    work.push((value, field.ty, child, None));
                                 }
                             }
 
@@ -1062,14 +1067,12 @@ impl<'a> Run<'a> {
                 _ => value.describe(),
             };
 
-            return Err(mistyped(
-                option.unwrap_or(ty),
+            return Err(Stop::Mismatch(Mismatch {
+                expected: option.unwrap_or(ty),
                 found,
-                option.is_some(),
-                root,
-                &nodes,
+                in_some: option.is_some(),
                 node,
-            ));
+            }));
         }
 
         Ok(total)
@@ -1125,6 +1128,7 @@ impl<'a> Run<'a> {
                         .checked_mul(width)
                         .ok_or_else(|| fault(Fault::ListTooLarge))?;
                     let at = self.alloc(words)?;
+                    work.reserve(items.len());
 
                     for (n, item) in items.iter().enumerate() {
                         let dest = n
@@ -1141,6 +1145,7 @@ impl<'a> Run<'a> {
                     let at = self.alloc(words)?;
 
                     let mut entries = map.iter();
+                    work.reserve(fields.len());
 
                     for (offset, field) in types.field_offsets(fields) {
                         // In step with the fields, as `measure` found them.
@@ -1319,18 +1324,80 @@ fn overflow(op: Op, a: i64, b: i64) -> RunError {
     RunError::new(Message::Overflow { op, a, b })
 }
 
-/// The error of a value found to be `found` where `expected` was, at
-/// `node` of the path from `root`.
-#[cold]
-#[inline(never)]
-fn mistyped(
+/// Where a walk found a value not of its type: the type `expected`, what
+/// was `found` instead, and the `node` of its path.
+struct Mismatch {
     expected: TypeId,
     found: Found,
     in_some: bool,
-    root: Root,
-    nodes: &[(usize, Option<Seg>)],
-    mut node: usize,
-) -> RunError {
+    node: usize,
+}
+
+/// Why a walk stopped.
+enum Stop {
+    Mismatch(Mismatch),
+    Fault(RunError),
+}
+
+impl From<RunError> for Stop {
+    fn from(error: RunError) -> Self {
+        Self::Fault(error)
+    }
+}
+
+/// The paths into a value a walk keeps, one node to each part it queues.
+trait Trail {
+    /// Make room for `n` more nodes.
+    fn reserve(&mut self, n: usize);
+
+    /// The node of the part reached from `parent` by the step `seg` gives.
+    fn child(&mut self, parent: usize, seg: impl FnOnce() -> Seg) -> usize;
+}
+
+/// Keeps none, as a walk that finds no mismatch needs none.
+struct NoPaths;
+
+impl Trail for NoPaths {
+    fn reserve(&mut self, _: usize) {}
+
+    fn child(&mut self, _: usize, _: impl FnOnce() -> Seg) -> usize {
+        0
+    }
+}
+
+/// Each node's parent and the step to it; the root, which has none, is
+/// added with the first part.
+#[derive(Default)]
+struct Nodes(Vec<(usize, Option<Seg>)>);
+
+impl Trail for Nodes {
+    fn reserve(&mut self, n: usize) {
+        self.0.reserve(n.saturating_add(1));
+    }
+
+    fn child(&mut self, parent: usize, seg: impl FnOnce() -> Seg) -> usize {
+        if self.0.is_empty() {
+            self.0.push((0, None));
+        }
+
+        let node = self.0.len();
+        self.0.push((parent, Some(seg())));
+        node
+    }
+}
+
+/// The error of a value found not to be of its type, at its node of the
+/// path from `root`.
+#[cold]
+#[inline(never)]
+fn mistyped(mismatch: Mismatch, root: Root, nodes: &[(usize, Option<Seg>)]) -> RunError {
+    let Mismatch {
+        expected,
+        found,
+        in_some,
+        node,
+    } = mismatch;
+    let mut node = node;
     let mut path = Vec::new();
 
     while let Some((parent, Some(seg))) = nodes.get(node) {
