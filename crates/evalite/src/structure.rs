@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use musli::{Decode, Encode};
-use syntree::{Node as TreeNode, Span};
+use syntree::{Element, Span};
 
 use crate::parser::Flavor;
 
@@ -22,7 +22,7 @@ use crate::references::{Reference, locate_nodes};
 use crate::syntax::{Syntax, unescape};
 use crate::types::{Type, is_field_name, is_value_name};
 
-type N<'a> = TreeNode<'a, Syntax, Flavor>;
+type N<'a> = Element<'a, Syntax, Flavor>;
 
 /// What a stored structure starts with, so later versions can tell. Format 2
 /// adds [`Repr::Hex`], format 3 [`Repr::Map`], format 4 moves the number
@@ -2293,12 +2293,12 @@ fn from_tree(source: &str, tree: &Tree) -> Result<Structure, Diagnostic> {
                     .next()
                     .map(text)
                     .and_then(|t| parse_int(t, true))
-                    .ok_or_else(|| Diagnostic::new(*node.span(), ErrorKind::IntegerTooLarge))?;
+                    .ok_or_else(|| Diagnostic::new(node.span(), ErrorKind::IntegerTooLarge))?;
                 Node(int_repr(n, hex))
             }
             Syntax::Integer => {
                 let (n, hex) = parse_int(text(node), false)
-                    .ok_or_else(|| Diagnostic::new(*node.span(), ErrorKind::IntegerTooLarge))?;
+                    .ok_or_else(|| Diagnostic::new(node.span(), ErrorKind::IntegerTooLarge))?;
                 Node(int_repr(n, hex))
             }
             Syntax::Bool => Node(Repr::Bool(text(node) == "true")),

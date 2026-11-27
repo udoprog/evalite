@@ -172,9 +172,9 @@ pub(crate) fn unescape(literal: &str) -> Option<String> {
 /// A `Call`'s callee and the name it calls, such as `min` or `Int::min`,
 /// whitespace in a path left out.
 pub(crate) fn callee<'a>(
-    call: syntree::Node<'a, Syntax, crate::parser::Flavor>,
+    call: syntree::Element<'a, Syntax, crate::parser::Flavor>,
     source: &str,
-) -> Option<(syntree::Node<'a, Syntax, crate::parser::Flavor>, String)> {
+) -> Option<(syntree::Element<'a, Syntax, crate::parser::Flavor>, String)> {
     let node = call
         .children()
         .find(|n| matches!(n.value(), Syntax::Name | Syntax::Path))?;

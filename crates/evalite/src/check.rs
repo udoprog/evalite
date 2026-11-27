@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use syntree::{Node, Span};
+use syntree::{Element, Span};
 
 use crate::Type;
 use crate::debug::DebugInfo;
@@ -20,7 +20,7 @@ use crate::sig::{Id, Mismatch, Shape, Unfit};
 use crate::syntax::{Syntax, callee, unescape};
 use crate::types::{FieldNode, Held, TypeFault, TypeId, TypeNode, Types, check_type};
 
-type N<'a> = Node<'a, Syntax, crate::parser::Flavor>;
+type N<'a> = Element<'a, Syntax, crate::parser::Flavor>;
 
 /// Parse `source` and compile it against `env`, with the default
 /// [`Options`].
@@ -633,7 +633,7 @@ impl<'a> Compiler<'a> {
     /// entered expecting it and must have it.
     fn run(&mut self, root: N<'a>, expected: Option<&Type>) -> Result<(), Diagnostic> {
         let expected = match expected {
-            Some(ty) => Some(self.intern(ty, *root.span())?),
+            Some(ty) => Some(self.intern(ty, root.span())?),
             None => None,
         };
 
@@ -641,7 +641,7 @@ impl<'a> Compiler<'a> {
         let mut work = vec![Work::Enter(root, expect)];
 
         while let Some(item) = work.pop() {
-            self.span = *item.node().span();
+            self.span = item.node().span();
 
             // Every step that fails has taken the values of its parts and
             // left none of its own, so the expression it is about gets the
@@ -696,7 +696,7 @@ impl<'a> Compiler<'a> {
                         .values
                         .last_mut()
                         .ok_or_else(|| internal("an empty parenthesis"))?;
-                    value.span = *node.span();
+                    value.span = node.span();
                 }
                 Work::Call(node, overloads, name, path) => {
                     self.call(node, overloads, name, path)?;
@@ -718,7 +718,7 @@ impl<'a> Compiler<'a> {
                 Work::Record { node, names, want } => self.record_exit(node, names, want)?,
                 Work::Discard(node, n) => {
                     self.pop_n(n)?;
-                    self.push(self.error, *node.span());
+                    self.push(self.error, node.span());
                 }
             }
         }
@@ -732,7 +732,7 @@ impl<'a> Compiler<'a> {
         expect: Expect,
         work: &mut Vec<Work<'a>>,
     ) -> Result<(), Diagnostic> {
-        let span = *node.span();
+        let span = node.span();
         let mut parts = exprs(node);
         let want = self.expected(expect);
 
@@ -822,10 +822,9 @@ impl<'a> Compiler<'a> {
                     self.find_path(name)
                         .map(|associated| Work::Path(node, associated, text))
                 } else {
-                    match self.function(&text, *name.span()) {
+                    match self.function(&text, name.span()) {
                         Ok(overloads) => {
-                            let path =
-                                self.root(ReferenceKind::Function, &text, *name.span(), span);
+                            let path = self.root(ReferenceKind::Function, &text, name.span(), span);
                             Ok(Work::Call(node, overloads, text, path))
                         }
                         Err(error) => Err(error),
@@ -1116,7 +1115,7 @@ impl<'a> Compiler<'a> {
     /// `None::<T>`, an `Option<T>` whatever is expected, which is
     /// reported if it is another type.
     fn annotated(&mut self, node: N<'a>, want: Option<TypeId>) -> Result<(), Diagnostic> {
-        let span = *node.span();
+        let span = node.span();
         let text = node
             .children()
             .find(|n| n.value() == Syntax::TypeToken)
@@ -1178,7 +1177,7 @@ impl<'a> Compiler<'a> {
             let at = node
                 .children()
                 .find(|n| n.value() == Syntax::Args)
-                .map_or(*node.span(), |n| *n.span());
+                .map_or(node.span(), |n| n.span());
 
             self.report(Diagnostic::new(
                 at,
@@ -1213,7 +1212,7 @@ impl<'a> Compiler<'a> {
     /// After the argument of `Some(...)`.
     fn some(&mut self, node: N<'a>) -> Result<(), Diagnostic> {
         let value = self.pop()?;
-        let span = *node.span();
+        let span = node.span();
 
         if value.ty == self.error {
             self.push(self.error, span);
@@ -1304,11 +1303,11 @@ impl<'a> Compiler<'a> {
 
         methods::find_path(self.text(ty), self.text(name)).map_err(|error| match error {
             PathError::UnknownType => Diagnostic::new(
-                *ty.span(),
+                ty.span(),
                 ErrorKind::UnknownPathType(self.text(ty).to_owned()),
             ),
             PathError::Unknown(ty, available) => Diagnostic::new(
-                *name.span(),
+                name.span(),
                 ErrorKind::UnknownAssociated {
                     ty,
                     name: self.text(name).to_owned(),
@@ -1321,7 +1320,7 @@ impl<'a> Compiler<'a> {
     fn unary(&mut self, node: N<'a>, start: usize) -> Result<(), Diagnostic> {
         let op = operator(node).ok_or_else(|| internal("a unary without an operator"))?;
         let value = self.pop()?;
-        let span = *node.span();
+        let span = node.span();
 
         let (want, instr) = match op {
             Syntax::Minus => (self.int, Instr::Neg),
@@ -1365,7 +1364,7 @@ impl<'a> Compiler<'a> {
         let op = operator(node).ok_or_else(|| internal("a binary without an operator"))?;
         let right = self.pop()?;
         let left = self.pop()?;
-        let span = *node.span();
+        let span = node.span();
 
         let (instr, result) = match op {
             Syntax::Plus => (Instr::Add, self.int),
@@ -1418,7 +1417,7 @@ impl<'a> Compiler<'a> {
         let op = operator(node).ok_or_else(|| internal("a binary without an operator"))?;
         let right = self.pop()?;
         let left = self.pop()?;
-        let span = *node.span();
+        let span = node.span();
 
         let jump = self
             .jumps
@@ -1467,7 +1466,7 @@ impl<'a> Compiler<'a> {
         let args = args_of(node);
         let values = self.pop_n(args.len())?;
         let found = values.iter().map(|v| v.ty).collect::<Vec<_>>();
-        let span = *node.span();
+        let span = node.span();
 
         if self.any_error(&values) {
             self.push(self.error, span);
@@ -1591,7 +1590,7 @@ impl<'a> Compiler<'a> {
     ) -> Result<(), Diagnostic> {
         let args = args_of(node);
         let values = self.pop_n(args.len())?;
-        let span = *node.span();
+        let span = node.span();
 
         if self.any_error(&values) {
             self.push(self.error, span);
@@ -1721,7 +1720,7 @@ impl<'a> Compiler<'a> {
         let mismatch = match unfit {
             Unfit::Mismatch(mismatch) => mismatch,
             Unfit::Argument(n, param, t) => {
-                let at = values.get(n).map_or(*node.span(), |v| v.span);
+                let at = values.get(n).map_or(node.span(), |v| v.span);
                 let t = t.map(|t| self.shown(t, at));
                 Mismatch::Argument(n, param.describe(t.as_ref()))
             }
@@ -1747,7 +1746,7 @@ impl<'a> Compiler<'a> {
                 let at = node
                     .children()
                     .find(|n| n.value() == Syntax::Args)
-                    .map_or(*node.span(), |n| *n.span());
+                    .map_or(node.span(), |n| n.span());
 
                 Diagnostic::new(
                     at,
@@ -1790,7 +1789,7 @@ impl<'a> Compiler<'a> {
         let view = Id(&self.types, receiver.ty);
 
         let Some(method) = methods::find(view, name) else {
-            let at = *name_node.span();
+            let at = name_node.span();
             let available = methods::method_names(view);
             self.report(Diagnostic::new(
                 at,
@@ -1813,7 +1812,7 @@ impl<'a> Compiler<'a> {
 
         for n in 0..args.len() {
             let ty = match (method.sig.param(n), bound) {
-                (Some(param), Some(t)) => self.resolve_shape(param, t, *node.span()).ok().flatten(),
+                (Some(param), Some(t)) => self.resolve_shape(param, t, node.span()).ok().flatten(),
                 _ => None,
             };
             expects.push(ty.map_or(Expect::Nothing, Expect::Type));
@@ -1828,7 +1827,7 @@ impl<'a> Compiler<'a> {
         let args = args_of(node);
         let values = self.pop_n(args.len())?;
         let receiver = self.pop()?;
-        let span = *node.span();
+        let span = node.span();
 
         if self.any_error(&values) {
             self.push(self.error, span);
@@ -1876,7 +1875,7 @@ impl<'a> Compiler<'a> {
         let receiver = self.pop()?;
         let name_node = name_of(node).ok_or_else(|| internal("a field without a name"))?;
         let name = self.text(name_node);
-        self.read_field(receiver, name, *name_node.span(), *node.span(), true)
+        self.read_field(receiver, name, name_node.span(), node.span(), true)
     }
 
     /// Read the field `name` of `receiver`, `at` naming it.
@@ -1939,20 +1938,20 @@ impl<'a> Compiler<'a> {
         let operand = self.pop()?;
 
         if operand.ty == self.error {
-            self.push(self.error, *node.span());
+            self.push(self.error, node.span());
             return Ok(());
         }
 
         let Some(TypeNode::Option(value)) = self.types.get(operand.ty) else {
             return Err(Diagnostic::new(
-                *node.span(),
-                ErrorKind::UnwrapNonOption(self.shown(operand.ty, *node.span())),
+                node.span(),
+                ErrorKind::UnwrapNonOption(self.shown(operand.ty, node.span())),
             ));
         };
 
         let value = *value;
         self.emit(Instr::Unwrap(operand.ty));
-        self.push_path(value, *node.span(), operand.path);
+        self.push_path(value, node.span(), operand.path);
         Ok(())
     }
 
@@ -1981,15 +1980,9 @@ impl<'a> Compiler<'a> {
                 match name {
                     Some(name) => {
                         self.pop()?;
-                        return self.read_field(
-                            receiver,
-                            &name,
-                            *index.span(),
-                            *node.span(),
-                            false,
-                        );
+                        return self.read_field(receiver, &name, index.span(), node.span(), false);
                     }
-                    None => Some(Diagnostic::new(*index.span(), ErrorKind::RecordIndex)),
+                    None => Some(Diagnostic::new(index.span(), ErrorKind::RecordIndex)),
                 }
             }
             _ => Some(Diagnostic::new(
@@ -2016,7 +2009,7 @@ impl<'a> Compiler<'a> {
             .ok_or_else(|| internal("an index without an index"))?;
 
         if self.any_error(&[index, list]) {
-            self.push(self.error, *node.span());
+            self.push(self.error, node.span());
             return Ok(());
         }
 
@@ -2043,7 +2036,7 @@ impl<'a> Compiler<'a> {
                     Instr::MapIndex(list.ty)
                 });
                 self.record_index(list.path, true, index_node);
-                self.push_path(value, *node.span(), list.path);
+                self.push_path(value, node.span(), list.path);
                 return Ok(());
             }
             _ => return Err(internal("indexing other than a list or a map")),
@@ -2061,14 +2054,14 @@ impl<'a> Compiler<'a> {
 
         self.emit(Instr::Index(entry));
         self.record_index(list.path, false, index_node);
-        self.push_path(entry, *node.span(), list.path);
+        self.push_path(entry, node.span(), list.path);
         Ok(())
     }
 
     fn list(&mut self, node: N<'a>, start: usize) -> Result<(), Diagnostic> {
         let n = exprs(node).count();
         let values = self.pop_n(n)?;
-        let span = *node.span();
+        let span = node.span();
 
         let Some(first) = values.first() else {
             return Err(internal("a list literal of no entries"));
@@ -2151,7 +2144,7 @@ impl<'a> Compiler<'a> {
             .collect::<Vec<_>>();
 
         if parts.is_empty() {
-            return self.contextual(Blank::Map, want, expect, *node.span());
+            return self.contextual(Blank::Map, want, expect, node.span());
         }
 
         // Names as keys make a record, literals a map, as the first key
@@ -2184,7 +2177,7 @@ impl<'a> Compiler<'a> {
             };
 
             match self.key(key) {
-                MapKey::Literal(literal) => keys.push((literal, *key.span())),
+                MapKey::Literal(literal) => keys.push((literal, key.span())),
                 MapKey::Broken => fits = false,
                 MapKey::Other => {
                     let kind = if literal_first && key.value() == Syntax::Name {
@@ -2193,7 +2186,7 @@ impl<'a> Compiler<'a> {
                         ErrorKind::MapKeyLiteral
                     };
 
-                    self.report(Diagnostic::new(*key.span(), kind));
+                    self.report(Diagnostic::new(key.span(), kind));
                     fits = false;
                 }
             }
@@ -2236,7 +2229,7 @@ impl<'a> Compiler<'a> {
             values.push(*value);
         }
 
-        let span = *node.span();
+        let span = node.span();
 
         let key = match keys.first() {
             Some((KeyLit::Int(_), _)) => self.int,
@@ -2294,7 +2287,7 @@ impl<'a> Compiler<'a> {
             values.push(value);
 
             if key.value() == Syntax::Name {
-                fields.push((self.text(key), *key.span(), value));
+                fields.push((self.text(key), key.span(), value));
                 continue;
             }
 
@@ -2303,7 +2296,7 @@ impl<'a> Compiler<'a> {
             // A key with a syntax error inside is reported already.
             if !matches!(self.key(key), MapKey::Broken) {
                 self.report(Diagnostic::new(
-                    *key.span(),
+                    key.span(),
                     ErrorKind::RecordKeyMixed { record: true },
                 ));
             }
@@ -2369,7 +2362,7 @@ impl<'a> Compiler<'a> {
         want: Option<TypeId>,
     ) -> Result<(), Diagnostic> {
         let values = self.pop_n(names.len())?;
-        let span = *node.span();
+        let span = node.span();
 
         if self.any_error(&values) {
             self.push(self.error, span);
@@ -2560,7 +2553,7 @@ impl<'a> Compiler<'a> {
         key: TypeId,
     ) -> Result<(), Diagnostic> {
         let values = self.pop_n(order.len())?;
-        let span = *node.span();
+        let span = node.span();
 
         // The values in the order they are written.
         let mut written = vec![None; order.len()];
@@ -2664,7 +2657,7 @@ fn literal(node: N<'_>, source: &str) -> (Option<Literal>, Span<u32>) {
         _ => None,
     };
 
-    (literal, *node.span())
+    (literal, node.span())
 }
 
 /// Whether `node` is an integer literal written in hexadecimal, under

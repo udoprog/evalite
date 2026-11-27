@@ -1,4 +1,4 @@
-use syntree::{Builder, EmptyVec, Span, TreeIndex};
+use syntree::{Builder, Span};
 
 use crate::error::{Delimiter, Diagnostic, Diagnostics, ErrorKind, Found, Nesting, Reporter};
 use crate::lexer::{Lexer, Token, parse_int, span};
@@ -7,11 +7,10 @@ use crate::syntax::Syntax;
 
 syntree::flavor! {
     /// The tree flavor: `u32` node pointers (source length is already limited
-    /// to `u32`) and no token index, which evalite never queries.
+    /// to `u32`).
     pub(crate) struct Flavor {
         type Index = u32;
         type Width = u32;
-        type Indexes = EmptyVec<TreeIndex<Self>>;
     }
 }
 
@@ -381,7 +380,7 @@ impl Parser<'_> {
     }
 
     fn close_at(&mut self, c: &Checkpoint, kind: Syntax) -> Result<(), Diagnostic> {
-        self.tree.close_at(c, kind).map_err(internal)?;
+        self.tree.close_at(*c, kind).map_err(internal)?;
         Ok(())
     }
 
@@ -471,7 +470,7 @@ impl Parser<'_> {
     /// being parsed from now on.
     fn recovered(&mut self, start: Checkpoint) -> Result<(), Diagnostic> {
         self.close_at(&start, Syntax::Error)?;
-        self.start = Some(start.clone());
+        self.start = Some(start);
         self.primary = Some(start);
         Ok(())
     }
@@ -488,7 +487,7 @@ impl Parser<'_> {
         let c = self.checkpoint()?;
 
         if self.start.is_none() {
-            self.start = Some(c.clone());
+            self.start = Some(c);
         }
 
         match token.kind {
@@ -736,7 +735,7 @@ impl Parser<'_> {
         };
 
         if self.start.is_none() {
-            self.start = Some(c.clone());
+            self.start = Some(c);
         }
 
         if skip {
@@ -908,12 +907,12 @@ impl Parser<'_> {
     /// where the operand they make up starts, and whether a comparison was
     /// reduced for another comparison, which do not chain.
     fn reduce(&mut self, power: u8) -> Result<(Checkpoint, bool), Diagnostic> {
-        let mut left = self.start.clone();
+        let mut left = self.start;
         let mut chained = false;
 
         loop {
             let (start, kind) = match self.frames.last() {
-                Some(Frame::Prefix { start }) => (start.clone(), Syntax::Unary),
+                Some(Frame::Prefix { start }) => (*start, Syntax::Unary),
                 Some(Frame::Binary {
                     start,
                     power: p,
@@ -926,11 +925,11 @@ impl Parser<'_> {
                     } else {
                         Syntax::Binary
                     };
-                    (start.clone(), kind)
+                    (*start, kind)
                 }
                 Some(Frame::Entry { start, colon, .. }) if power == 0 => {
                     let kind = if *colon { Syntax::Entry } else { Syntax::Error };
-                    (start.clone(), kind)
+                    (*start, kind)
                 }
                 _ => break,
             };
@@ -979,7 +978,7 @@ impl Parser<'_> {
             return Ok(None);
         };
 
-        let Some(primary) = self.primary.clone() else {
+        let Some(primary) = self.primary else {
             return Err(internal("an operator without a primary"));
         };
 
