@@ -100,6 +100,31 @@ Comparisons do not chain: `a < b < c` is an error.
 | records | `{boxes: Int, "Brawl (bar)": Int}`, with fields sorted by name. Read with `.boxes`, or `["Brawl (bar)"]` for a field that isn't a valid name. Expressions have no record literals. |
 | `Map<K, V>` | `K` is `Int` or `String`, which is checked at declaration (`DeclareError`) and in stored tables. Read with `m[k]` (a run error when missing) or `m.get(k)`. |
 
+**Option literals:** `Some(e)` is an `Option<T>` of `e`'s `T`. `None` takes
+its type from where it is written, the *expected type* (3.3), and is a compile
+error without one (`` `None` needs a type from where it is used ``) or where
+the expected type is not an option. `Some` and `None` are reserved in
+expressions; declared names are lowercase, so no value or function can take
+them (`some`, `none` stay legal names). Where an expected type comes from:
+
+- a list's entries and a map's values: the list's or map's own expected type,
+  else the first sibling found to have a type, before or after it
+  (`[None, Some(1)]`, `{1: None, 2: Some(3)}`);
+- `Some(...)` expected to be `Option<T>` expects `T` of its argument;
+- a host function's parameter, when every overload of that many arguments
+  agrees on it (`f(None)`);
+- a method's parameter, with `T` bound by its receiver
+  (`opt.unwrap_or(None)` on an `Option<Option<Int>>`);
+- the operands of `==`/`!=`, each the other's type. `==` still takes only
+  `Int`s and `Bool`s, so this gives only the better error today;
+- parentheses pass it through.
+
+Not covered (gaps, each a later card if wanted): a path call's arguments
+(`Option::unwrap_or(x, None)`), a `None` nested inside a sibling rather than
+being one (`[Some(None), Some(Some(1))]`, as `[Some(None)]` waits on nothing
+it is a sibling of), and a program's declared result type, which the compile
+API does not have. An explicit annotation (`None::<T>`) is phase 4 (8838ea9b).
+
 **Operators:**
 
 - `+ - * / %` take `Int`s.
@@ -278,6 +303,34 @@ two have one checker and identical errors (section 9).
   - other lists emit `Instr::List { len, entry }`.
 - `&&`/`||` emit `And(skip)`/`Or(skip)` with a forward skip that is patched
   after the right operand.
+- Expected types (2, option literals):
+  - types are still found bottom-up; the expected type is only passed down,
+    as `Work::Enter(node, Expect)`, where `Expect` is nothing, a `TypeId`,
+    or a *sibling slot*. Only `None` needs it; every other expression is
+    still checked against its context where the context takes it, so a
+    mismatch reads as before;
+  - a sibling slot (`Compiler::siblings`) is one group: a list's entries, a
+    map's values (in key order, as they are compiled), the operands of `==`.
+    `Work::Settle` after each sibling gives the slot the first non-error
+    type; an entry entered later reads it in O(1);
+  - a `None` entered before its slot has a type is *pending*: it emits
+    `Instr::None` of a placeholder type (`TypeId(u32::MAX - 1)`, like the
+    error type never in the table) and records (instruction, stack value) in
+    the slot. When the slot gets its type each pending `None` is patched once,
+    or reported if the type is not an option; `Work::Finish` after the last
+    sibling reports what is still pending. No code before a pending `None` is
+    truncated (constant folding stops at `None`), so the index stays valid;
+  - every expected type is a `TypeId` handle, copied, never a cloned `Type`.
+    Host function parameters and a method's resolved parameters are interned
+    once per call, as checking the call already does. So the walk stays
+    linear (`check_tests::option_literals_are_linear`);
+  - alternatives: unification with type variables (a fresh variable per
+    `None`, solved at the end) handles every nesting, but needs a
+    substitution table, an occurs check and a second pass to emit typed code,
+    for a language whose only unknowns are `None` and, later, `[]`/`{}`.
+    Explicit-only annotations (`None::<Int>` everywhere) are simpler still,
+    but noisy for the common case where the context is plain; they come as
+    phase 4 for the cases context does not reach.
 - `finish` hands the parts to `Program::verify`. The compiler never states the
   program's memory: the verifier computes it, so compiled and stored programs
   are checked the same way.
@@ -562,6 +615,7 @@ The `Instr` enum in `program.rs`:
 | `List { len, entry }` | move the top `len` entries from the stack into a new heap block |
 | `Min(n)`, `Max(n)`, `Clamp` | `Int` folds. `Clamp` errors when low > high |
 | `UnwrapOr(opt)`, `Unwrap(opt)`, `IsSome(opt)`, `IsNone(opt)` | options, tagged or niche, decided by `opt`'s type |
+| `Some(opt)`, `None(opt)` | make an option of type `opt`: `Some` puts a present tag below its value when `opt` is tagged and is a no-op in a niche; `None` pushes an absent tag and zeros, or `Word::NONE` |
 | `Len` | a list's or map's length from its reference |
 | `Call(f)` | call host function `f` |
 | `MapIndex(map)`, `MapGet(map)` | binary search. A missing key is an error naming the key, or an absent option |
@@ -933,10 +987,10 @@ the number alone and checks it before it decodes the body, so bytes of a
 later format whose body changed layout are refused as `WrongFormat`, not
 `NotDecoded`.
 
-**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 8 (4 added `Map`,
+**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 9 (4 added `Map`,
 5 map literals, 6 each global's slot and the layout fingerprint, 7 dropped
 `Memory::globals`, as a program's values are in the store, not the
-machine, 8 moved the number ahead of the body). The body is
+machine, 8 moved the number ahead of the body, 9 added `Some` and `None`). The body is
 `Stored { types, constants, globals, functions, code, result, memory, layout }`,
 where each global is (name, type, slot). `layout` is last, so a length
 prefix's offset doesn't depend on its varint width.

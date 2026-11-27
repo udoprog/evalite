@@ -436,6 +436,31 @@ const CASES: &[(&str, &str)] = &[
     ("maybe", "none"),
     ("label(3)", "none"),
     ("maybe_track", "some({boxes: 5, count: [5]})"),
+    // Some, None, tagged and in a niche
+    ("Some(2)", "some(2)"),
+    ("Some(true)", "some(true)"),
+    ("Some(name)", "some(\"Essence\")"),
+    ("Some(health)", "some({boxes: 1, count: [1]})"),
+    ("Some(Some(2))", "some(some(2))"),
+    ("[Some(2), None]", "[some(2), none]"),
+    (
+        "[None, Some(name), None]",
+        "[none, some(\"Essence\"), none]",
+    ),
+    (
+        "[None, Some(health)]",
+        "[none, some({boxes: 1, count: [1]})]",
+    ),
+    (
+        "[Some(Some(1)), Some(None), None]",
+        "[some(some(1)), some(none), none]",
+    ),
+    ("{2: Some(3), 1: None}", "{1: none, 2: some(3)}"),
+    ("[None, bonus][0].unwrap_or(7)", "7"),
+    ("[None, Some(health)][1]!.boxes", "1"),
+    ("Some(bonus).unwrap_or(None)", "some(2)"),
+    ("[maybe_track, None].get(1)", "some(none)"),
+    ("[None, Some(3), None][1]! + 1", "4"),
     // Len
     ("levels.len()", "3"),
     ("[1].len()", "1"),
@@ -547,6 +572,8 @@ fn every_instruction_is_covered() {
         Instr::Call(0),
         Instr::MapIndex(TypeId(0)),
         Instr::MapGet(TypeId(0)),
+        Instr::Some(TypeId(0)),
+        Instr::None(TypeId(0)),
     ];
 
     let mut seen = HashSet::new();
@@ -2076,7 +2103,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
     let n = |rng: &mut Rng| rng.below(5) as u32;
     let ty = |rng: &mut Rng| TypeId(rng.below(types as usize + 2) as u32);
 
-    match rng.below(36) {
+    match rng.below(38) {
         0 => Instr::Int([0, 1, -1, i64::MIN, i64::MAX][rng.below(5)]),
         1 => Instr::Bool(rng.below(2) == 0),
         2 => Instr::Const(n(rng)),
@@ -2124,6 +2151,8 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
             keys: n(rng),
             map: ty(rng),
         },
+        35 => Instr::Some(ty(rng)),
+        36 => Instr::None(ty(rng)),
         _ => Instr::Call(n(rng)),
     }
 }
@@ -2161,6 +2190,8 @@ fn nudge(rng: &mut Rng, instr: Instr) -> Instr {
         Instr::Unwrap(ty) => Instr::Unwrap(TypeId(d(ty.0))),
         Instr::MapIndex(ty) => Instr::MapGet(TypeId(d(ty.0))),
         Instr::MapGet(ty) => Instr::MapIndex(TypeId(d(ty.0))),
+        Instr::Some(ty) => Instr::None(TypeId(d(ty.0))),
+        Instr::None(ty) => Instr::Some(TypeId(d(ty.0))),
         Instr::Map { keys, map } if keys % 2 == 0 => Instr::Map { keys: d(keys), map },
         Instr::Map { keys, map } => Instr::Map {
             keys,

@@ -789,6 +789,26 @@ impl<'a> Run<'a> {
 
                 Word::bool(none == matches!(instr, Instr::IsNone(..)))
             }
+            Instr::Some(option) => {
+                // A tagged option's tag goes below its value; any other's
+                // value is its own present option.
+                if let Some(width) = types.tagged(option) {
+                    let value = self.below(width)?;
+                    self.reserve(1)?;
+                    self.copy(value, width, value.saturating_add(1))?;
+                    self.put(Some(value), Word::present(true))?;
+                }
+
+                return Ok(next);
+            }
+            Instr::None(option) => {
+                match types.tagged(option) {
+                    Some(width) => self.push_absent(width)?,
+                    None => self.push(Word::NONE)?,
+                }
+
+                return Ok(next);
+            }
             Instr::Len => {
                 let (_, len) = self.pop()?.as_reference()?;
                 Word::int(i64::try_from(len).map_err(|_| fault(Fault::ListTooLongToCount))?)

@@ -7,7 +7,7 @@ use crate::message::{Invalid, Message, StoreError};
 use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 8;
+pub(crate) const FORMAT: u32 = 9;
 
 /// How many nodes the globals' and host functions' types may have
 /// together, each written out in full, as [`Program::globals`] and
@@ -110,6 +110,11 @@ pub(crate) enum Instr {
         keys: u32,
         map: TypeId,
     },
+    /// `Some(value)` of this option type: its value on top of the stack
+    /// made present.
+    Some(TypeId),
+    /// `None` of this option type.
+    None(TypeId),
 }
 
 /// A value in a constant list.
@@ -796,6 +801,21 @@ impl Verifier<'_> {
 
                     need(stack.pop(), Some(option))?;
                     self.find(TypeNode::Bool)?
+                }
+                Instr::Some(option) => {
+                    let Some(TypeNode::Option(value)) = self.types.get(option) else {
+                        return Err(fail(Invalid::WrapNonOption));
+                    };
+
+                    need(stack.pop(), Some(*value))?;
+                    option
+                }
+                Instr::None(option) => {
+                    if !matches!(self.types.get(option), Some(TypeNode::Option(..))) {
+                        return Err(fail(Invalid::WrapNonOption));
+                    }
+
+                    option
                 }
                 Instr::Len => {
                     let counted = stack.pop().and_then(|ty| match self.types.get(ty)? {

@@ -160,8 +160,29 @@ pub(crate) fn references_parsed(
     Ok(recorder.map(Recorder::finish).unwrap_or_default())
 }
 
+/// The type the context of an expression expects of it, which gives
+/// `None` its type and is passed on to what the expression holds. Only
+/// `None` needs it: every other expression is still typed by its parts,
+/// and checked against its context where the context takes it.
+#[derive(Debug, Clone, Copy)]
+enum Expect {
+    Nothing,
+    Type(TypeId),
+    /// The type of the first sibling, of the slot of
+    /// [`Compiler::siblings`], that has been found to have one.
+    Sibling(usize),
+}
+
 enum Work<'a> {
-    Enter(N<'a>),
+    Enter(N<'a>, Expect),
+    /// After a sibling of the slot `usize`, which gives the slot its type
+    /// unless an earlier sibling has.
+    Settle(N<'a>, usize),
+    /// After the siblings of the slot `usize`: a `None` among them still
+    /// waiting for a type has none.
+    Finish(N<'a>, usize),
+    /// After the argument of `Some(...)`.
+    Some(N<'a>),
     /// After a unary operator's operand, whose code starts at `usize`.
     Unary(N<'a>, usize),
     Binary(N<'a>),
@@ -210,7 +231,10 @@ impl<'a> Work<'a> {
     /// The node it is about.
     fn node(&self) -> N<'a> {
         match self {
-            Work::Enter(node)
+            Work::Enter(node, _)
+            | Work::Settle(node, _)
+            | Work::Finish(node, _)
+            | Work::Some(node)
             | Work::Unary(node, _)
             | Work::Binary(node)
             | Work::Logic(node)
@@ -229,6 +253,16 @@ impl<'a> Work<'a> {
             | Work::Discard(node, _) => *node,
         }
     }
+}
+
+/// A group of siblings, which each expect the type of the first of them
+/// found to have one.
+#[derive(Default)]
+struct Sibling {
+    ty: Option<TypeId>,
+    /// Each `None` among them written before that type is known: where its
+    /// instruction is in the code and its value on the stack.
+    pending: Vec<(usize, usize)>,
 }
 
 /// A value the code so far leaves on the stack.
@@ -272,6 +306,12 @@ struct Compiler<'a> {
     reporter: Reporter,
     /// The references so far, when they are asked for.
     recorder: Option<Recorder>,
+    /// Each group of siblings: a list's entries, a map's values, the
+    /// operands of `==`.
+    siblings: Vec<Sibling>,
+    /// The type of a `None` waiting for a sibling to give it its type.
+    /// Like [`error`](Self::error), it is no type of `types`.
+    pending: TypeId,
 }
 
 impl<'a> Compiler<'a> {
@@ -303,6 +343,8 @@ impl<'a> Compiler<'a> {
             error: TypeId(u32::MAX),
             reporter,
             recorder: None,
+            siblings: Vec::new(),
+            pending: TypeId(u32::MAX - 1),
         })
     }
 
@@ -436,7 +478,7 @@ impl<'a> Compiler<'a> {
     /// continuing past it. Only an error in evalite itself, or in the size
     /// of the program, stops it.
     fn run(&mut self, root: N<'a>) -> Result<(), Diagnostic> {
-        let mut work = vec![Work::Enter(root)];
+        let mut work = vec![Work::Enter(root, Expect::Nothing)];
 
         while let Some(item) = work.pop() {
             self.span = *item.node().span();
@@ -460,7 +502,10 @@ impl<'a> Compiler<'a> {
     fn step(&mut self, item: Work<'a>, work: &mut Vec<Work<'a>>) -> Result<(), Diagnostic> {
         {
             match item {
-                Work::Enter(node) => self.enter(node, work)?,
+                Work::Enter(node, expect) => self.enter(node, expect, work)?,
+                Work::Settle(_, slot) => self.settle(slot),
+                Work::Finish(_, slot) => self.finish_slot(slot),
+                Work::Some(node) => self.some(node)?,
                 Work::Unary(node, start) => self.unary(node, start)?,
                 Work::Binary(node) => self.binary(node)?,
                 Work::Logic(node) => {
@@ -507,9 +552,15 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn enter(&mut self, node: N<'a>, work: &mut Vec<Work<'a>>) -> Result<(), Diagnostic> {
+    fn enter(
+        &mut self,
+        node: N<'a>,
+        expect: Expect,
+        work: &mut Vec<Work<'a>>,
+    ) -> Result<(), Diagnostic> {
         let span = *node.span();
         let mut parts = exprs(node);
+        let want = self.expected(expect);
 
         match node.value() {
             Syntax::Integer => {
@@ -531,6 +582,10 @@ impl<'a> Compiler<'a> {
                 self.emit(Instr::Const(c));
                 self.push(ty, span);
             }
+            Syntax::Name if self.text(node) == "None" => match (want, expect) {
+                (None, Expect::Sibling(slot)) => self.defer_none(slot, span)?,
+                _ => self.none(want, span)?,
+            },
             Syntax::Name => {
                 let name = self.text(node);
                 let (at, ty) = self.global(name, span)?;
@@ -541,32 +596,50 @@ impl<'a> Compiler<'a> {
             Syntax::Paren => {
                 let inner = parts.next().ok_or_else(|| internal("an empty `(`"))?;
                 work.push(Work::Paren(node));
-                work.push(Work::Enter(inner));
+                work.push(Work::Enter(
+                    inner,
+                    want.map_or(Expect::Nothing, Expect::Type),
+                ));
             }
             Syntax::Unary => {
                 let operand = parts.next().ok_or_else(|| internal("a lone operator"))?;
                 work.push(Work::Unary(node, self.code.len()));
-                work.push(Work::Enter(operand));
+                work.push(Work::Enter(operand, Expect::Nothing));
             }
             Syntax::Binary => {
                 let (Some(left), Some(right)) = (parts.next(), parts.next()) else {
                     return Err(internal("a binary operator without two operands"));
                 };
 
+                let mut left_expect = Expect::Nothing;
+
                 if matches!(operator(node), Some(Syntax::AndAnd | Syntax::OrOr)) {
                     work.push(Work::LogicExit(node));
-                    work.push(Work::Enter(right));
+                    work.push(Work::Enter(right, Expect::Nothing));
                     work.push(Work::Logic(node));
+                } else if matches!(operator(node), Some(Syntax::EqEq | Syntax::NotEq)) {
+                    // Each operand is expected to be of the other's type.
+                    let slot = self.sibling_slot();
+                    work.push(Work::Binary(node));
+                    work.push(Work::Finish(right, slot));
+                    work.push(Work::Settle(right, slot));
+                    work.push(Work::Enter(right, Expect::Sibling(slot)));
+                    work.push(Work::Settle(left, slot));
+                    left_expect = Expect::Sibling(slot);
                 } else {
                     work.push(Work::Binary(node));
-                    work.push(Work::Enter(right));
+                    work.push(Work::Enter(right, Expect::Nothing));
                 }
 
-                work.push(Work::Enter(left));
+                work.push(Work::Enter(left, left_expect));
             }
             Syntax::Call => {
                 let (name, text) =
                     callee(node, self.source).ok_or_else(|| internal("a call without a name"))?;
+
+                if text == "Some" {
+                    return self.enter_some(node, want, work);
+                }
 
                 let found = if name.value() == Syntax::Path {
                     self.find_path(name)
@@ -582,16 +655,27 @@ impl<'a> Compiler<'a> {
                     }
                 };
 
+                let args = args_of(node);
+                let mut expects = vec![Expect::Nothing; args.len()];
+
                 match found {
-                    Ok(found) => work.push(found),
+                    Ok(found) => {
+                        if let Work::Call(_, overloads, ..) = &found {
+                            for (n, expect) in expects.iter_mut().enumerate() {
+                                *expect = self.param_expect(overloads, args.len(), n);
+                            }
+                        }
+
+                        work.push(found);
+                    }
                     Err(error) if error.is_fatal() => return Err(error),
                     Err(error) => {
                         self.report(error);
-                        work.push(Work::Discard(node, args_of(node).len()));
+                        work.push(Work::Discard(node, args.len()));
                     }
                 }
 
-                push_args(work, node);
+                push_expected(work, &args, &expects);
             }
             Syntax::Method | Syntax::Field | Syntax::Index => {
                 let receiver = parts.next().ok_or_else(|| internal("no receiver"))?;
@@ -601,32 +685,250 @@ impl<'a> Compiler<'a> {
                     Syntax::Field => Work::Field(node),
                     _ => Work::Index(node),
                 });
-                work.push(Work::Enter(receiver));
+                work.push(Work::Enter(receiver, Expect::Nothing));
             }
             Syntax::Unwrap => {
                 let operand = parts.next().ok_or_else(|| internal("no operand"))?;
                 work.push(Work::Unwrap(node));
-                work.push(Work::Enter(operand));
+                work.push(Work::Enter(operand, Expect::Nothing));
             }
             Syntax::Error => {
                 // Its error is reported; what it holds is checked, but
                 // nothing about it.
                 let parts = parts.collect::<Vec<_>>();
                 work.push(Work::Discard(node, parts.len()));
-                work.extend(parts.into_iter().rev().map(Work::Enter));
+                work.extend(
+                    parts
+                        .into_iter()
+                        .rev()
+                        .map(|n| Work::Enter(n, Expect::Nothing)),
+                );
             }
             Syntax::List => {
                 work.push(Work::List {
                     node,
                     start: self.code.len(),
                 });
+
+                let entry = match want.and_then(|want| self.types.get(want)) {
+                    Some(TypeNode::List(entry)) => Some(*entry),
+                    _ => None,
+                };
+
                 let entries = parts.collect::<Vec<_>>();
-                work.extend(entries.into_iter().rev().map(Work::Enter));
+                self.push_siblings(work, entries, entry);
             }
-            Syntax::Map => self.map(node, work)?,
+            Syntax::Map => self.map(node, want, work)?,
             kind => return Err(internal(format!("{kind:?} is not an expression"))),
         }
 
+        Ok(())
+    }
+
+    /// The type `expect` expects, if it is known by now.
+    fn expected(&self, expect: Expect) -> Option<TypeId> {
+        let ty = match expect {
+            Expect::Nothing => None,
+            Expect::Type(ty) => Some(ty),
+            Expect::Sibling(slot) => self.siblings.get(slot).and_then(|s| s.ty),
+        };
+
+        ty.filter(|ty| *ty != self.error)
+    }
+
+    /// A new group of siblings, of no type yet.
+    fn sibling_slot(&mut self) -> usize {
+        let slot = self.siblings.len();
+        self.siblings.push(Sibling::default());
+        slot
+    }
+
+    /// After a sibling of `slot`: the slot takes its type, unless an
+    /// earlier sibling gave it one or it is in error or waiting, and each
+    /// `None` waiting for it gets it.
+    fn settle(&mut self, slot: usize) {
+        let ty = self.values.last().map(|v| v.ty);
+        let ty = ty.filter(|ty| *ty != self.error && *ty != self.pending);
+
+        let Some(sibling) = self.siblings.get_mut(slot) else {
+            return;
+        };
+
+        let (Some(ty), None) = (ty, sibling.ty) else {
+            return;
+        };
+
+        sibling.ty = Some(ty);
+        let pending = std::mem::take(&mut sibling.pending);
+        let option = matches!(self.types.get(ty), Some(TypeNode::Option(_)));
+
+        for (code, value) in pending {
+            let Some(value) = self.values.get_mut(value) else {
+                continue;
+            };
+
+            if option {
+                value.ty = ty;
+
+                if let Some(instr) = self.code.get_mut(code) {
+                    *instr = Instr::None(ty);
+                }
+            } else {
+                value.ty = self.error;
+                let span = value.span;
+                let expected = self.ty(ty);
+                self.report(Diagnostic::new(span, ErrorKind::NoneType(Some(expected))));
+            }
+        }
+    }
+
+    /// After the siblings of `slot`: each `None` still waiting has no type.
+    fn finish_slot(&mut self, slot: usize) {
+        let pending = match self.siblings.get_mut(slot) {
+            Some(sibling) => std::mem::take(&mut sibling.pending),
+            None => return,
+        };
+
+        for (_, value) in pending {
+            if let Some(value) = self.values.get_mut(value) {
+                value.ty = self.error;
+                let span = value.span;
+                self.report(Diagnostic::new(span, ErrorKind::NoneType(None)));
+            }
+        }
+    }
+
+    /// `None` among the siblings of `slot`, before any has a type: its
+    /// instruction is given its type when a later sibling has one.
+    fn defer_none(&mut self, slot: usize, span: Span<u32>) -> Result<(), Diagnostic> {
+        let at = (self.code.len(), self.values.len());
+        let sibling = self
+            .siblings
+            .get_mut(slot)
+            .ok_or_else(|| internal("a `None` of no siblings"))?;
+        sibling.pending.push(at);
+        self.emit(Instr::None(self.pending));
+        self.push(self.pending, span);
+        Ok(())
+    }
+
+    /// Enter `nodes`, siblings in order, each expected to be `ty`, or of
+    /// the type of the first of them found to have one.
+    fn push_siblings(&mut self, work: &mut Vec<Work<'a>>, nodes: Vec<N<'a>>, ty: Option<TypeId>) {
+        if let Some(ty) = ty {
+            work.extend(
+                nodes
+                    .into_iter()
+                    .rev()
+                    .map(|n| Work::Enter(n, Expect::Type(ty))),
+            );
+            return;
+        }
+
+        let slot = self.sibling_slot();
+
+        if let Some(last) = nodes.last() {
+            work.push(Work::Finish(*last, slot));
+        }
+
+        for node in nodes.into_iter().rev() {
+            work.push(Work::Settle(node, slot));
+            work.push(Work::Enter(node, Expect::Sibling(slot)));
+        }
+    }
+
+    /// What argument `n` of `len` is expected to be: the parameter every
+    /// overload of that many parameters has there, if they agree.
+    fn param_expect(&mut self, overloads: &[Overload], len: usize, n: usize) -> Expect {
+        let mut params = overloads
+            .iter()
+            .filter(|o| o.params.len() == len)
+            .filter_map(|o| o.params.get(n));
+
+        let Some(first) = params.next() else {
+            return Expect::Nothing;
+        };
+
+        if params.any(|p| p != first) {
+            return Expect::Nothing;
+        }
+
+        match self.types.intern(first) {
+            Some(ty) => Expect::Type(ty),
+            None => Expect::Nothing,
+        }
+    }
+
+    /// `None`, of the option type `want` expects.
+    fn none(&mut self, want: Option<TypeId>, span: Span<u32>) -> Result<(), Diagnostic> {
+        let Some(want) = want else {
+            return Err(Diagnostic::new(span, ErrorKind::NoneType(None)));
+        };
+
+        if !matches!(self.types.get(want), Some(TypeNode::Option(_))) {
+            return Err(Diagnostic::new(
+                span,
+                ErrorKind::NoneType(Some(self.ty(want))),
+            ));
+        }
+
+        self.emit(Instr::None(want));
+        self.push(want, span);
+        Ok(())
+    }
+
+    /// `Some(...)`: its one argument is expected to be what `want`, if an
+    /// option, holds.
+    fn enter_some(
+        &mut self,
+        node: N<'a>,
+        want: Option<TypeId>,
+        work: &mut Vec<Work<'a>>,
+    ) -> Result<(), Diagnostic> {
+        let args = args_of(node);
+
+        if args.len() != 1 {
+            let at = node
+                .children()
+                .find(|n| n.value() == Syntax::Args)
+                .map_or(*node.span(), |n| *n.span());
+
+            self.report(Diagnostic::new(
+                at,
+                ErrorKind::ArgumentCount {
+                    callee: Callee::Function("Some".to_owned()),
+                    expected: Arity::Exactly(1),
+                    found: args.len(),
+                },
+            ));
+            work.push(Work::Discard(node, args.len()));
+            push_args(work, node);
+            return Ok(());
+        }
+
+        let value = match want.and_then(|want| self.types.get(want)) {
+            Some(TypeNode::Option(value)) => Expect::Type(*value),
+            _ => Expect::Nothing,
+        };
+
+        work.push(Work::Some(node));
+        push_expected(work, &args, &[value]);
+        Ok(())
+    }
+
+    /// After the argument of `Some(...)`.
+    fn some(&mut self, node: N<'a>) -> Result<(), Diagnostic> {
+        let value = self.pop()?;
+        let span = *node.span();
+
+        if value.ty == self.error {
+            self.push(self.error, span);
+            return Ok(());
+        }
+
+        let ty = self.node(TypeNode::Option(value.ty), span)?;
+        self.emit(Instr::Some(ty));
+        self.push(ty, span);
         Ok(())
     }
 
@@ -1096,13 +1398,27 @@ impl<'a> Compiler<'a> {
             return Ok(());
         };
 
+        // Each argument is expected to be its parameter, with `T` as the
+        // receiver binds it.
+        let args = args_of(node);
+        let mut t = None;
+        let bound = method.receiver.bind(&receiver_type, &mut t);
+        let mut expects = Vec::with_capacity(args.len());
+
+        for n in 0..args.len() {
+            let param = method.sig.param(n).filter(|_| bound);
+            let ty = param.and_then(|p| p.resolve(t.as_ref()));
+            let ty = ty.and_then(|ty| self.types.intern(&ty));
+            expects.push(ty.map_or(Expect::Nothing, Expect::Type));
+        }
+
         let callee = Callee::Method {
             receiver: receiver_type,
             name: name.to_owned(),
         };
 
         work.push(Work::MethodExit(node, method, callee));
-        push_args(work, node);
+        push_expected(work, &args, &expects);
         Ok(())
     }
 
@@ -1243,7 +1559,7 @@ impl<'a> Compiler<'a> {
             _ if receiver.ty == self.error => None,
             Some(TypeNode::List(_) | TypeNode::Map { .. }) => {
                 work.push(Work::IndexExit(node));
-                work.push(Work::Enter(index));
+                work.push(Work::Enter(index, Expect::Nothing));
                 return Ok(());
             }
             Some(TypeNode::Record(_)) => {
@@ -1278,7 +1594,7 @@ impl<'a> Compiler<'a> {
 
         // The index is still checked, then dropped with the receiver.
         work.push(Work::Discard(node, 2));
-        work.push(Work::Enter(index));
+        work.push(Work::Enter(index, Expect::Nothing));
         Ok(())
     }
 
@@ -1406,7 +1722,12 @@ impl<'a> Compiler<'a> {
 
     /// A map literal: its keys are checked here, as literals of one type
     /// given once each, then its entries are compiled in key order.
-    fn map(&mut self, node: N<'a>, work: &mut Vec<Work<'a>>) -> Result<(), Diagnostic> {
+    fn map(
+        &mut self,
+        node: N<'a>,
+        want: Option<TypeId>,
+        work: &mut Vec<Work<'a>>,
+    ) -> Result<(), Diagnostic> {
         // An `Error` part is an entry without its `:`, already reported.
         let parts = node
             .children()
@@ -1456,7 +1777,12 @@ impl<'a> Compiler<'a> {
             });
             let values = values.collect::<Vec<_>>();
             work.push(Work::Discard(node, values.len()));
-            work.extend(values.into_iter().rev().map(Work::Enter));
+            work.extend(
+                values
+                    .into_iter()
+                    .rev()
+                    .map(|n| Work::Enter(n, Expect::Nothing)),
+            );
             return Ok(());
         };
 
@@ -1493,7 +1819,13 @@ impl<'a> Compiler<'a> {
             keys: c,
             key,
         });
-        work.extend(values.into_iter().rev().map(Work::Enter));
+
+        let value = match want.and_then(|want| self.types.get(want)) {
+            Some(TypeNode::Map { value, .. }) => Some(*value),
+            _ => None,
+        };
+
+        self.push_siblings(work, values, value);
         Ok(())
     }
 
@@ -1788,7 +2120,20 @@ fn args_of(node: N<'_>) -> Vec<N<'_>> {
 }
 
 fn push_args<'a>(work: &mut Vec<Work<'a>>, node: N<'a>) {
-    work.extend(args_of(node).into_iter().rev().map(Work::Enter));
+    work.extend(
+        args_of(node)
+            .into_iter()
+            .rev()
+            .map(|n| Work::Enter(n, Expect::Nothing)),
+    );
+}
+
+/// Enter `args`, each expected to be what `expects` has at its index.
+fn push_expected<'a>(work: &mut Vec<Work<'a>>, args: &[N<'a>], expects: &[Expect]) {
+    for (n, arg) in args.iter().enumerate().rev() {
+        let expect = expects.get(n).copied().unwrap_or(Expect::Nothing);
+        work.push(Work::Enter(*arg, expect));
+    }
 }
 
 fn count(n: usize) -> Result<u32, Diagnostic> {

@@ -3057,7 +3057,7 @@ fn map_literal_repeated_key_labels() {
 /// map with its keys, a constant list in key order.
 #[test]
 fn map_literal_code() {
-    use Instr::*;
+    use Instr::{Global, Int, Map};
 
     let program = compile("{2: wits, 0x1: 3, -5: 4}", &env()).unwrap();
     let map = program.result;
@@ -3523,4 +3523,139 @@ fn reading_from_slots() {
     let run = machine.load(&program, &globals).unwrap();
     assert_eq!(run.run().unwrap().value(), &Value::int(42));
     assert_eq!(globals.get("a"), Some(Value::some(Value::int(7))));
+}
+
+#[test]
+fn option_literals() {
+    types(&[
+        ("Some(1)", "Option<Int>"),
+        ("Some(Some(true))", "Option<Option<Bool>>"),
+        ("Some(health)", "Option<{boxes: Int, count: List<Int>}>"),
+        ("[Some(1), None]", "List<Option<Int>>"),
+        ("[None, Some(1)]", "List<Option<Int>>"),
+        ("[None, None, bonus, None]", "List<Option<Int>>"),
+        ("[[Some(1)], [None]]", "List<List<Option<Int>>>"),
+        ("[Some(Some(1)), Some(None)]", "List<Option<Option<Int>>>"),
+        ("{1: None, 2: Some(3)}", "Map<Int, Option<Int>>"),
+        ("{2: Some(3), 1: None}", "Map<Int, Option<Int>>"),
+        (
+            r#"{"a": [bonus], "b": [None]}"#,
+            "Map<String, List<Option<Int>>>",
+        ),
+        ("Some(bonus).unwrap_or(None)", "Option<Int>"),
+        ("Some(bonus).unwrap_or(Some(1))", "Option<Int>"),
+        ("[Some(1)].get(0).unwrap_or(None)", "Option<Int>"),
+        ("count(health, 1)", "Int"),
+    ]);
+}
+
+#[test]
+fn option_literals_from_host_functions() {
+    let mut env = env();
+    env.function("bump", [Type::option(Type::int())], Type::int())
+        .unwrap();
+    env.function("either", [Type::option(Type::int())], Type::int())
+        .unwrap();
+    env.function("either", [Type::option(Type::bool())], Type::int())
+        .unwrap();
+
+    let program = compile("bump(None) + bump(Some(2))", &env).unwrap();
+    assert_eq!(program.result_type(), Type::int());
+
+    let (message, _) = error_in("either(None)", &env);
+    assert!(message.starts_with("`None` needs a type"), "{message}");
+    assert_eq!(
+        compile("either(Some(true))", &env).unwrap().result_type(),
+        Type::int()
+    );
+}
+
+#[test]
+fn option_literal_errors() {
+    let untyped = "`None` needs a type from where it is used, such as beside `Some(...)` in a list or as an argument of an option";
+
+    errors(&[
+        ("None", untyped, "None"),
+        ("[None]", untyped, "None"),
+        // Only a sibling gives a waiting `None` its type, not a sibling
+        // of what holds it.
+        ("[Some(None), Some(Some(1))]", untyped, "None"),
+        ("Some(None)", untyped, "None"),
+        ("None.is_some()", untyped, "None"),
+        ("(None)", untyped, "None"),
+        (
+            "[1, None]",
+            "`None` is an option, but an Int is expected here",
+            "None",
+        ),
+        (
+            "[None, 1]",
+            "`None` is an option, but an Int is expected here",
+            "None",
+        ),
+        (
+            "[Some(1), Some(None)]",
+            "`None` is an option, but an Int is expected here",
+            "None",
+        ),
+        (
+            "wits.min(None)",
+            "`None` is an option, but an Int is expected here",
+            "None",
+        ),
+        (
+            "bonus.unwrap_or(None)",
+            "`None` is an option, but an Int is expected here",
+            "None",
+        ),
+        (
+            "chart(None, name)",
+            "`None` is an option, but an Int is expected here",
+            "None",
+        ),
+        ("Some()", "`Some` takes 1 argument, found 0", "()"),
+        ("Some(1, 2)", "`Some` takes 1 argument, found 2", "(1, 2)"),
+        (
+            "[Some(1), Some(true)]",
+            "entry 2 of this list is Option<Bool>, but the first is Option<Int>, a list's entries have one type",
+            "Some(true)",
+        ),
+        (
+            "Some(1) + 1",
+            "`+` takes Int and Int, found Option<Int> and Int, unwrap the optional value first with `.unwrap_or(...)`",
+            "Some(1) + 1",
+        ),
+    ]);
+}
+
+/// Checking `None`s that wait for a sibling's type, and `Some`s nested
+/// deep, is linear: each waiting `None` is given its type once.
+#[test]
+fn option_literals_are_linear() {
+    let options = Options::new().max_len(usize::MAX).max_depth(usize::MAX);
+
+    let shapes: [fn(usize) -> String; 3] = [
+        |n| format!("[{}Some(1)]", "None, ".repeat(n)),
+        |n| {
+            format!(
+                "{{{}0: Some(1)}}",
+                (1..=n).map(|k| format!("{k}: None, ")).collect::<String>()
+            )
+        },
+        |n| format!("{}None{}", "[Some(1), Some(".repeat(n), ")]".repeat(n)),
+    ];
+
+    for shape in shapes {
+        let mut times = Vec::new();
+
+        for n in [5_000usize, 20_000] {
+            let source = shape(n);
+            let start = Instant::now();
+            let _ = compile_with(&source, &env(), &options);
+            times.push(start.elapsed().as_secs_f64());
+        }
+
+        // Four times the input takes four times as long, not sixteen.
+        assert!(times[1] < times[0] * 10.0 + 0.05, "{times:?}");
+    }
 }

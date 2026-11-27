@@ -517,6 +517,9 @@ pub(crate) enum ErrorKind {
     },
     /// `{}`, whose key and value types are unknown.
     EmptyMap,
+    /// `None` where no option type is expected, or where the type given
+    /// is expected, which is not an option.
+    NoneType(Option<Type>),
     /// A value whose type nests more than
     /// [`MAX_TYPE_DEPTH`](crate::MAX_TYPE_DEPTH) levels.
     TypeTooDeep,
@@ -939,6 +942,14 @@ impl fmt::Display for Diagnostic {
             ErrorKind::EmptyMap => f.write_str(
                 "an empty map `{}` has no key or value type, give it at least one entry",
             ),
+            ErrorKind::NoneType(None) => f.write_str(
+                "`None` needs a type from where it is used, such as beside `Some(...)` in a list or as an argument of an option",
+            ),
+            ErrorKind::NoneType(Some(expected)) => {
+                let expected = expected.to_string();
+                let a = article(&expected);
+                write!(f, "`None` is an option, but {a} {expected} is expected here")
+            }
             ErrorKind::TypeTooDeep => write!(
                 f,
                 "this value's type nests more than {}",
