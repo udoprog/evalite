@@ -325,6 +325,8 @@ enum Up {
     Indexed(Option<Type>),
     /// An option unwrapped with `!`.
     OptionOf,
+    /// The value of `Some(...)`.
+    SomeOf,
 }
 
 /// The types a place takes.
@@ -595,6 +597,59 @@ impl Want {
         }
     }
 
+    /// What `Some(_)` takes in this place: the value of each option it
+    /// takes.
+    fn some_of(self) -> Self {
+        match self {
+            Self::Any => Self::Any,
+            Self::OneOf(patterns) if patterns.contains(&Pattern::Option) => Self::Any,
+            Self::OneOf(patterns) => Self::OneOf(
+                patterns
+                    .into_iter()
+                    .filter_map(|p| match p {
+                        Pattern::Type(Type(Kind::Option(t))) => Some(Pattern::Type(*t)),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The option types this takes, which `None` can be: only one named
+    /// in full, since `None` has no type of its own. Its type is known when
+    /// it is the one option type.
+    fn none(&self) -> Option<Option<Type>> {
+        let Self::OneOf(patterns) = self else {
+            return None;
+        };
+
+        let mut options = patterns.iter().filter_map(|p| match p {
+            Pattern::Type(ty @ Type(Kind::Option(_))) => Some(ty),
+            _ => None,
+        });
+
+        match (options.next()?, options.next()) {
+            (ty, None) => Some(Some(ty.clone())),
+            _ => Some(None),
+        }
+    }
+
+    /// Whether `Some(_)` fits in this place, and its type when known.
+    fn some(&self) -> Option<Option<Type>> {
+        let Self::OneOf(patterns) = self else {
+            return Some(None);
+        };
+
+        let mut options = patterns
+            .iter()
+            .filter(|p| matches!(p, Pattern::Type(Type(Kind::Option(_))) | Pattern::Option));
+
+        match (options.next()?, options.next()) {
+            (Pattern::Type(ty), None) => Some(Some(ty.clone())),
+            _ => Some(None),
+        }
+    }
+
     /// What `_!` gives in this place, if anything fits it: an option's
     /// value may be of any type, options too, so anything that fits here
     /// does. Its type is known when this takes one type alone.
@@ -614,6 +669,20 @@ impl Want {
             && !patterns.contains(&pattern)
         {
             patterns.push(pattern);
+        }
+    }
+}
+
+/// Whether `==` compares values of `ty`: an `Int`, a `Bool`, or an option
+/// of such a type.
+fn comparable(ty: &Type) -> bool {
+    let mut ty = ty;
+
+    loop {
+        match ty {
+            Type(Kind::Int | Kind::Bool) => return true,
+            Type(Kind::Option(inner)) => ty = inner,
+            _ => return false,
         }
     }
 }
@@ -682,7 +751,16 @@ impl Structure {
                     .map_err(CompleteKind::Receiver)?;
                 members(&program.result_type(), &want)
             }
-            _ => self.values(env, at, &want, root),
+            _ => {
+                // `None` takes its type from the expression, never from the
+                // type asked of its result, which compiling does not know.
+                let none = match (want.none(), root) {
+                    (Some(_), Some(_)) => self.want(env, at, None).none(),
+                    (none, _) => none,
+                };
+
+                self.values(env, at, &want, root, none)
+            }
         };
 
         let keep = {
@@ -814,7 +892,7 @@ impl Structure {
                         let other = if *left == at { *right } else { *left };
 
                         match self.type_of(env, other) {
-                            Some(ty @ (Type(Kind::Int) | Type(Kind::Bool))) => Want::exactly(ty),
+                            Some(ty) if comparable(&ty) => Want::exactly(ty),
                             _ => Want::OneOf(vec![
                                 Pattern::Type(Type::int()),
                                 Pattern::Type(Type::bool()),
@@ -823,6 +901,15 @@ impl Structure {
                     }
                     _ => Want::exactly(Type::int()),
                 },
+                Node(Repr::Call { function, args }) if function == "Some" => {
+                    if args.len() != 1 {
+                        break Want::OneOf(Vec::new());
+                    }
+
+                    steps_up.push(Up::SomeOf);
+                    at = parent;
+                    continue;
+                }
                 Node(Repr::Call { function, args }) => self.argument(env, function, args, at),
                 Node(Repr::Method {
                     receiver,
@@ -935,6 +1022,7 @@ impl Structure {
             Up::RecordField(field) => want.record_field(&field),
             Up::Indexed(key) => want.indexed(key.as_ref()),
             Up::OptionOf => want.option_of(),
+            Up::SomeOf => want.some_of(),
         })
     }
 
@@ -1089,6 +1177,7 @@ impl Structure {
         at: NodeId,
         want: &Want,
         root: Option<&Type>,
+        none: Option<Option<Type>>,
     ) -> Vec<Completion> {
         let mut out = Vec::new();
 
@@ -1226,6 +1315,35 @@ impl Structure {
                     Expr::Literal(repr)
                 });
             }
+        }
+
+        // `None` only where an option type is named, which gives it its
+        // type, and `Some(_)` wherever an option fits, but not to unwrap,
+        // since what it unwraps is known.
+        let unwrapped = matches!(
+            self.parent(at).and_then(|p| self.get(p)),
+            Some(Node(Repr::Unwrap { .. }))
+        );
+
+        if let Some(ty) = none.filter(|_| !unwrapped) {
+            offer(
+                &mut out,
+                "None".to_owned(),
+                CompletionKind::Literal,
+                ty,
+                None,
+                || Expr::Literal(Repr::Name("None".to_owned())),
+            );
+        }
+
+        if let Some(ty) = want.some().filter(|_| !unwrapped) {
+            let label = format!("Some({HOLE})");
+            offer(&mut out, label, CompletionKind::Literal, ty, None, || {
+                Expr::Call {
+                    function: "Some".to_owned(),
+                    args: 1,
+                }
+            });
         }
 
         let list = match want {

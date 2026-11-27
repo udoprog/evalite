@@ -185,8 +185,8 @@ fn every_message_with_and_without_a_program() {
                 found: Found::String,
                 in_some: true,
             },
-            "expected Int, found some(String)",
-            "expected another type, found some(String)",
+            "expected Int, found Some(String)",
+            "expected another type, found Some(String)",
         ),
         (
             Message::Mistyped {
@@ -221,8 +221,8 @@ fn every_message_with_and_without_a_program() {
                 found: Found::None,
                 in_some: false,
             },
-            "expected Int, found none",
-            "expected another type, found none",
+            "expected Int, found None",
+            "expected another type, found None",
         ),
         (
             Message::Mistyped {
@@ -230,8 +230,8 @@ fn every_message_with_and_without_a_program() {
                 found: Found::Some,
                 in_some: false,
             },
-            "expected Int, found some(..)",
-            "expected another type, found some(..)",
+            "expected Int, found Some(..)",
+            "expected another type, found Some(..)",
         ),
         (
             Message::Mistyped {
@@ -572,7 +572,7 @@ fn mistyped_nested_set_gives_path_then_setting() {
     let error = globals.set("strength", &Value::none()).unwrap_err();
     assert_eq!(
         set_messages(&error),
-        ["expected Int, found none", "while setting `strength`"]
+        ["expected Int, found None", "while setting `strength`"]
     );
 
     let error = globals
@@ -581,7 +581,7 @@ fn mistyped_nested_set_gives_path_then_setting() {
     assert_eq!(
         set_messages(&error),
         [
-            "expected Option<Int>, found some(Bool)",
+            "expected Option<Int>, found Some(Bool)",
             "while setting `bonus`"
         ]
     );

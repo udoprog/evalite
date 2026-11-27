@@ -323,7 +323,7 @@ fn type_errors() {
             &Value::some(s("two"))
         ),
         [
-            "expected Option<Int>, found some(String)",
+            "expected Option<Int>, found Some(String)",
             "while setting `sheet.bonus`"
         ]
     );

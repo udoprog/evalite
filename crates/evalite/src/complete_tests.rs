@@ -124,6 +124,7 @@ const ANY: &[&str] = &[
     "true",
     "false",
     r#""""#,
+    "Some(_)",
     "[_]",
     "{_: _}",
     "_ + _",
@@ -141,6 +142,18 @@ const ANY: &[&str] = &[
     "_ && _",
     "_ || _",
     "!_",
+    "_!",
+];
+
+/// What fits an `Option<Int>`'s place in [`env`] that the expression
+/// gives its type, so `None` checks there.
+const OPTION: &[&str] = &[
+    "bonus",
+    "dots.get(_)",
+    "health.count.get(_)",
+    "m.brawl",
+    "None",
+    "Some(_)",
     "_!",
 ];
 
@@ -188,6 +201,7 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
                 "dots.get(_)",
                 "health.count.get(_)",
                 "m.brawl",
+                "Some(_)",
                 "_!",
             ],
         ),
@@ -220,6 +234,22 @@ fn cases() -> Vec<(&'static str, usize, Option<Type>, Vec<&'static str>)> {
         ("_ == dead", 0, None, BOOL.to_vec()),
         ("wits != _", 0, None, INT.to_vec()),
         ("_ == _", 0, None, int_or_bool_sorted()),
+        // Option literals: `None` where the expression gives its type, and
+        // `Some(_)` wherever an option fits, holding what the option does.
+        ("[Some(1), _]", 0, None, OPTION.to_vec()),
+        ("[_, bonus]", 0, None, OPTION.to_vec()),
+        ("{1: bonus, 2: _}", 0, None, OPTION.to_vec()),
+        ("bonus == _", 0, None, OPTION.to_vec()),
+        ("_ != m.brawl", 0, None, OPTION.to_vec()),
+        ("[_]", 0, Some(Type::list(Type::option(Type::int()))), {
+            let mut v = OPTION.to_vec();
+            v.retain(|l| *l != "None");
+            v
+        }),
+        ("Some(_)", 0, None, ANY.to_vec()),
+        ("Some(_)", 0, Some(Type::option(Type::int())), INT.to_vec()),
+        ("[Some(_), bonus]", 0, None, INT.to_vec()),
+        ("Some(_, _)", 0, None, vec![]),
         // Call arguments, by the overloads the other arguments leave.
         ("count(_)", 0, None, vec!["health", "broken(_)", "_!"]),
         ("count(health, _)", 0, None, INT.to_vec()),
@@ -426,7 +456,7 @@ fn int_or_bool_sorted() -> Vec<&'static str> {
                 "m.brawl.unwrap_or(_)",
                 "m.flags.frenzy",
             ],
-            "table" | "broken(_)" | r#""""# | "[_]" | "{_: _}" => vec![],
+            "table" | "broken(_)" | r#""""# | "Some(_)" | "[_]" | "{_: _}" => vec![],
             a => vec![a],
         })
         .collect()
@@ -548,6 +578,11 @@ fn applying_completions() {
                 && s.root() == hole
             {
                 assert_eq!(&program.result_type(), root, "{s}");
+            }
+
+            // `None` alone has no type to compile to.
+            if completion.label == "None" {
+                continue;
             }
 
             if let (Some(ty), Insert::Expr(_)) = (&completion.ty, &completion.insert) {
@@ -1213,4 +1248,40 @@ fn record_literal_keys() {
     let mut s = s;
     s.apply(hole, &found[0]).unwrap();
     assert_eq!(s.to_text(), "{b: 1, a: _}");
+}
+
+/// A host function's option parameter takes `None` and `Some(_)`, which
+/// compile there once filled.
+#[test]
+fn option_parameters_take_option_literals() {
+    let mut env = env();
+    env.function("bump", [Type::option(Type::int())], Type::int())
+        .unwrap();
+
+    let labels = labels_in(&env, "bump(_)", 0);
+    assert!(labels.iter().any(|l| l == "None"), "{labels:?}");
+    assert!(labels.iter().any(|l| l == "Some(_)"), "{labels:?}");
+
+    let base = s("bump(_)");
+    let hole = base.holes()[0];
+
+    for label in ["None", "Some(_)"] {
+        let completion = base
+            .complete(&env, hole, None)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.label == label)
+            .unwrap();
+        assert_eq!(completion.kind(), CompletionKind::Literal);
+        assert_eq!(completion.ty(), Some(&Type::option(Type::int())));
+
+        let mut s = base.clone();
+        s.apply(hole, &completion).unwrap();
+
+        if let Some(inner) = s.holes().first().copied() {
+            s.replace(inner, Node(Repr::Int(2))).unwrap();
+        }
+
+        assert_eq!(s.compile(&env).unwrap().result_type(), Type::int(), "{s}");
+    }
 }

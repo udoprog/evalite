@@ -169,8 +169,13 @@ enum Expect {
     Nothing,
     Type(TypeId),
     /// The type of the first sibling, of the slot of
-    /// [`Compiler::siblings`], that has been found to have one.
-    Sibling(usize),
+    /// [`Compiler::siblings`], that has been found to have one, with
+    /// `depth` option layers taken off: an expression inside that many
+    /// `Some(...)` around a sibling, as `None` in `[Some(None), x]`.
+    Sibling {
+        slot: usize,
+        depth: usize,
+    },
 }
 
 enum Work<'a> {
@@ -269,10 +274,25 @@ impl<'a> Work<'a> {
 #[derive(Default)]
 struct Sibling {
     ty: Option<TypeId>,
-    /// Each `None`, `[]` or `{}` among them written before that type is
-    /// known: what it is, where its instruction is in the code and its
-    /// value on the stack.
-    pending: Vec<(Blank, usize, usize)>,
+    /// Each `None`, `[]` or `{}` among them, or inside `Some(...)` around
+    /// one, written before that type is known.
+    pending: Vec<Pending>,
+}
+
+/// A literal waiting for its sibling slot's type.
+#[derive(Clone, Copy)]
+struct Pending {
+    shape: Blank,
+    /// Where its instruction is in the code. The `depth` instructions after
+    /// it are the `Some`s around it, innermost first.
+    code: usize,
+    /// Where the sibling, the outermost `Some` around it or the literal
+    /// itself, is on the stack.
+    value: usize,
+    /// How many `Some(...)` are around it, inside the sibling.
+    depth: usize,
+    /// The literal's own span.
+    span: Span<u32>,
 }
 
 /// A literal typed only by its context: `None`, `[]` or `{}`.
@@ -643,10 +663,13 @@ impl<'a> Compiler<'a> {
             Syntax::Paren => {
                 let inner = parts.next().ok_or_else(|| internal("an empty `(`"))?;
                 work.push(Work::Paren(node));
-                work.push(Work::Enter(
-                    inner,
-                    want.map_or(Expect::Nothing, Expect::Type),
-                ));
+                // A sibling still without a type is waited for inside too.
+                let inner_expect = match (want, expect) {
+                    (Some(want), _) => Expect::Type(want),
+                    (None, Expect::Sibling { .. }) => expect,
+                    (None, _) => Expect::Nothing,
+                };
+                work.push(Work::Enter(inner, inner_expect));
             }
             Syntax::Unary => {
                 let operand = parts.next().ok_or_else(|| internal("a lone operator"))?;
@@ -670,9 +693,9 @@ impl<'a> Compiler<'a> {
                     work.push(Work::Binary(node));
                     work.push(Work::Finish(right, slot));
                     work.push(Work::Settle(right, slot));
-                    work.push(Work::Enter(right, Expect::Sibling(slot)));
+                    work.push(Work::Enter(right, Expect::Sibling { slot, depth: 0 }));
                     work.push(Work::Settle(left, slot));
-                    left_expect = Expect::Sibling(slot);
+                    left_expect = Expect::Sibling { slot, depth: 0 };
                 } else {
                     work.push(Work::Binary(node));
                     work.push(Work::Enter(right, Expect::Nothing));
@@ -685,7 +708,7 @@ impl<'a> Compiler<'a> {
                     callee(node, self.source).ok_or_else(|| internal("a call without a name"))?;
 
                 if text == "Some" {
-                    return self.enter_some(node, want, work);
+                    return self.enter_some(node, want, expect, work);
                 }
 
                 let found = if name.value() == Syntax::Path {
@@ -780,7 +803,20 @@ impl<'a> Compiler<'a> {
         let ty = match expect {
             Expect::Nothing => None,
             Expect::Type(ty) => Some(ty),
-            Expect::Sibling(slot) => self.siblings.get(slot).and_then(|s| s.ty),
+            Expect::Sibling { slot, depth } => {
+                // A layer is only waited in while the slot has no type, so
+                // this rarely walks.
+                let mut ty = self.siblings.get(slot).and_then(|s| s.ty);
+
+                for _ in 0..depth {
+                    ty = match self.types.get(ty?) {
+                        Some(TypeNode::Option(inner)) => Some(*inner),
+                        _ => None,
+                    };
+                }
+
+                ty
+            }
         };
 
         ty.filter(|ty| *ty != self.error)
@@ -810,26 +846,60 @@ impl<'a> Compiler<'a> {
 
         sibling.ty = Some(ty);
         let pending = std::mem::take(&mut sibling.pending);
+        let mut layers = Vec::new();
 
-        for (shape, code, value) in pending {
-            let fits = shape.fits(self.types.get(ty));
+        for p in pending {
+            // The type of each `Some` around it, outermost first, then its
+            // own, each the option the one before holds.
+            layers.clear();
+            layers.push(ty);
 
-            let Some(value) = self.values.get_mut(value) else {
+            for _ in 0..p.depth {
+                let inner = match layers.last().and_then(|ty| self.types.get(*ty)) {
+                    Some(TypeNode::Option(inner)) => *inner,
+                    _ => break,
+                };
+
+                layers.push(inner);
+            }
+
+            let (own, peeled) = match layers.last() {
+                Some(own) if layers.len() == p.depth.saturating_add(1) => (*own, true),
+                _ => (ty, false),
+            };
+
+            let fits = peeled && p.shape.fits(self.types.get(own));
+
+            if fits {
+                if let Some(instr) = self.code.get_mut(p.code) {
+                    *instr = p.shape.instr(own);
+                }
+
+                // The `Some`s, innermost first.
+                for (n, layer) in layers.iter().rev().skip(1).enumerate() {
+                    let at = p.code.saturating_add(n).saturating_add(1);
+
+                    if let Some(instr) = self.code.get_mut(at) {
+                        *instr = Instr::Some(*layer);
+                    }
+                }
+            }
+
+            let Some(value) = self.values.get_mut(p.value) else {
                 continue;
             };
 
             if fits {
                 value.ty = ty;
-
-                if let Some(instr) = self.code.get_mut(code) {
-                    *instr = shape.instr(ty);
-                }
-            } else {
-                value.ty = self.error;
-                let span = value.span;
-                let expected = self.ty(ty);
-                self.report(Diagnostic::new(span, shape.error(Some(expected))));
+                continue;
             }
+
+            value.ty = self.error;
+
+            // A `Some` around it that the slot's type has no option for
+            // leaves it with no type, as written after a sibling.
+            let expected = peeled.then(|| self.ty(own));
+            self.report(Diagnostic::new(p.span, p.shape.error(expected)));
         }
     }
 
@@ -841,11 +911,10 @@ impl<'a> Compiler<'a> {
             None => return,
         };
 
-        for (shape, _, value) in pending {
-            if let Some(value) = self.values.get_mut(value) {
+        for p in pending {
+            if let Some(value) = self.values.get_mut(p.value) {
                 value.ty = self.error;
-                let span = value.span;
-                self.report(Diagnostic::new(span, shape.error(None)));
+                self.report(Diagnostic::new(p.span, p.shape.error(None)));
             }
         }
     }
@@ -860,20 +929,32 @@ impl<'a> Compiler<'a> {
         span: Span<u32>,
     ) -> Result<(), Diagnostic> {
         match (want, expect) {
-            (None, Expect::Sibling(slot)) => self.defer(shape, slot, span),
+            (None, Expect::Sibling { slot, depth }) => self.defer(shape, slot, depth, span),
             _ => self.typed(shape, want, span),
         }
     }
 
     /// `shape` among the siblings of `slot`, before any has a type: its
     /// instruction is given its type when a later sibling has one.
-    fn defer(&mut self, shape: Blank, slot: usize, span: Span<u32>) -> Result<(), Diagnostic> {
+    fn defer(
+        &mut self,
+        shape: Blank,
+        slot: usize,
+        depth: usize,
+        span: Span<u32>,
+    ) -> Result<(), Diagnostic> {
         let (code, value) = (self.code.len(), self.values.len());
         let sibling = self
             .siblings
             .get_mut(slot)
             .ok_or_else(|| internal("a literal of no siblings"))?;
-        sibling.pending.push((shape, code, value));
+        sibling.pending.push(Pending {
+            shape,
+            code,
+            value,
+            depth,
+            span,
+        });
         self.emit(shape.instr(self.pending));
         self.push(self.pending, span);
         Ok(())
@@ -900,7 +981,7 @@ impl<'a> Compiler<'a> {
 
         for node in nodes.into_iter().rev() {
             work.push(Work::Settle(node, slot));
-            work.push(Work::Enter(node, Expect::Sibling(slot)));
+            work.push(Work::Enter(node, Expect::Sibling { slot, depth: 0 }));
         }
     }
 
@@ -952,6 +1033,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         node: N<'a>,
         want: Option<TypeId>,
+        expect: Expect,
         work: &mut Vec<Work<'a>>,
     ) -> Result<(), Diagnostic> {
         let args = args_of(node);
@@ -975,9 +1057,16 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
 
-        let value = match want.and_then(|want| self.types.get(want)) {
-            Some(TypeNode::Option(value)) => Expect::Type(*value),
-            _ => Expect::Nothing,
+        let value = match (want, expect) {
+            // A sibling without a type yet: its argument waits a layer in.
+            (None, Expect::Sibling { slot, depth }) => Expect::Sibling {
+                slot,
+                depth: depth.saturating_add(1),
+            },
+            _ => match want.and_then(|want| self.types.get(want)) {
+                Some(TypeNode::Option(value)) => Expect::Type(*value),
+                _ => Expect::Nothing,
+            },
         };
 
         work.push(Work::Some(node));
@@ -992,6 +1081,14 @@ impl<'a> Compiler<'a> {
 
         if value.ty == self.error {
             self.push(self.error, span);
+            return Ok(());
+        }
+
+        // Around a literal waiting for its slot, it waits with it, and is
+        // given its type when the literal is.
+        if value.ty == self.pending {
+            self.emit(Instr::Some(self.pending));
+            self.push(self.pending, span);
             return Ok(());
         }
 
@@ -1155,9 +1252,7 @@ impl<'a> Compiler<'a> {
         }
 
         let fits = match op {
-            Syntax::EqEq | Syntax::NotEq => {
-                left.ty == right.ty && (left.ty == self.int || left.ty == self.bool)
-            }
+            Syntax::EqEq | Syntax::NotEq => left.ty == right.ty && self.types.comparable(left.ty),
             _ => left.ty == self.int && right.ty == self.int,
         };
 
@@ -1170,6 +1265,13 @@ impl<'a> Compiler<'a> {
                 },
             ));
         }
+
+        // Options are compared layer by layer, not as one word.
+        let instr = match (instr, self.types.get(left.ty)) {
+            (Instr::Eq, Some(TypeNode::Option(_))) => Instr::OptionEq(left.ty),
+            (Instr::Ne, Some(TypeNode::Option(_))) => Instr::OptionNe(left.ty),
+            (instr, _) => instr,
+        };
 
         self.emit(instr);
         self.push(result, span);
@@ -1866,12 +1968,11 @@ impl<'a> Compiler<'a> {
             });
             let values = values.collect::<Vec<_>>();
             work.push(Work::Discard(node, values.len()));
-            work.extend(
-                values
-                    .into_iter()
-                    .rev()
-                    .map(|n| Work::Enter(n, Expect::Nothing)),
-            );
+            let value = match want.and_then(|want| self.types.get(want)) {
+                Some(TypeNode::Map { value, .. }) => Some(*value),
+                _ => None,
+            };
+            self.push_siblings(work, values, value);
             return Ok(());
         };
 

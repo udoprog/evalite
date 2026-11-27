@@ -7,7 +7,7 @@ use crate::message::{Invalid, Message, StoreError};
 use crate::types::{TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
-pub(crate) const FORMAT: u32 = 11;
+pub(crate) const FORMAT: u32 = 12;
 
 /// How many nodes the globals' and host functions' types may have
 /// together, each written out in full, as [`Program::globals`] and
@@ -120,6 +120,11 @@ pub(crate) enum Instr {
     /// Make a record of this record type, of at least one field, on the
     /// heap: its fields' values, popped in name order, the first deepest.
     Record(TypeId),
+    /// `a == b`, `a != b` on two options of this type, which hold an
+    /// `Int`, a `Bool` or another such option: equal when both are absent
+    /// at the same depth, or present with equal values.
+    OptionEq(TypeId),
+    OptionNe(TypeId),
 }
 
 /// A value in a constant list.
@@ -848,6 +853,18 @@ impl Verifier<'_> {
                     }
 
                     ty
+                }
+                Instr::OptionEq(option) | Instr::OptionNe(option) => {
+                    let fits = matches!(self.types.get(option), Some(TypeNode::Option(..)))
+                        && self.types.comparable(option);
+
+                    if !fits {
+                        return Err(fail(Invalid::MixedCompare));
+                    }
+
+                    need(stack.pop(), Some(option))?;
+                    need(stack.pop(), Some(option))?;
+                    self.find(TypeNode::Bool)?
                 }
                 Instr::Len => {
                     let counted = stack.pop().and_then(|ty| match self.types.get(ty)? {

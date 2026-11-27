@@ -1859,10 +1859,14 @@ fn check_nodes(
             StructureKind::Hole
         } else {
             let name = match node {
+                // `None` and `Some(...)` are option literals, written as a
+                // name and a call.
                 Node(Repr::Name(name)) => {
-                    Some(name).filter(|n| !is_value_name(n) || is_reserved(n))
+                    Some(name).filter(|n| *n != "None" && (!is_value_name(n) || is_reserved(n)))
                 }
-                Node(Repr::Call { function, .. }) => Some(function).filter(|n| !is_callee(n)),
+                Node(Repr::Call { function, .. }) => {
+                    Some(function).filter(|n| *n != "Some" && !is_callee(n))
+                }
                 Node(Repr::Method {
                     name: Some(name), ..
                 })

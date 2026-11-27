@@ -28,7 +28,8 @@ use crate::syntax::Syntax;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Class {
-    /// A keyword: `true` or `false`.
+    /// A keyword: `true` or `false`, or the option literals `Some` and
+    /// `None`.
     Keyword,
     /// A name: a value or a function.
     Ident,
@@ -97,6 +98,9 @@ pub fn highlight(source: &str) -> impl Iterator<Item = Token> + '_ {
                     Syntax::NameToken if after_dot => Class::Member,
                     Syntax::NameToken if before(&lexer, Syntax::Colon) => Class::Member,
                     Syntax::NameToken if before(&lexer, Syntax::ColonColon) => Class::Type,
+                    Syntax::NameToken if is_option_literal(source.get(start..token.end)) => {
+                        Class::Keyword
+                    }
                     Syntax::NameToken => Class::Ident,
                     Syntax::OpenParen
                     | Syntax::CloseParen
@@ -129,6 +133,12 @@ pub fn highlight(source: &str) -> impl Iterator<Item = Token> + '_ {
             span: start..end,
         })
     })
+}
+
+/// Whether `name` is `Some` or `None`, which build options rather than
+/// name a value or a function.
+fn is_option_literal(name: Option<&str>) -> bool {
+    matches!(name, Some("Some" | "None"))
 }
 
 /// Whether `kind` is the next token past whitespace.

@@ -48,7 +48,7 @@ pub(crate) enum Message {
     /// reference can address.
     PastAddressSpace { store: u64, machine: u32 },
     /// A value is not of its declared type: it is `found` instead, inside
-    /// a `some(..)` when `in_some`.
+    /// a `Some(..)` when `in_some`.
     Mistyped {
         expected: TypeId,
         found: Found,
@@ -289,7 +289,9 @@ impl fmt::Display for Invalid {
             Self::NoSuchConstant => "the instruction names a constant there is not",
             Self::NoSuchGlobal => "the instruction names a value there is not",
             Self::GlobalsOverlap => "the value is held in words another value is held in",
-            Self::MixedCompare => "the instruction compares other than two Ints or two Bools",
+            Self::MixedCompare => {
+                "the instruction compares other than two Ints, two Bools or two options of them"
+            }
             Self::JumpPastEnd => "the instruction jumps past the end",
             Self::JumpsDisagree => {
                 "the instruction jumps where another jump lands with another stack"
@@ -611,7 +613,7 @@ impl fmt::Display for Shown<'_> {
                 }
 
                 if *in_some {
-                    f.write_str("some(")?;
+                    f.write_str("Some(")?;
                 }
 
                 write_found(f, p, *found)?;
@@ -835,8 +837,8 @@ fn write_found(f: &mut fmt::Formatter<'_>, p: Option<&dyn Names>, found: Found) 
         Found::List => f.write_str("a list"),
         Found::Record => f.write_str("a record"),
         Found::Map => f.write_str("a map"),
-        Found::None => f.write_str("none"),
-        Found::Some => f.write_str("some(..)"),
+        Found::None => f.write_str("None"),
+        Found::Some => f.write_str("Some(..)"),
         Found::RecordWithout { record, field } => match field_name(p, record, field) {
             Some(name) => write!(f, "a record without `{name}`"),
             None => f.write_str("a record without one of its fields"),

@@ -675,6 +675,23 @@ impl Types {
         None
     }
 
+    /// Whether `==` and `!=` compare values of type `id`: an `Int`, a
+    /// `Bool`, or an option of such a type, however deeply nested. Each
+    /// node holds an earlier one, so the walk ends within the types held.
+    pub(crate) fn comparable(&self, id: TypeId) -> bool {
+        let mut at = id;
+
+        for _ in 0..=self.nodes.len() {
+            match self.get(at) {
+                Some(TypeNode::Int | TypeNode::Bool) => return true,
+                Some(TypeNode::Option(inner)) => at = *inner,
+                _ => return false,
+            }
+        }
+
+        false
+    }
+
     /// Whether a value of type `id` is one word that is never
     /// [`Word::NONE`](crate::word::Word::NONE): a `Bool`, or a string, list
     /// or record, which are a word referring to their parts. An option of

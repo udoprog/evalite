@@ -838,7 +838,7 @@ fn host_errors() {
     );
     assert_eq!(
         fails_chain("nested()"),
-        "expected Int, found none: at `nested(..)[1].a`: while reading what `nested` returned: while running instruction 0: while running the program"
+        "expected Int, found None: at `nested(..)[1].a`: while reading what `nested` returned: while running instruction 0: while running the program"
     );
 
     // Without a host, any call fails.
@@ -895,12 +895,12 @@ fn setting_errors() {
         (
             "wits",
             Value::some(int(1)),
-            "expected Int, found some(..): while setting `wits`",
+            "expected Int, found Some(..): while setting `wits`",
         ),
         (
             "wits",
             Value::none(),
-            "expected Int, found none: while setting `wits`",
+            "expected Int, found None: while setting `wits`",
         ),
         (
             "bonus",
@@ -910,7 +910,7 @@ fn setting_errors() {
         (
             "bonus",
             Value::some(Value::bool(true)),
-            "expected Option<Int>, found some(Bool): while setting `bonus`",
+            "expected Option<Int>, found Some(Bool): while setting `bonus`",
         ),
         (
             "levels",
@@ -971,7 +971,7 @@ fn setting_errors() {
                 ("boxes", int(1)),
                 ("count", Value::list(vec![Value::none()])),
             ]),
-            "expected Int, found none: at `health.count[0]`: while setting `health`",
+            "expected Int, found None: at `health.count[0]`: while setting `health`",
         ),
         (
             "maybe_track",
@@ -1951,6 +1951,37 @@ fn list_of_optional_ints() {
         ("[l, [o]][1]", "[Some(-1)]"),
         ("many(2)", "[Some(0), Some(1)]"),
         ("many(3)[2].unwrap_or(-7)", "2"),
+        // Options compare layer by layer.
+        ("l[0] == None", "true"),
+        ("None == l[0]", "true"),
+        ("l[3] == Some(-1)", "true"),
+        ("l[3] != Some(-1)", "false"),
+        ("l[3] == o", "true"),
+        ("l[0] == o", "false"),
+        ("l[0] != o", "true"),
+        ("l[1] == l[2]", "false"),
+        ("l.get(0) == Some(None)", "true"),
+        ("l.get(0) == None", "false"),
+        ("l.get(9) == None", "true"),
+        ("l.get(9) == l.get(99)", "true"),
+        ("l.get(0) == l.get(9)", "false"),
+        ("l.get(4) == Some(Some(0))", "true"),
+        ("l.get(4) == Some(Some(1))", "false"),
+        ("l.get(4) == Some(None)", "false"),
+        ("Some(true) == Some(true)", "true"),
+        ("Some(Some(true)) != Some(None)", "true"),
+        ("Some(Some(false)) == Some(Some(false))", "true"),
+        ("[l[0] == None, o != None]", "[true, true]"),
+        // A `None` inside `Some(...)` typed by a later sibling.
+        ("[Some(None), Some(Some(1))]", "[Some(None), Some(Some(1))]"),
+        (
+            "[Some(Some(None)), Some(l.get(3))]",
+            "[Some(Some(None)), Some(Some(Some(-1)))]",
+        ),
+        ("Some(None) == Some(Some(1))", "false"),
+        ("Some(None) == l.get(0)", "true"),
+        ("[(None), o]", "[None, Some(-1)]"),
+        ("[Some([]), Some([1])]", "[Some([]), Some([1])]"),
     ];
 
     for (source, expected) in cases {
@@ -2135,7 +2166,7 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
     let n = |rng: &mut Rng| rng.below(5) as u32;
     let ty = |rng: &mut Rng| TypeId(rng.below(types as usize + 2) as u32);
 
-    match rng.below(40) {
+    match rng.below(42) {
         0 => Instr::Int([0, 1, -1, i64::MIN, i64::MAX][rng.below(5)]),
         1 => Instr::Bool(rng.below(2) == 0),
         2 => Instr::Const(n(rng)),
@@ -2187,6 +2218,8 @@ fn instruction(rng: &mut Rng, types: u32) -> Instr {
         36 => Instr::None(ty(rng)),
         37 => Instr::Empty(ty(rng)),
         38 => Instr::Record(ty(rng)),
+        39 => Instr::OptionEq(ty(rng)),
+        40 => Instr::OptionNe(ty(rng)),
         _ => Instr::Call(n(rng)),
     }
 }
@@ -2228,6 +2261,8 @@ fn nudge(rng: &mut Rng, instr: Instr) -> Instr {
         Instr::None(ty) => Instr::Some(TypeId(d(ty.0))),
         Instr::Empty(ty) => Instr::Empty(TypeId(d(ty.0))),
         Instr::Record(ty) => Instr::Record(TypeId(d(ty.0))),
+        Instr::OptionEq(ty) => Instr::OptionNe(TypeId(d(ty.0))),
+        Instr::OptionNe(ty) => Instr::OptionEq(TypeId(d(ty.0))),
         Instr::Map { keys, map } if keys % 2 == 0 => Instr::Map { keys: d(keys), map },
         Instr::Map { keys, map } => Instr::Map {
             keys,
@@ -2600,7 +2635,7 @@ fn map_setting_errors() {
         (
             "tags",
             Value::map([(Value::from("a b"), Value::some(Value::bool(true)))]),
-            r#"expected Option<Int>, found some(Bool): at `tags["a b"]`: while setting `tags`"#,
+            r#"expected Option<Int>, found Some(Bool): at `tags["a b"]`: while setting `tags`"#,
         ),
         (
             "tags",

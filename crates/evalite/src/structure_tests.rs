@@ -287,6 +287,10 @@ fn compiling_a_structure_matches_compiling_its_text() {
         "(1 < 2) == 1",
         "bonus.unwrap_or(true)",
         "wits.nope()",
+        "[None, Some(1), bonus]",
+        "bonus == None || Some(wits) != bonus",
+        "None",
+        "Some(1, 2)",
     ] {
         same_as_text(&s(text), &env);
     }

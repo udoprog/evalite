@@ -49,6 +49,12 @@ fn each_class() {
     );
 
     assert_eq!(texts("false")[0].0, Keyword);
+    assert_eq!(texts("None")[0], (Keyword, "None"));
+    assert_eq!(texts("Some(1)")[0], (Keyword, "Some"));
+    assert_eq!(texts("[Some(None)]")[3], (Keyword, "None"));
+    // A field or method of that name is still a member.
+    assert_eq!(texts("a.None")[2], (Member, "None"));
+    assert_eq!(texts("Somewhere")[0], (Ident, "Somewhere"));
     assert_eq!(texts("[1, 2]")[0], (Punctuation, "["));
 }
 

@@ -800,7 +800,7 @@ impl fmt::Display for Diagnostic {
                     (Syntax::Minus, 1) => "an Int",
                     (Syntax::Bang, 1) => "a Bool",
                     (Syntax::AndAnd | Syntax::OrOr, _) => "Bool and Bool",
-                    (Syntax::EqEq | Syntax::NotEq, _) => "two Ints or two Bools",
+                    (Syntax::EqEq | Syntax::NotEq, _) => "two Ints, two Bools or two options of them",
                     _ => "Int and Int",
                 };
 
@@ -811,6 +811,15 @@ impl fmt::Display for Diagnostic {
                     .join(" and ");
 
                 write!(f, "{} takes {expected}, found {found}", op.describe())?;
+
+                // Two options of one type compare when anything they hold
+                // does, so unwrapping them would not help.
+                if matches!(op, Syntax::EqEq | Syntax::NotEq)
+                    && matches!(operands.as_slice(), [a, b] if a == b)
+                {
+                    return Ok(());
+                }
+
                 unwrap_hint(f, operands)
             }
             ErrorKind::ArgumentCount {

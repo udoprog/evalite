@@ -12,7 +12,7 @@ use crate::globals::Globals;
 use crate::memory::{self, Fuel, Words, WordsMut, count, fault};
 use crate::message::{Context, Fault, Key, Location, MAX_KEY_SHOWN, Message, Op, Root, RunError};
 use crate::program::{Constant, HostFunction, Instr, Program, Scalar};
-use crate::types::TypeNode;
+use crate::types::{TypeId, TypeNode, Types};
 use crate::value::Value;
 use crate::word::Word;
 
@@ -567,6 +567,14 @@ impl<'a> Run<'a> {
                 let a = self.pop()?;
                 Word::bool((a == b) == matches!(instr, Instr::Eq))
             }
+            Instr::OptionEq(option) | Instr::OptionNe(option) => {
+                let width = types.width(option);
+                let b = self.below(width)?;
+                let a = self.below(width.saturating_mul(2))?;
+                let same = self.same_option(types, option, a, b, width)?;
+                self.drop_words(width.saturating_mul(2))?;
+                Word::bool(same == matches!(instr, Instr::OptionEq(..)))
+            }
             Instr::And(skip) | Instr::Or(skip) => {
                 let top = self.pop_bool()?;
                 let decides = top == matches!(instr, Instr::Or(..));
@@ -1111,6 +1119,41 @@ impl<'a> Run<'a> {
             .and_then(|top| top.checked_sub(self.stack_base))
             .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
         Ok(())
+    }
+
+    /// Whether the options of type `option` held at `a` and `b`, `width`
+    /// words each, are equal. Each tagged layer is a tag before the rest:
+    /// both absent is equal, whatever words follow, and both present goes
+    /// on to the next layer. The innermost is one word, an `Int` or a `Bool`
+    /// or a niche option of a `Bool`, compared as it is. It takes a step
+    /// per layer, and the layers are fewer than `width`.
+    fn same_option(
+        &self,
+        types: &Types,
+        option: TypeId,
+        a: usize,
+        b: usize,
+        width: usize,
+    ) -> Result<bool, RunError> {
+        let mut ty = option;
+
+        for at in 0..width {
+            let (x, y) = (self.get(a.checked_add(at))?, self.get(b.checked_add(at))?);
+
+            let Some(TypeNode::Option(inner)) =
+                types.get(ty).filter(|_| types.tagged(ty).is_some())
+            else {
+                return Ok(x == y);
+            };
+
+            match (x.as_bool()?, y.as_bool()?) {
+                (true, true) => ty = *inner,
+                (false, false) => return Ok(true),
+                _ => return Ok(false),
+            }
+        }
+
+        Err(fault(Fault::OutsideMemory))
     }
 
     /// Push an absent tagged option whose value is `width` words: its tag,

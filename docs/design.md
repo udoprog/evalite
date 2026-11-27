@@ -52,7 +52,7 @@ The invariants every change must keep:
   `checked_*` and `saturating_*` and returns errors.
 - **Every mistake is an error, before running where possible.** Type errors,
   unknown names and syntax errors are compile errors. Overflow, division by
-  zero, out-of-range indexes, missing map keys, unwrapping `none`, running out
+  zero, out-of-range indexes, missing map keys, unwrapping `None`, running out
   of fuel and host failures are run errors. Nothing converts implicitly.
 - **Small and strictly typed.** Each expression has one type. There are no
   loops, no user-defined functions and no closures, so every run terminates
@@ -109,20 +109,25 @@ them (`some`, `none` stay legal names). Where an expected type comes from:
 
 - a list's entries and a map's values: the list's or map's own expected type,
   else the first sibling found to have a type, before or after it
-  (`[None, Some(1)]`, `{1: None, 2: Some(3)}`);
+  (`[None, Some(1)]`, `{1: None, 2: Some(3)}`), also for a `None` inside
+  `Some(...)` of a sibling (`[Some(None), Some(Some(1))]`), and also when
+  the map's keys are in error (`{1: None, 1: Some(1)}` reports only the
+  repeated key);
 - `Some(...)` expected to be `Option<T>` expects `T` of its argument;
 - a host function's parameter, when every overload of that many arguments
   agrees on it (`f(None)`);
 - a method's parameter, with `T` bound by its receiver
   (`opt.unwrap_or(None)` on an `Option<Option<Int>>`);
-- the operands of `==`/`!=`, each the other's type. `==` still takes only
-  `Int`s and `Bool`s, so this gives only the better error today;
-- parentheses pass it through.
+- the operands of `==`/`!=`, each the other's type (`bonus == None`,
+  `Some(None) == Some(Some(1))`);
+- parentheses pass it through, a sibling's wait too (`[(None), Some(1)]`).
 
 Not covered (gaps, each a later card if wanted): a path call's arguments
-(`Option::unwrap_or(x, None)`), a `None` nested inside a sibling rather than
-being one (`[Some(None), Some(Some(1))]`, as `[Some(None)]` waits on nothing
-it is a sibling of), and a program's declared result type, which the compile
+(`Option::unwrap_or(x, None)`), a `None` inside a list, map or record that
+is itself a sibling (`[[None], [Some(1)]]`, `[{a: None}, {a: Some(1)}]`, as
+the inner literal is typed by its own parts and the slot's type comes only
+after it; the reverse order checks), which would need a field or entry path
+per pending literal where `Some(...)` needs only a depth, and a program's declared result type, which the compile
 API does not have. An explicit annotation (`None::<T>`) is phase 4 (8838ea9b).
 
 **Empty literals (phase 3):** `[]` is a `List<T>` and `{}` a `Map<K, V>` of
@@ -144,7 +149,13 @@ or an annotation.
 
 - `+ - * / %` take `Int`s.
 - `< <= > >=` take `Int`s and give `Bool`.
-- `== !=` take two `Int`s or two `Bool`s, and nothing else.
+- `== !=` take two values of one *comparable* type: `Int`, `Bool`, or an
+  option of a comparable type, however nested (`bonus == None`,
+  `Some(Some(true)) != Some(None)`). Two options are equal when both are
+  absent at the same layer, or both present with equal values. Strings,
+  lists, records and maps are not comparable. Two options of one type that is
+  not comparable get no "unwrap first" hint, since unwrapping would not
+  help.
 - `&& ||` take `Bool`s and short-circuit.
 - Unary `-` takes an `Int` and `!` a `Bool`.
 - Postfix `x!` unwraps an option, and fails the run when it is absent.
@@ -381,8 +392,17 @@ two have one checker and identical errors (section 9).
     slot gets its type each pending literal is patched once, or reported if
     the type is not of its kind (an option, a list, a map); `Work::Finish`
     after the last sibling reports what is still pending. No code before a
-    pending literal is truncated (constant folding stops at `None` and
-    `Empty`), so the index stays valid;
+    pending literal is truncated (constant folding stops at `None`, `Empty`
+    and `Some`), so the index stays valid;
+  - a sibling slot's `Expect` carries a *depth*: `Some(...)` in a slot with
+    no type yet enters its argument one layer deeper, and parentheses pass
+    it on unchanged. A pending literal records its depth and span
+    (`Pending`); each `Some` around it emits `Instr::Some` of the
+    placeholder and leaves the placeholder on the stack, so the literal and
+    its `Some`s are `depth + 1` consecutive instructions. When the slot gets
+    its type `T`, it is peeled `depth` option layers once, each `Some`
+    patched to its layer and the literal to the innermost, or the literal
+    reported (no type if a layer is not an option, as in the other order);
   - every expected type is a `TypeId` handle, copied, never a cloned `Type`.
     Host function parameters and a method's resolved parameters are interned
     once per call, as checking the call already does. So the walk stays
@@ -444,7 +464,8 @@ it, in constant time however deep the stack is. It checks:
 - each instruction's operands match its type operands (`Field` at an existing
   offset with that type, `Index`/`Get` on that list type, `MapIndex`/`MapGet`
   on that map type, and so on);
-- `==`/`!=` take only `Int`/`Int` or `Bool`/`Bool`;
+- `==`/`!=` take only `Int`/`Int` or `Bool`/`Bool`, and `OptionEq`/
+  `OptionNe` two options of their type, which must be comparable;
 - jumps only go forward and within the code, both landing paths agree on the
   stack, and no jump lands in nothing;
 - exactly one value of the result type is left.
@@ -681,6 +702,7 @@ The `Instr` enum in `program.rs`:
 | `Min(n)`, `Max(n)`, `Clamp` | `Int` folds. `Clamp` errors when low > high |
 | `UnwrapOr(opt)`, `Unwrap(opt)`, `IsSome(opt)`, `IsNone(opt)` | options, tagged or niche, decided by `opt`'s type |
 | `Some(opt)`, `None(opt)` | make an option of type `opt`: `Some` puts a present tag below its value when `opt` is tagged and is a no-op in a niche; `None` pushes an absent tag and zeros, or `Word::NONE` |
+| `OptionEq(opt)`, `OptionNe(opt)` | pop two options of type `opt` (of `Int`s, `Bool`s or such options, which the verifier checks) and push whether they are equal. Each tagged layer compares its tag: both absent is equal whatever the zeros after, both present goes a layer in; the innermost word (an `Int`, a `Bool`, or a niche `Option<Bool>`) compares as it is. A step per layer, fewer than the option's width, without recursion |
 | `Empty(ty)` | push an empty list or map of type `ty` (the verifier refuses any other type): a reference of length 0, which takes no words and whose start is never read |
 | `Len` | a list's or map's length from its reference |
 | `Call(f)` | call host function `f` |
@@ -1053,11 +1075,11 @@ the number alone and checks it before it decodes the body, so bytes of a
 later format whose body changed layout are refused as `WrongFormat`, not
 `NotDecoded`.
 
-**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 11 (4 added `Map`,
+**Programs:** `Program::to_bytes`/`from_bytes`, `FORMAT` = 12 (4 added `Map`,
 5 map literals, 6 each global's slot and the layout fingerprint, 7 dropped
 `Memory::globals`, as a program's values are in the store, not the
 machine, 8 moved the number ahead of the body, 9 added `Some` and `None`, 10 added
-`Empty`, 11 added `Record`). The body is
+`Empty`, 11 added `Record`, 12 added `OptionEq` and `OptionNe`). The body is
 `Stored { types, constants, globals, functions, code, result, memory, layout }`,
 where each global is (name, type, slot). `layout` is last, so a length
 prefix's offset doesn't depend on its varint width.
@@ -1195,7 +1217,9 @@ stored form's, so variants keep their order.
     `_` as a hole.
 - **Compiling.**
   1. `check_nodes` reports every hole and every name that can't be written
-     (invalid or reserved: `true`, `false`, `_`), in text order, sorted by
+     (invalid or reserved: `true`, `false`, `_`), in text order, except
+     the option literals: a `Name("None")` and a `Call` of `Some` are
+     written as they are, sorted by
      each node's start from a map built once over the rendered spans.
   2. Otherwise the rendered text goes through `parse_with` and
      `compile_parsed`.
@@ -1218,11 +1242,13 @@ stored form's, so variants keep their order.
    - an index (Int for lists, the key type for maps, String for records);
    - a list entry, from a sibling's type;
    - a record literal's value, from the field of its name of the record the
-     literal's place takes.
+     literal's place takes;
+   - the argument of `Some(_)`: the value of each option its place takes.
 
-   Passing through lists without a typed sibling, `[_]` receivers and `!`
-   records `Up` steps (`Entry`, `ListOf`, `OptionOf`), which are applied back
-   down. The result is `Want::Any` or `OneOf(patterns)`. The walk is bounded
+   Passing through lists without a typed sibling, `[_]` receivers, `!` and
+   `Some(_)` records `Up` steps (`Entry`, `ListOf`, `OptionOf`, `SomeOf`),
+   which are applied back down. `==`'s other side gives its type when it is
+   comparable, options included. The result is `Want::Any` or `OneOf(patterns)`. The walk is bounded
    by the node count. Sibling and receiver types come from compiling those
    subtrees (`compile_at`).
 2. **Candidates at a value place** (`values`):
@@ -1232,6 +1258,11 @@ stored form's, so variants keep their order.
    - host functions whose return type fits;
    - `Int::min`/`Int::max` by shape;
    - literals `0`, `true`, `false`, `""`;
+   - `Some(_)` where an option fits, and `None` where the place names one
+     option type that the expression itself gives (a sibling, a parameter,
+     `==`'s other side, not only the `root_type`, which compiling does not
+     know, see 2's gaps). Neither is offered to `!`, whose operand is
+     already known to be an option;
    - `[_]`;
    - `Int` operators and `-_`, `Bool` operators and `!_`;
    - `_!`.

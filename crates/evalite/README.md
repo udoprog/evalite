@@ -133,8 +133,9 @@ compiled, and nothing converts implicitly:
   An expression writes one as `Some(x)`, or `None` where the option type
   is known from where it is written: beside a typed entry of a list or
   map (`[None, Some(1)]`), as an argument (`bonus_or(None)`), or as
-  `unwrap_or`'s default of an option of options. A bare `None` with
-  nothing to give it a type is an error.
+  `unwrap_or`'s default of an option of options, or beside `==`
+  (`bonus == None`). A bare `None` with nothing to give it a type is an
+  error.
 
 Types and values are written the same way outside an expression, such as
 in a form or on a command line: [`Type::parse`] reads `Option<List<Int>>`,
@@ -153,7 +154,7 @@ comparisons, which do not chain (`a < b < c` is an error):
 | `*` `/` `%`                  | `Int`s                       | `Int`  |
 | `+` `-`                      | `Int`s                       | `Int`  |
 | `<` `<=` `>` `>=`            | `Int`s                       | `Bool` |
-| `==` `!=`                    | two `Int`s or two `Bool`s    | `Bool` |
+| `==` `!=`                    | two `Int`s, two `Bool`s, or two options of them, as `bonus == None` | `Bool` |
 | `&&`                         | `Bool`s, the right skipped when the left is `false` | `Bool` |
 | <code>&#124;&#124;</code>    | `Bool`s, the right skipped when the left is `true`  | `Bool` |
 

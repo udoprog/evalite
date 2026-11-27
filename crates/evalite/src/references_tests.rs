@@ -89,6 +89,8 @@ fn globals_in_the_order_written() {
     assert_eq!(show("a + b * a"), ["a", "b", "a"]);
     assert_eq!(show("-a < (b)"), ["a", "b"]);
     assert_eq!(show("1 + 2"), Vec::<String>::new());
+    // The option literals are no names.
+    assert_eq!(show("[None, Some(a)][0] == Some(b)"), ["a", "b"]);
 }
 
 #[test]

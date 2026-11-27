@@ -458,17 +458,17 @@ fn error_operators() {
         ),
         (
             "1 == true",
-            "`==` takes two Ints or two Bools, found Int and Bool",
+            "`==` takes two Ints, two Bools or two options of them, found Int and Bool",
             "1 == true",
         ),
         (
             r#""a" != "a""#,
-            "`!=` takes two Ints or two Bools, found String and String",
+            "`!=` takes two Ints, two Bools or two options of them, found String and String",
             r#""a" != "a""#,
         ),
         (
             "levels == levels",
-            "`==` takes two Ints or two Bools, found List<Int> and List<Int>",
+            "`==` takes two Ints, two Bools or two options of them, found List<Int> and List<Int>",
             "levels == levels",
         ),
         (
@@ -2803,7 +2803,7 @@ fn maps() {
         ),
         (
             "ids == ids",
-            "`==` takes two Ints or two Bools, found Map<Int, {dice: Int}> and Map<Int, {dice: Int}>",
+            "`==` takes two Ints, two Bools or two options of them, found Map<Int, {dice: Int}> and Map<Int, {dice: Int}>",
             "ids == ids",
         ),
     ] {
@@ -2956,7 +2956,7 @@ fn map_literals() {
         ),
         (
             "{1: 2} == {1: 2}",
-            "`==` takes two Ints or two Bools, found Map<Int, Int> and Map<Int, Int>",
+            "`==` takes two Ints, two Bools or two options of them, found Map<Int, Int> and Map<Int, Int>",
             "{1: 2} == {1: 2}",
         ),
         // Values are checked when keys are wrong, keys only when literal.
@@ -3071,7 +3071,7 @@ fn record_literal_errors() {
         ),
         (
             "{a: 1} == {a: 1}",
-            "`==` takes two Ints or two Bools, found {a: Int} and {a: Int}",
+            "`==` takes two Ints, two Bools or two options of them, found {a: Int} and {a: Int}",
             "{a: 1} == {a: 1}",
         ),
         ("{a: nope, b: 1}.b", "unknown name `nope`", "nope"),
@@ -3129,6 +3129,14 @@ fn record_literal_code() {
             Record(record),
         ]
     );
+}
+
+/// A map whose keys are in error still types its `None` values from
+/// their siblings, so the key is the only error.
+#[test]
+fn map_literal_key_errors_type_none_values() {
+    let (message, _) = error("{1: None, 1: Some(1)}");
+    assert_eq!(message, "the key 1 is given twice in this map", "{message}");
 }
 
 /// A repeated key points at itself and at where it is first given.
@@ -3658,6 +3666,35 @@ fn option_literals() {
         ("Some(bonus).unwrap_or(Some(1))", "Option<Int>"),
         ("[Some(1)].get(0).unwrap_or(None)", "Option<Int>"),
         ("count(health, 1)", "Int"),
+        ("bonus == None", "Bool"),
+        ("None != bonus", "Bool"),
+        ("Some(1) == bonus", "Bool"),
+        ("Some(Some(true)) == Some(None)", "Bool"),
+        // A `None` inside `Some(...)` waits for its sibling, as one that
+        // is the sibling does, and so do `[]` and `{}`.
+        ("[Some(None), Some(Some(1))]", "List<Option<Option<Int>>>"),
+        (
+            "[Some(Some(None)), Some(Some(bonus))]",
+            "List<Option<Option<Option<Int>>>>",
+        ),
+        ("Some(None) == Some(Some(1))", "Bool"),
+        (
+            "{1: Some(None), 2: Some(bonus)}",
+            "Map<Int, Option<Option<Int>>>",
+        ),
+        ("[Some([]), Some([1])]", "List<Option<List<Int>>>"),
+        (
+            "[Some({}), Some({1: true})]",
+            "List<Option<Map<Int, Bool>>>",
+        ),
+        // Parentheses pass the wait on.
+        ("[(None), Some(1)]", "List<Option<Int>>"),
+        ("{1: (None), 2: Some(1)}", "Map<Int, Option<Int>>"),
+        ("(None) == bonus", "Bool"),
+        (
+            "[Some((None)), (Some(Some(1)))]",
+            "List<Option<Option<Int>>>",
+        ),
     ]);
 }
 
@@ -3689,9 +3726,19 @@ fn option_literal_errors() {
     errors(&[
         ("None", untyped, "None"),
         ("[None]", untyped, "None"),
-        // Only a sibling gives a waiting `None` its type, not a sibling
-        // of what holds it.
-        ("[Some(None), Some(Some(1))]", untyped, "None"),
+        // A `Some` around a waiting `None` that the slot's type has no
+        // option for leaves it with no type, as in the other order.
+        ("[Some(None), 1]", untyped, "None"),
+        ("[1, Some(None)]", untyped, "None"),
+        (
+            "[Some(None), Some(1)]",
+            "`None` is an option, but an Int is expected here",
+            "None",
+        ),
+        // A sibling of what holds a list or record does not type its
+        // `None`, a gap in design.md.
+        ("[[None], [Some(1)]]", untyped, "None"),
+        ("[{a: None}, {a: Some(1)}]", untyped, "None"),
         ("Some(None)", untyped, "None"),
         ("None.is_some()", untyped, "None"),
         ("(None)", untyped, "None"),
@@ -3724,6 +3771,16 @@ fn option_literal_errors() {
             "chart(None, name)",
             "`None` is an option, but an Int is expected here",
             "None",
+        ),
+        (
+            r#"Some("a") == None"#,
+            "`==` takes two Ints, two Bools or two options of them, found Option<String> and Option<String>",
+            r#"Some("a") == None"#,
+        ),
+        (
+            "Some(1) == 1",
+            "`==` takes two Ints, two Bools or two options of them, found Option<Int> and Int, unwrap the optional value first with `.unwrap_or(...)`",
+            "Some(1) == 1",
         ),
         ("Some()", "`Some` takes 1 argument, found 0", "()"),
         ("Some(1, 2)", "`Some` takes 1 argument, found 2", "(1, 2)"),
@@ -3825,7 +3882,7 @@ fn empty_literal_errors() {
 fn option_literals_are_linear() {
     let options = Options::new().max_len(usize::MAX).max_depth(usize::MAX);
 
-    let shapes: [fn(usize) -> String; 5] = [
+    let shapes: [fn(usize) -> String; 6] = [
         |n| format!("[{}Some(1)]", "None, ".repeat(n)),
         |n| {
             format!(
@@ -3836,6 +3893,16 @@ fn option_literals_are_linear() {
         |n| format!("{}None{}", "[Some(1), Some(".repeat(n), ")]".repeat(n)),
         |n| format!("[{}[1]]", "[], ".repeat(n)),
         |n| format!("[{}{{1: 2}}]", "{}, ".repeat(n)),
+        // A `None` deep inside `Some(...)`, typed by the sibling after.
+        |n| {
+            format!(
+                "[{}None{}, {}1{}]",
+                "Some(".repeat(n),
+                ")".repeat(n),
+                "Some(".repeat(n + 1),
+                ")".repeat(n + 1)
+            )
+        },
     ];
 
     for shape in shapes {
