@@ -9,7 +9,7 @@
 use std::cmp::Ordering;
 
 use crate::globals::Globals;
-use crate::memory::{self, Words, WordsMut, count, fault};
+use crate::memory::{self, Fuel, Words, WordsMut, count, fault};
 use crate::message::{Context, Fault, Key, Location, Message, Op, Root, RunError};
 use crate::program::{Constant, HostFunction, Instr, Program, Scalar};
 use crate::types::TypeNode;
@@ -337,8 +337,7 @@ impl Machine {
             base,
             words: &mut self.words,
             program,
-            fuel: self.limits.fuel,
-            left: self.limits.fuel,
+            fuel: Fuel::new(self.limits.fuel),
             len: base,
             limit,
             heap: size(memory.heap)?,
@@ -372,8 +371,7 @@ pub struct Run<'a> {
     /// The machine's words, addresses `base..`.
     words: &'a mut [Word],
     program: &'a Program,
-    fuel: u64,
-    left: u64,
+    fuel: Fuel,
     /// Words `base..len` hold lists and the parts of returned values, up
     /// to `limit`, where the constants are. Every position is an address,
     /// counted from the store's first word.
@@ -429,22 +427,32 @@ impl<'a> Run<'a> {
 
         Ok(Outcome {
             value,
-            steps: self.fuel.saturating_sub(self.left),
+            steps: self.fuel.spent(),
             memory: count(self.peak_len.saturating_sub(self.base))
                 .saturating_add(count(self.peak_sp))
                 .saturating_add(u64::from(program.memory().constants)),
         })
     }
 
-    /// The program's value, left on the stack.
-    fn result(&self) -> Result<Value, RunError> {
+    /// The program's value, left on the stack, spending a step per word
+    /// of its parts.
+    fn result(&mut self) -> Result<Value, RunError> {
         let program = self.program;
 
         if self.sp != program.types.width(program.result) {
             return Err(fault(Fault::NotOneResult));
         }
 
-        memory::read(self, &program.types, self.stack_base, program.result)
+        let mut fuel = self.fuel;
+        let value = memory::read(
+            &*self,
+            &program.types,
+            self.stack_base,
+            program.result,
+            &mut fuel,
+        )?;
+        self.fuel = fuel;
+        Ok(value)
     }
 
     /// Copy the program's constants into memory from `limit`.
@@ -900,7 +908,8 @@ impl<'a> Run<'a> {
             .context(Message::ReadingHostResult { function: f })
     }
 
-    /// Call `function` with its arguments from the stack.
+    /// Call `function` with its arguments from the stack, spending a step
+    /// per word of their parts as they are read.
     fn call_host(
         &mut self,
         function: &HostFunction,
@@ -922,11 +931,14 @@ impl<'a> Run<'a> {
             .checked_add(top)
             .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
 
+        let mut fuel = self.fuel;
+
         for ty in &function.params {
-            args.push(memory::read(self, &program.types, at, *ty)?);
+            args.push(memory::read(&*self, &program.types, at, *ty, &mut fuel)?);
             at = at.saturating_add(program.types.width(*ty));
         }
 
+        self.fuel = fuel;
         self.sp = top;
 
         host.call(&function.name, args)
@@ -979,11 +991,7 @@ impl<'a> Run<'a> {
     }
 
     fn spend(&mut self, steps: usize) -> Result<(), RunError> {
-        self.left = self
-            .left
-            .checked_sub(count(steps))
-            .ok_or_else(|| RunError::new(Message::OutOfFuel { fuel: self.fuel }))?;
-        Ok(())
+        self.fuel.spend(steps)
     }
 
     /// Take `n` words on top of the stack, giving where they start.

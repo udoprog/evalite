@@ -404,7 +404,8 @@ impl Globals {
             return None;
         }
 
-        memory::read(&self.heap, &self.layout.types, at, held.id?).ok()
+        let mut fuel = memory::Fuel::UNLIMITED;
+        memory::read(&self.heap, &self.layout.types, at, held.id?, &mut fuel).ok()
     }
 
     /// Set the part at `path` of a value already set to `value`, replacing
@@ -510,7 +511,15 @@ impl Globals {
     /// ```
     pub fn get_at(&self, path: &Path) -> Option<Value> {
         let place = self.locate(path).ok()?;
-        memory::read(&self.heap, &self.layout.types, place.at, place.ty).ok()
+        let mut fuel = memory::Fuel::UNLIMITED;
+        memory::read(
+            &self.heap,
+            &self.layout.types,
+            place.at,
+            place.ty,
+            &mut fuel,
+        )
+        .ok()
     }
 
     /// Where the part at `path` is held, and its type.

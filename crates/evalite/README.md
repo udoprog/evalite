@@ -252,7 +252,7 @@ whatever a user typed, and a store of values has a limit of its own:
 | Nesting | each parenthesis, list, call, index and unary operator nests a level | [`DEFAULT_MAX_DEPTH`] (32) | [`Options::max_depth`] |
 | Length  | bytes of the expression's text, checked before it is lexed | [`DEFAULT_MAX_LEN`] (65536) | [`Options::max_len`] |
 | Memory  | 64-bit words for the stack, built lists, constants and values functions return | [`DEFAULT_MEMORY`] (1024)  | [`Limits::memory`]     |
-| Fuel    | steps: one per instruction, plus one per list or map entry built, `Int` that `min`/`max` compares, word a function returns, and key or string-key word a map lookup compares | [`DEFAULT_FUEL`] (1000) | [`Limits::fuel`] |
+| Fuel    | steps: one per instruction, plus one per list or map entry built, `Int` that `min`/`max` compares, word of the parts of a value a function is passed or returns or the expression gives, charged before it is read, and key or string-key word a map lookup compares | [`DEFAULT_FUEL`] (1000) | [`Limits::fuel`] |
 | Store   | 64-bit words for the parts of a store's values: strings, list and map entries, record fields, freed ones included | [`DEFAULT_GLOBALS`] (2^20) | [`Globals::with_limit`] |
 
 A type has bounds of its own: `MAX_TYPE_DEPTH` (64) levels and

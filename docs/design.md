@@ -563,7 +563,19 @@ verified programs never cause.
 - plus, for `MapIndex`/`MapGet`, one per key the binary search probes and
   one per word of a `String` key compared, so a lookup costs about
   log(entries) × key words, not a step however long its keys are;
-- plus the words of the parts of each value a host function returns.
+- plus the words of the parts of each value a host function returns;
+- plus the words of the parts of each argument `Call` reads for the host,
+  and of the program's value when the run reads it back (`Run::result`).
+
+The reads (`memory::read`) take a `memory::Fuel` and spend from it before
+reading each part: a string's words, a list's `len × width`, a map's
+`len × (width + 1)`, a record's words. That is what `measure` gives for the
+same value, so passing a value to the host costs what returning it does.
+The cost is checked against the fuel left before the part is read, so a
+run past its fuel stops without doing the work: without it, a store value
+of up to 2^32 words could be read by a single step (a 500k-entry map passed
+200 times took seconds on 599 steps). `Globals::get` reads with
+`Fuel::UNLIMITED`, as it is bounded by the value the host set.
 
 Running out is a run error. There are no backward jumps, so even without
 fuel a run is bounded by its code length. Fuel bounds the work per run that

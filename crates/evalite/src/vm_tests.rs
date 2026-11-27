@@ -1298,18 +1298,24 @@ fn fuel() {
     );
 
     // A list of n entries, `min` and `max` of n take n more steps, a call
-    // one more per word it returns, and a map lookup one more per key it
-    // probes and per word of a string key it compares.
+    // one more per word of parts it is passed and it returns, a map lookup
+    // one more per key it probes and per word of a string key it compares,
+    // and the program's value one more per word of its parts.
     for (source, steps) in [
-        ("[wits, wits, wits]", 7),
+        ("[wits, wits, wits]", 10),
         ("Int::min(wits, wits, wits)", 7),
         ("Int::max(wits, wits)", 5),
-        ("many(4)", 6),
+        ("many(4)", 10),
+        ("count(health)", 5),
+        ("chart(1, name)", 4),
+        ("levels", 4),
+        ("name", 2),
+        ("tracks", 9),
         ("wits.min(wits)", 5),
         ("flag || flag", 2),
         ("!flag || flag", 4),
-        ("ids[7]", 4),
-        ("ids.get(-4)", 5),
+        ("ids[7]", 5),
+        ("ids.get(-4)", 6),
         ("tags[\"brawl\"]", 7),
         ("tags.get(\"athletics (long name)\")", 7),
     ] {
@@ -1337,6 +1343,61 @@ fn fuel() {
     );
     let source = vec!["wits"; 500].join(" + ");
     assert_eq!(eval_in(&source, &[], Limits::new()).unwrap().steps, 999);
+}
+
+/// Reading a store's value, to pass it to a function or as the program's
+/// value, spends a step per word of its parts before it is read, so a
+/// large value stops a run short of its fuel without the work.
+#[test]
+fn store_reads_spend_fuel() {
+    let catalog = Value::map((0..100_000).map(|k| (int(k), int(k))));
+    let mut env = Environment::new();
+    env.value("catalog", Type::map(Type::int(), Type::int()))
+        .unwrap();
+    env.function("f", [Type::map(Type::int(), Type::int())], Type::int())
+        .unwrap();
+    let mut globals = Globals::new(&env);
+    globals.set("catalog", &catalog).unwrap();
+    let mut host = |_: &str, args: Vec<Value>| -> Result<Value, String> {
+        let len = args.first().and_then(Value::as_map).map_or(0, <[_]>::len);
+        Ok(int(len as i64))
+    };
+
+    let run = |source: &str, fuel: u64, host: &mut dyn Host| {
+        let program = compile(source, &env).unwrap();
+        Machine::new(Limits::new().fuel(fuel))
+            .load(&program, &globals)
+            .unwrap()
+            .run_with(host)
+    };
+
+    // Two words an entry, a key and its value.
+    let source = vec!["f(catalog)"; 200].join(" + ");
+    let start = std::time::Instant::now();
+    let error = run(&source, DEFAULT_FUEL, &mut host).unwrap_err();
+    assert_eq!(error.message(), &Message::OutOfFuel { fuel: DEFAULT_FUEL });
+    let error = run("catalog", DEFAULT_FUEL, &mut host).unwrap_err();
+    assert_eq!(error.message(), &Message::OutOfFuel { fuel: DEFAULT_FUEL });
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "{:?}",
+        start.elapsed()
+    );
+
+    // Given the steps, each read is paid for: two instructions and the
+    // map's 200,000 words.
+    let steps = 2 + 200_000;
+    let outcome = run("f(catalog)", steps, &mut host).unwrap();
+    assert_eq!(outcome.value, int(100_000));
+    assert_eq!(outcome.steps, steps);
+    let error = run("f(catalog)", steps - 1, &mut host).unwrap_err();
+    assert_eq!(error.message(), &Message::OutOfFuel { fuel: steps - 1 });
+
+    let steps = 1 + 200_000;
+    let outcome = run("catalog", steps, &mut host).unwrap();
+    assert_eq!(outcome.value, catalog);
+    assert_eq!(outcome.steps, steps);
+    assert!(run("catalog", steps - 1, &mut host).is_err());
 }
 
 #[test]
@@ -1520,7 +1581,15 @@ fn random_programs() {
             Ok(outcome) => {
                 ran += 1;
                 assert!(outcome.memory <= needed, "{source:?}: {outcome:?}");
-                assert!(outcome.steps <= program.code.len() as u64 * 2, "{source:?}");
+                // Reading the value back takes a step per entry, and an
+                // instruction at most a step per word of every value's
+                // parts, read to call a function.
+                let read = outcome.value.as_list().map_or(0, <[Value]>::len) as u64;
+                let per_instr = 2 + parts as u64;
+                assert!(
+                    outcome.steps <= program.code.len() as u64 * per_instr + read,
+                    "{source:?}"
+                );
                 assert_eq!(
                     describe(&outcome.value),
                     ty,

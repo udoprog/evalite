@@ -33,6 +33,42 @@ pub(crate) trait WordsMut: Words {
     fn alloc(&mut self, n: usize) -> Result<usize, RunError>;
 }
 
+/// A run's steps: those it may take, and those left. Reading a value
+/// spends a step per word of its parts, before it reads them, so a read
+/// past the steps left stops without doing the work.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Fuel {
+    fuel: u64,
+    left: u64,
+}
+
+impl Fuel {
+    /// No limit, for reads outside a run.
+    pub(crate) const UNLIMITED: Self = Self::new(u64::MAX);
+
+    /// `fuel` steps, none taken.
+    pub(crate) const fn new(fuel: u64) -> Self {
+        Self { fuel, left: fuel }
+    }
+
+    /// The steps taken.
+    pub(crate) const fn spent(&self) -> u64 {
+        self.fuel.saturating_sub(self.left)
+    }
+
+    /// Take `steps` steps, or fail with nothing taken when fewer are left.
+    #[inline]
+    pub(crate) fn spend(&mut self, steps: usize) -> Result<(), RunError> {
+        match self.left.checked_sub(count(steps)) {
+            Some(left) => {
+                self.left = left;
+                Ok(())
+            }
+            None => Err(RunError::new(Message::OutOfFuel { fuel: self.fuel })),
+        }
+    }
+}
+
 #[cold]
 #[inline(never)]
 pub(crate) fn fault(fault: Fault) -> RunError {
@@ -494,12 +530,15 @@ enum Read {
     Some,
 }
 
-/// The value of type `ty` held at `at`.
+/// The value of type `ty` held at `at`, spending from `fuel` a step per
+/// word of its parts (what [`measure`] gives for it) before reading each
+/// part, so the work is bounded by the steps it is allowed.
 pub(crate) fn read(
     words: &(impl Words + ?Sized),
     types: &Types,
     at: usize,
     ty: TypeId,
+    fuel: &mut Fuel,
 ) -> Result<Value, RunError> {
     let mut steps = vec![Read::Visit(at, ty)];
     let mut out = Vec::<Value>::new();
@@ -533,11 +572,13 @@ pub(crate) fn read(
                     TypeNode::Bool => out.push(Value::bool(word.as_bool()?)),
                     TypeNode::String => {
                         let (at, len) = word.as_reference()?;
+                        fuel.spend(len.div_ceil(8))?;
                         out.push(Value::string(string(words, at, len)?));
                     }
                     TypeNode::List(entry) => {
                         let (start, len) = word.as_reference()?;
                         let width = types.width(*entry);
+                        fuel.spend(len.saturating_mul(width))?;
                         inside(words, start, len.checked_mul(width))?;
                         steps.push(Read::List(len));
 
@@ -549,6 +590,7 @@ pub(crate) fn read(
                     TypeNode::Map { key, value } => {
                         let (start, len) = word.as_reference()?;
                         let stride = types.width(*value).saturating_add(1);
+                        fuel.spend(len.saturating_mul(stride))?;
                         inside(words, start, len.checked_mul(stride))?;
                         steps.push(Read::Map(len));
 
@@ -565,6 +607,7 @@ pub(crate) fn read(
                             return Err(fault(Fault::RecordWrongSize));
                         }
 
+                        fuel.spend(len)?;
                         inside(words, start, Some(len))?;
                         steps.push(Read::Record(ty));
 
