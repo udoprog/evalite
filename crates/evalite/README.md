@@ -294,9 +294,11 @@ whatever a user typed, and a store of values has a limit of its own:
 
 A type has bounds of its own: `MAX_TYPE_DEPTH` (64) levels and
 `MAX_TYPE_NODES` (65536) nodes written out, which `Environment::value`
-and `Environment::function` refuse. The types of the globals and host
-functions an expression uses may have 2^21 nodes together, and an
-expression that passes that is a compile error.
+and `Environment::function` refuse, and a repeated parameter's minimum
+is at most `MAX_REPEATED_MIN` (32768), which
+`Environment::function_repeated` refuses past. The types of the globals
+and host functions an expression uses may have 2^21 nodes together, and
+an expression that passes that is a compile error.
 
 Going too deep is a compile error at the construct that did; the parser
 never recurses, so no input overflows the stack. A program's memory is

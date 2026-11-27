@@ -1,6 +1,6 @@
 [package]
 name = "evalite-sockel"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition.workspace = true
 rust-version.workspace = true
@@ -16,7 +16,7 @@ categories = ["gui", "wasm", "web-programming"]
 workspace = true
 
 [dependencies]
-evalite = { version = "0.3.0", path = "../evalite" }
+evalite = { version = "0.4.0", path = "../evalite" }
 gloo-timers = "0.4.1"
 phrasebook = { version = "0.2", features = ["yew023"] }
 sockel = { version = "0.4.1", default-features = false, features = ["badge", "button", "code-editor", "disclosure", "field", "input", "layout", "notice", "property-list"] }
