@@ -286,7 +286,11 @@ impl Globals {
     /// Returns a [`GlobalsError`], leaving the value as it was, when `name`
     /// is not declared, `value` is not of its declared type (the error
     /// names the path into `value`), or its parts do not fit in the words
-    /// left.
+    /// left. Free words are counted as left: a set that does not fit while
+    /// some are free compacts the store once and tries again, as do
+    /// [`set_at`](Self::set_at), [`insert`](Self::insert) and
+    /// [`push`](Self::push). Every value is as it was whether or not it
+    /// fits, though the store may be compacted.
     ///
     /// ```
     /// use evalite::{Environment, Globals, Type, Value};
@@ -316,7 +320,7 @@ impl Globals {
         let global = u32::try_from(n).unwrap_or(u32::MAX);
         let (id, at) = (held.id, held.at);
 
-        self.set_slot(n, id, at, value)
+        self.fitting(|this| this.set_slot(n, id, at, value))
             .map_err(|e| self.error(&e.context(Message::Setting { global })))?;
         self.tidy();
         Ok(())
@@ -496,10 +500,10 @@ impl Globals {
             return self.set(&path.name, value);
         }
 
-        let result = match self.locate(path) {
-            Ok(place) => self.replace(&place, value, true),
-            Err(error) => Err(error),
-        };
+        let result = self.fitting(|this| {
+            let place = this.locate(path)?;
+            this.replace(&place, value, true)
+        });
 
         result.map_err(|e| {
             let path = path.to_string().into_boxed_str();
@@ -595,10 +599,11 @@ impl Globals {
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn insert(&mut self, path: &Path, value: &Value) -> Result<(), GlobalsError> {
-        self.insert_at(path, value).map_err(|e| {
-            let path = path.to_string().into_boxed_str();
-            self.error(&e.context(Message::InsertingAt { path }))
-        })?;
+        self.fitting(|this| this.insert_at(path, value))
+            .map_err(|e| {
+                let path = path.to_string().into_boxed_str();
+                self.error(&e.context(Message::InsertingAt { path }))
+            })?;
         self.tidy();
         Ok(())
     }
@@ -627,10 +632,11 @@ impl Globals {
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn push(&mut self, path: &Path, value: &Value) -> Result<(), GlobalsError> {
-        self.push_at(path, value).map_err(|e| {
-            let path = path.to_string().into_boxed_str();
-            self.error(&e.context(Message::PushingOnto { path }))
-        })?;
+        self.fitting(|this| this.push_at(path, value))
+            .map_err(|e| {
+                let path = path.to_string().into_boxed_str();
+                self.error(&e.context(Message::PushingOnto { path }))
+            })?;
         self.tidy();
         Ok(())
     }
@@ -1361,14 +1367,43 @@ impl Globals {
     /// take are free, so the store takes at most twice the words of its
     /// values. A fault leaves it as it was.
     fn tidy(&mut self) {
-        if self.heap.free_words.saturating_mul(2) <= self.heap.used() {
-            return;
+        if self.heap.free_words.saturating_mul(2) > self.heap.used() {
+            self.compact();
         }
+    }
 
-        if let Ok(words) = self.heap.compacted(&self.layout.types, self.roots()) {
-            self.heap.words = words;
-            self.heap.free.clear();
-            self.heap.free_words = 0;
+    /// Move the values' parts together, freeing every free word. Whether
+    /// it did; a fault leaves the store as it was.
+    fn compact(&mut self) -> bool {
+        let Ok(words) = self.heap.compacted(&self.layout.types, self.roots()) else {
+            return false;
+        };
+
+        self.heap.words = words;
+        self.heap.free.clear();
+        self.heap.free_words = 0;
+        true
+    }
+
+    /// Run `op`, a change that fails without changing the store, and when
+    /// it is refused for want of room while words are free, compact the
+    /// store and run it again from the start, finding its path afresh.
+    /// Compaction keeps every value, so a retry that is refused too leaves
+    /// the values as they were, as the first try did. At most one
+    /// compaction, O(live words), for each call.
+    fn fitting<T>(
+        &mut self,
+        mut op: impl FnMut(&mut Self) -> Result<T, RunError>,
+    ) -> Result<T, RunError> {
+        match op(self) {
+            Err(error) if error.is_too_large() && self.heap.free_words > 0 => {
+                if !self.compact() {
+                    return Err(error);
+                }
+
+                op(self)
+            }
+            result => result,
         }
     }
 

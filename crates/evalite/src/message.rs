@@ -909,6 +909,17 @@ impl RunError {
         }
     }
 
+    /// Whether the store refused for want of room to write in.
+    pub(crate) fn is_too_large(&self) -> bool {
+        matches!(
+            self.inner.frames.first(),
+            Some(Frame {
+                message: Message::TooLarge { .. },
+                ..
+            })
+        )
+    }
+
     /// Whether the program is faulty, one evalite did not make.
     #[cfg(test)]
     pub(crate) fn is_fault(&self) -> bool {

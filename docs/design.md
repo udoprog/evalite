@@ -726,7 +726,8 @@ it, and a program reading it is refused at load. Its memory:
    block for each needed size, from the free lists or past the heap's end.
    If what it takes past the end is past the limit it is `TooLarge`, and
    the plan is undone, before any word changed, so a failed set leaves the
-   store as it was;
+   store as it was. When words are free the store then compacts once and
+   tries again from step 1 (see "Compact and retry", below);
 5. `write`s the new value at the slot, its parts taking the planned blocks
    by size;
 6. sets the flag, and compacts when more than half the heap is free.
@@ -885,9 +886,20 @@ the 30th cycle with 65 words live.
   lists' and maps' room past their entries), `free` and `heap` (live and
   free, what the limit counts). It walks the values, O(live words).
 
-The limit still counts free words: a store with free words but none
-holding a block may refuse a set that compacting would make room for.
-Compaction only runs once more than half the heap is free.
+- **Compact and retry** (Globals 5b). The limit counts free words, so a
+  fragmented store, one with free words but no free block big enough, would
+  refuse a `set`, `set_at`, `insert` or `push` that compacting makes room
+  for. When `settle` refuses for the limit and the store has free words,
+  `Globals::fitting` compacts once and runs the operation again from the
+  start, finding its path afresh, as compaction moves the parts. It is
+  refused only if it still does not fit. At most one compaction an
+  operation, O(live words) (a hopeless operation costs one). A refused
+  operation still leaves every value as it was, as compaction keeps them
+  all and the retry's plan is undone as before; only the layout, which no
+  value shows, may be compacted. `remove` takes no words, so it never
+  retries.
+
+Compaction otherwise only runs once more than half the heap is free.
 ## 8. Stored formats and verification
 
 All stored forms are encoded with musli `storage` and start with a

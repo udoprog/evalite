@@ -1064,7 +1064,8 @@ fn push_and_remove_cycles_keep_within_the_limit() {
 }
 
 /// A set that takes free blocks, splitting some, and then finds it does
-/// not fit undoes all of it: every word, free list and flag is as it was.
+/// not fit undoes all of it: every word, free list and flag is as it was,
+/// but for the compaction it tried to make room.
 #[test]
 fn a_plan_that_does_not_fit_is_undone() {
     let mut env = Environment::new();
@@ -1081,22 +1082,29 @@ fn a_plan_that_does_not_fit_is_undone() {
     assert_eq!((globals.stats().heap(), globals.stats().free()), (12, 5));
 
     // Its header and entries take the free 5 words, two strings of 2 words
-    // split the old 3-word ones, and the rest is 12 words past the end.
-    let before = format!("{globals:?}");
+    // split the old 3-word ones, and the rest is 12 words past the end. So
+    // it is refused, and so it is when the store is compacted to try again,
+    // which frees the 5 words: 17 words past the end, with 13 left.
     let two = || s(&"w".repeat(16));
     let b = Value::list([two(), two(), two(), s(&"v".repeat(80))]);
     let error = globals.set("b", &b).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "the value needs 12 words of memory, 8 are left"
+        "the value needs 17 words of memory, 13 are left"
     );
-    assert_eq!(format!("{globals:?}"), before);
+    assert_eq!(globals.stats().free(), 0);
+    assert_eq!(globals.stats().heap(), 7);
+    assert_eq!(
+        globals.get("b"),
+        Some(Value::list([s(&"x".repeat(24)), s("y")]))
+    );
+    assert_eq!(globals.get("a"), Some(s("")));
 
     // Without the long one it fits in the free words alone.
     let b = Value::list([two(), two(), s("u")]);
     globals.set("b", &b).unwrap();
     assert_eq!(globals.get("b"), Some(b));
-    assert_eq!(globals.stats().heap(), 12);
+    assert_eq!(globals.stats().heap(), 11);
     assert_tidy(&globals);
 }
 
@@ -1188,10 +1196,11 @@ fn the_limit_is_kept_on_growth() {
     let error = globals.push(&l, &int(5)).unwrap_err();
     assert_eq!(
         format!("{error:#}"),
-        "the value needs 9 words of memory, 0 are left: while pushing onto `l`"
+        "the value needs 9 words of memory, 3 are left: while pushing onto `l`"
     );
+    // The refusal compacted the 3 free words away.
     assert_eq!(globals.get("l"), Some(ints(&[1, 2, 3, 4])));
-    assert_eq!(globals.heap_words(), 8);
+    assert_eq!(globals.heap_words(), 5);
     assert_eq!(globals.room_at(&l), Some((4, 4)));
 
     // A string's words are counted as well as the map's.
@@ -1618,4 +1627,104 @@ fn too_long_entries_leave_the_store_untouched() {
     globals.push(&Path::value("l"), &int(5)).unwrap();
     assert_eq!(globals.get("l"), Some(ints(&[2, 3, 4, 5])));
     crate::memory::MAX_LEN.with(|max| max.set(usize::try_from(u32::MAX).unwrap()));
+}
+
+/// A store at its limit of 12 words with 6 of them free, in blocks of 3
+/// that no value of 5 or 7 words fits: `l` and `w` set, `a` and `b` freed.
+fn fragmented() -> Globals {
+    let mut env = Environment::new();
+    env.value("l", Type::list(Type::int())).unwrap();
+    env.value("w", Type::list(Type::string())).unwrap();
+    env.value("a", Type::string()).unwrap();
+    env.value("b", Type::string()).unwrap();
+
+    let mut globals = Globals::with_limit(&env, 12);
+    globals.set("l", &ints(&[1, 2])).unwrap();
+    globals.set("w", &Value::list([s("x")])).unwrap();
+    globals.set("a", &s(&"a".repeat(24))).unwrap();
+    globals.set("b", &s(&"b".repeat(24))).unwrap();
+    globals.set("a", &s("")).unwrap();
+    globals.set("b", &s("")).unwrap();
+
+    let stats = globals.stats();
+    assert_eq!((stats.heap(), stats.free()), (12, 6));
+    assert_eq!(globals.heap_words(), 12, "not compacted yet");
+    globals
+}
+
+/// The values of [`fragmented`], to see an operation left them as they
+/// were.
+fn fragmented_values(globals: &Globals) -> [Option<Value>; 4] {
+    ["l", "w", "a", "b"].map(|name| globals.get(name))
+}
+
+/// A set, a set at a path, an insert or a push that is refused for want of
+/// room while free words are fragmented compacts the store and fits.
+#[test]
+fn fragmented_store_compacts_to_fit() {
+    // A set of 5 words, with free blocks of 3.
+    let mut globals = fragmented();
+    let five = s(&"c".repeat(40));
+    globals.set("a", &five).unwrap();
+    assert_eq!(globals.get("a"), Some(five));
+    assert_eq!(globals.get("l"), Some(ints(&[1, 2])));
+    assert_eq!(globals.get("w"), Some(Value::list([s("x")])));
+    assert_eq!(globals.get("b"), Some(s("")));
+    assert_eq!(globals.heap_words(), 11);
+    assert_tidy(&globals);
+
+    // A set at a path: the entry of `w` replaced by 5 words.
+    let mut globals = fragmented();
+    let five = s(&"c".repeat(40));
+    let at = Path::value("w").index(0);
+    globals.set_at(&at, &five).unwrap();
+    assert_eq!(globals.get("w"), Some(Value::list([five])));
+    assert_eq!(globals.get("l"), Some(ints(&[1, 2])));
+    assert_tidy(&globals);
+
+    // A push and an insert move the full list to a block of 5 words.
+    let mut globals = fragmented();
+    globals.push(&Path::value("l"), &int(3)).unwrap();
+    assert_eq!(globals.get("l"), Some(ints(&[1, 2, 3])));
+    assert_eq!(globals.get("w"), Some(Value::list([s("x")])));
+    assert_tidy(&globals);
+
+    let mut globals = fragmented();
+    globals.insert(&Path::value("l").index(0), &int(0)).unwrap();
+    assert_eq!(globals.get("l"), Some(ints(&[0, 1, 2])));
+    assert_eq!(globals.get("w"), Some(Value::list([s("x")])));
+    assert_tidy(&globals);
+}
+
+/// A set that still does not fit after compacting is refused, and leaves
+/// every value as it was.
+#[test]
+fn compacting_does_not_make_a_refusal_change_values() {
+    let mut globals = fragmented();
+    let before = fragmented_values(&globals);
+
+    // 7 words, with 6 left once compacted.
+    let seven = s(&"c".repeat(56));
+    let error = globals.set("a", &seven).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "the value needs 7 words of memory, 6 are left"
+    );
+    assert_eq!(fragmented_values(&globals), before);
+    assert_tidy(&globals);
+
+    let error = globals
+        .set_at(&Path::value("w").index(0), &seven)
+        .unwrap_err();
+    assert_eq!(
+        format!("{error:#}"),
+        "the value needs 7 words of memory, 6 are left: while setting `w[0]`"
+    );
+    assert_eq!(fragmented_values(&globals), before);
+    assert_tidy(&globals);
+
+    // The store still works, and takes what fits.
+    let five = s(&"c".repeat(40));
+    globals.set("a", &five).unwrap();
+    assert_eq!(globals.get("a"), Some(five));
 }
