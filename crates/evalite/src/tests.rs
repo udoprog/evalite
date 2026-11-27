@@ -1406,6 +1406,90 @@ fn recover_tokens() {
     ]);
 }
 
+/// A `None::<T>` in error is skipped to the `>` closing it, with one
+/// diagnostic, and whitespace after it is outside its `Error` node.
+#[test]
+fn recover_annotations() {
+    const NOT_TYPE: &str =
+        "unknown type `1`, expected Int, Bool, String, Option<T>, List<T>, Map<K, V> or {name: T}";
+
+    let cases: &[Recovery<'_>] = &[
+        (
+            "None::<Int ",
+            "(error None :: < Int)",
+            &[(
+                "expected `>` after the type, found the end of the expression",
+                11..11,
+            )],
+        ),
+        (
+            "None::<Int + 1",
+            "(error None :: < Int + 1)",
+            &[("expected `>` after the type, found `+`", 11..12)],
+        ),
+        (
+            "None::< ",
+            "(error None :: <)",
+            &[("expected a type, found the end", 8..8)],
+        ),
+        (
+            "None::<é>",
+            "(error None :: < é>)",
+            &[("expected a type, found `é`", 7..9)],
+        ),
+        (
+            "None::<é> == x",
+            "(== (error None :: < é>) x)",
+            &[("expected a type, found `é`", 7..9)],
+        ),
+        (
+            "None::<{é: Int}>",
+            "(error None :: < {é: Int}>)",
+            &[("expected a field name, found `é`", 8..10)],
+        ),
+        ("None::<1>", "(error None :: < 1>)", &[(NOT_TYPE, 7..8)]),
+        (
+            "None::<1> + 2",
+            "(+ (error None :: < 1>) 2)",
+            &[(NOT_TYPE, 7..8)],
+        ),
+        (
+            "None::<[Int]>",
+            "(error None :: < [Int]>)",
+            &[("expected a type, found `[`", 7..8)],
+        ),
+        (
+            "f(None::<1, 2) + 3",
+            "(+ (call f (error None :: < 1, 2)) 3)",
+            &[(NOT_TYPE, 9..10)],
+        ),
+        (
+            "[None::< ]",
+            "[(error None :: <)]",
+            &[("expected a type, found `]`", 9..10)],
+        ),
+        (
+            "None::<Int Bool> + 1",
+            "(+ (error None :: < Int Bool>) 1)",
+            &[("expected `>` after the type, found a name", 11..15)],
+        ),
+    ];
+
+    recovers(cases);
+
+    let spaced = [
+        "None::<é> ",
+        "None::<{é: Int}> ",
+        "None::<[Int] ",
+        "(None::<1 ) ",
+    ];
+
+    for source in cases.iter().map(|(source, ..)| *source).chain(spaced) {
+        let (tree, _) = recover_with(source, &Options::new());
+        check_tree(source, &tree);
+    }
+}
+
 #[test]
 fn recover_too_deep() {
     let message =
@@ -1544,6 +1628,12 @@ fn recovery_is_linear() {
         "None::<List<".repeat(n),
         "None::<{\"".repeat(n),
         "None::<Int ".repeat(n),
+        "None::<Int + ".repeat(n),
+        "None::< ".repeat(n),
+        "None::<1> ".repeat(n),
+        "None::<é".repeat(n),
+        format!("{}{}", "None::<[".repeat(n), "]".repeat(n)),
+        format!("{}{}", "(None::<1 ".repeat(n), ")".repeat(n)),
         "x::<".repeat(n),
     ] {
         let (tree, errors) = recover_with(&source, &unlimited);

@@ -581,7 +581,8 @@ impl Parser<'_> {
     /// The `<T>` of `name::<T>`, at its `<`: `None` of the type `T`, read
     /// by the same parser as [`Type::parse`](crate::Type::parse), so the
     /// type is one token. In error, the tokens up to the `>` closing it
-    /// are skipped as one.
+    /// are skipped as one. Whitespace is added only before a token added
+    /// after it, so the node never ends in whitespace.
     fn annotation(&mut self, c: Checkpoint, name: Token) -> Result<State, Diagnostic> {
         self.bump()?;
 
@@ -593,34 +594,38 @@ impl Parser<'_> {
             error = true;
         }
 
-        let start = self.space()?;
+        let start = self.space_end(self.lexer.position());
         let rest = self.lexer.text(start, self.lexer.len());
         let by = u32::try_from(start).map_err(internal)?;
 
         match type_prefix(rest) {
             Ok((_, len)) => {
+                self.space_to(start)?;
                 self.tree.token(Syntax::TypeToken, len).map_err(internal)?;
                 let end = start.saturating_add(len);
                 self.lexer.seek(end);
-                let at = self.space()?;
+                let at = self.space_end(end);
 
                 if self.lexer.text(at, at.saturating_add(1)) == ">" {
+                    self.space_to(at)?;
                     self.tree.token(Syntax::Gt, 1).map_err(internal)?;
                     self.lexer.seek(at.saturating_add(1));
                 } else {
-                    let next = match self.lexer.clone().next() {
+                    let mut lexer = self.lexer.clone();
+                    lexer.seek(at);
+                    let next = match lexer.next() {
                         Ok(next) => next,
                         Err(rejected) => Some(rejected.token),
                     };
                     let (found, at) = self.found(next);
                     self.report(at, ErrorKind::ExpectedAnnotationEnd(found));
-                    self.skip_type(1)?;
+                    self.skip_annotation()?;
                     error = true;
                 }
             }
             Err(diagnostic) => {
                 self.reporter.report(diagnostic.shifted(by));
-                self.skip_type(1)?;
+                self.skip_annotation()?;
                 error = true;
             }
         }
@@ -636,60 +641,76 @@ impl Parser<'_> {
         Ok(State::Operator)
     }
 
-    /// Add the whitespace at the lexer's position to the tree, giving
-    /// where it ends.
-    fn space(&mut self) -> Result<usize, Diagnostic> {
-        let start = self.lexer.position();
-        let rest = self.lexer.text(start, self.lexer.len());
+    /// Where the whitespace at `at` ends.
+    fn space_end(&self, at: usize) -> usize {
+        let rest = self.lexer.text(at, self.lexer.len());
         let len = rest
             .char_indices()
             .find(|(_, c)| !c.is_whitespace())
             .map_or(rest.len(), |(at, _)| at);
+        at.saturating_add(len)
+    }
+
+    /// Add the whitespace from the lexer's position to `end` to the tree,
+    /// for a token about to be added at `end`.
+    fn space_to(&mut self, end: usize) -> Result<(), Diagnostic> {
+        let len = end.saturating_sub(self.lexer.position());
 
         if len > 0 {
             self.tree.token(Syntax::Whitespace, len).map_err(internal)?;
         }
 
-        let end = start.saturating_add(len);
         self.lexer.seek(end);
-        Ok(end)
+        Ok(())
     }
 
-    /// Skip what can be part of a type, to past the `>` closing the `depth`
-    /// open `<`, as one `Invalid` token: its error is reported. A token no
-    /// type has, or the end, stops it first.
-    fn skip_type(&mut self, mut depth: usize) -> Result<(), Diagnostic> {
-        let start = self.lexer.position();
+    /// Skip to past the `>` closing an annotation, whose error is reported,
+    /// as one `Invalid` token. Inside a group the skipped text opens, only
+    /// its closer counts. The end, or a closer of a group the annotation is
+    /// in, stops it first. What the lexer rejects is skipped unreported:
+    /// the annotation has its one error. Whitespace after the last token
+    /// skipped is left to the caller.
+    fn skip_annotation(&mut self) -> Result<(), Diagnostic> {
         let mut lexer = self.lexer.clone();
-        let mut end = start;
+        let mut first = None;
+        let mut end = self.lexer.position();
+        let mut angles = 1usize;
+        let mut groups = 0usize;
 
-        while let Ok(Some(token)) = lexer.next() {
+        loop {
+            let token = match lexer.next() {
+                Ok(Some(token)) => token,
+                Ok(None) => break,
+                Err(rejected) => rejected.token,
+            };
+
             match token.kind {
-                Syntax::Lt => depth = depth.saturating_add(1),
-                Syntax::Gt => depth = depth.saturating_sub(1),
-                Syntax::Whitespace
-                | Syntax::NameToken
-                | Syntax::StringToken
-                | Syntax::Comma
-                | Syntax::Colon
-                | Syntax::OpenBrace
-                | Syntax::CloseBrace => {}
-                _ => break,
+                Syntax::Whitespace => continue,
+                kind if opens(kind) => groups = groups.saturating_add(1),
+                kind if closes(kind) => match groups.checked_sub(1) {
+                    Some(g) => groups = g,
+                    None => break,
+                },
+                Syntax::Lt if groups == 0 => angles = angles.saturating_add(1),
+                Syntax::Gt if groups == 0 => angles = angles.saturating_sub(1),
+                _ => {}
             }
 
+            first.get_or_insert(token.start);
             end = token.end;
 
-            if depth == 0 {
+            if angles == 0 {
                 break;
             }
         }
 
-        if end > start {
-            let len = end.saturating_sub(start);
+        if let Some(first) = first {
+            self.space_to(first)?;
+            let len = end.saturating_sub(first);
             self.tree.token(Syntax::Invalid, len).map_err(internal)?;
+            self.lexer.seek(end);
         }
 
-        self.lexer.seek(end);
         Ok(())
     }
 

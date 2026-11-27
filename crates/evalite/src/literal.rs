@@ -112,7 +112,10 @@ impl Type {
 
 /// The type `text` starts with and the bytes it takes, for an annotation
 /// such as the `Int>` of `None::<Int>`, which goes on past the type. Spans
-/// are relative to `text`, which the caller has bounded in length.
+/// are relative to `text`, the rest of a parser's source, which is bounded:
+/// the parser refuses a source longer than its `max_len` ([`DEFAULT_MAX_LEN`],
+/// 65536 bytes, unless raised) and any too long for `u32` to index, so
+/// spans fit.
 pub(crate) fn type_prefix(text: &str) -> Result<(Type, usize), Diagnostic> {
     let mut cursor = Cursor { text, at: 0 };
     let ty = cursor.ty()?;

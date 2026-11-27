@@ -154,8 +154,11 @@ yet takes `Option<T>` from it, so `[None, None::<Bool>]` checks. `::<` after
 any other name is an error (`` only `None` takes a type in `::<..>` ``); a
 type the cursor refuses is reported at its place in the expression, and the
 tokens up to the `>` closing the annotation are skipped as one `Invalid`
-token (a token no type has, or the end, stops the skip), which keeps
-recovery linear (`tests::recovery_is_linear` has annotation inputs).
+token, with no other error (the end, or a closer of a group the annotation
+is in, stops the skip; inside a group the skipped text opens, only its
+closer counts), which keeps recovery linear (`tests::recovery_is_linear`
+has annotation inputs). Whitespace after the type or the skipped text is
+outside the error node.
 Highlighting classes names inside `::<..>` as types (a record field's name as
 a member), with `<`/`>` as punctuation, and the playground's completion offers
 the type names after `::<`, a `Map`'s `,` and a record field's `:`.
