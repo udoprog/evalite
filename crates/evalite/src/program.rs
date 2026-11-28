@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::OnceLock;
 
 use musli::{Decode, Encode};
 
@@ -271,8 +272,10 @@ pub struct Program {
     pub(crate) code: Vec<Instr>,
     pub(crate) result: TypeId,
     pub(crate) memory: Memory,
-    /// The type of each global, built once so listing them does not.
-    pub(crate) global_types: Vec<Type>,
+    /// The type of each global, built the first time they are listed, not
+    /// when the program is made: loading compares the store's types with
+    /// the table without building them.
+    pub(crate) global_types: OnceLock<Vec<Type>>,
     /// Where each constant is, in words from the first, and the length
     /// its reference holds.
     pub(crate) constant_at: Vec<(u32, u32)>,
@@ -308,9 +311,18 @@ impl Program {
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn globals(&self) -> impl ExactSizeIterator<Item = (&str, &Type)> + Clone {
+        let types = self.global_types.get_or_init(|| {
+            let ids: Vec<TypeId> = self.globals.iter().map(|g| g.ty).collect();
+            // A program's global types are checked, and bounded, when it is
+            // made, so they build.
+            self.types
+                .to_types(&ids)
+                .unwrap_or_else(|| ids.iter().map(|_| Type::int()).collect())
+        });
+
         self.globals
             .iter()
-            .zip(&self.global_types)
+            .zip(types)
             .map(|(g, ty)| (g.name.as_str(), ty))
     }
 
@@ -510,10 +522,9 @@ impl Program {
 
         let memory = verifier.code(&code, &global_ids, &functions, result)?;
 
-        let ids: Vec<TypeId> = globals.iter().map(|g| g.ty).collect();
-        let held: Vec<TypeId> = ids
+        let held: Vec<TypeId> = globals
             .iter()
-            .copied()
+            .map(|g| g.ty)
             .chain(function_types(&functions))
             .collect();
 
@@ -531,10 +542,6 @@ impl Program {
             return Err(Invalid::TypeTooLarge.into());
         }
 
-        let global_types = types
-            .to_types(&ids)
-            .ok_or_else(|| StoreError::from(Invalid::BadGlobal))?;
-
         Ok(Self {
             memory: Memory {
                 constants: words(constant_words)?,
@@ -547,7 +554,7 @@ impl Program {
             functions,
             code,
             result,
-            global_types,
+            global_types: OnceLock::new(),
             constant_at,
         })
     }

@@ -577,8 +577,10 @@ A `Program` holds:
 - `memory`: `Memory { stack, heap, constants, globals }` in words;
 - `layout`: the environment's fingerprint (section 7).
 
-It also caches `global_types` (the globals' types, built once) and
-`constant_at`.
+It also keeps `global_types` (the globals' types as `Type`s, built the
+first time `Program::globals()` lists them, in a `OnceLock`, not when the
+program is made: building them was a fifth of `compile` and half of
+`from_bytes` on a sheet) and `constant_at`.
 
 It carries no source text. `DebugInfo` (a span per instruction) is optional,
 from `compile_debug`, and stored separately.
@@ -681,6 +683,7 @@ last, which keeps the stored encoding of the older variants.
 - **Back to `Type`.** `to_type`/`to_types` build `Type` trees from the leaves
   up over the ids reached (`reach`), each reached id once. `reached_size`
   gives what such a build holds, which the verifier bounds for globals.
+  `matches` compares an id against a `Type` without building either.
 - **Stored tables** (`from_stored`):
   - every part comes before what holds it;
   - records are sorted with unique names;
@@ -966,7 +969,11 @@ records each read global as (name, type, slot), with the fingerprint as
 accepts a program when each global it reads is declared with an equal type
 at the same slot. Appending values keeps stored programs accepted. Checking
 every read costs the program's global types, which are bounded by
-`MAX_GLOBAL_TYPE_NODES`. `Machine::load` refuses a program its store does
+`MAX_GLOBAL_TYPE_NODES`; `Types::matches` compares each one's id in the
+program's table against the declared `Type` without building it, following
+lists and options inline and keeping one work list across a load's globals
+for records and maps nested in records and maps, so a load of leaf,
+option and flat record globals allocates nothing. `Machine::load` refuses a program its store does
 not accept.
 
 There is no fingerprint fast path (removed in the store hardening card,

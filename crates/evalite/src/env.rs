@@ -598,18 +598,19 @@ impl Environment {
 /// is no proof two layouts are the same, as one made to collide with
 /// another (from a user's own sheet template, say) would have a program
 /// read its slots as another type. The check costs the program's global
-/// types, which `MAX_GLOBAL_TYPE_NODES` bounds.
+/// types, compared without building them, which `MAX_GLOBAL_TYPE_NODES`
+/// bounds.
 pub(crate) fn refused<'a>(
     program: &Program,
     slot: impl Fn(&str) -> Option<(u32, &'a Type)>,
 ) -> Option<usize> {
-    program
-        .globals
-        .iter()
-        .zip(program.globals())
-        .position(|(global, (name, ty))| {
-            !slot(name).is_some_and(|(at, held)| at == global.slot && held == ty)
+    let mut stack = Vec::new();
+
+    program.globals.iter().position(|global| {
+        !slot(&global.name).is_some_and(|(at, held)| {
+            at == global.slot && program.types.matches(global.ty, held, &mut stack)
         })
+    })
 }
 
 /// The words a value of type `ty` is held in, as

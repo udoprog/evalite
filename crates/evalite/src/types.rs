@@ -996,6 +996,91 @@ impl Types {
             .collect()
     }
 
+    /// Whether `id` is `ty`, without building it: the two are walked
+    /// together, stopping at the first part that differs, so it visits no
+    /// more nodes than `id` has written out. Lists and options are followed
+    /// down to what they hold without a work list, and `stack` is the work
+    /// list for the records and maps a record or a map holds, left empty,
+    /// so a caller comparing many reuses it and a record of leaves or
+    /// options of leaves allocates nothing. `false` when `id` is not in
+    /// the table.
+    pub(crate) fn matches<'a>(
+        &self,
+        id: TypeId,
+        ty: &'a Type,
+        stack: &mut Vec<(TypeId, &'a Type)>,
+    ) -> bool {
+        stack.clear();
+        let same = self.matches_with(id, ty, stack);
+        stack.clear();
+        same
+    }
+
+    fn matches_with<'a>(
+        &self,
+        id: TypeId,
+        ty: &'a Type,
+        stack: &mut Vec<(TypeId, &'a Type)>,
+    ) -> bool {
+        let mut next = match self.follow(id, ty) {
+            Some(next) => next,
+            None => return false,
+        };
+
+        while let Some((id, Type(kind))) = next.take().or_else(|| stack.pop()) {
+            let mut part = |id: TypeId, ty: &'a Type| match self.follow(id, ty) {
+                Some(Some(pair)) => {
+                    stack.push(pair);
+                    true
+                }
+                Some(None) => true,
+                None => false,
+            };
+
+            let same = match (self.nodes.get(id.index()), kind) {
+                (Some(TypeNode::Map { key, value }), Kind::Map(k, v)) => {
+                    part(*key, k) && part(*value, v)
+                }
+                // Both sorted by name, each name once.
+                (Some(TypeNode::Record(fields)), Kind::Record(record)) => {
+                    fields.len() == record.len()
+                        && fields
+                            .iter()
+                            .zip(record)
+                            .all(|(field, (name, ty))| field.name == *name && part(field.ty, ty))
+                }
+                _ => false,
+            };
+
+            if !same {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Follow `id` and `ty` together through lists and options: `None`
+    /// when they differ, else the record or map both reach, or nothing when
+    /// both reach the same leaf. The record or map is not compared.
+    fn follow<'a>(&self, mut id: TypeId, mut ty: &'a Type) -> Option<Option<(TypeId, &'a Type)>> {
+        loop {
+            match (self.nodes.get(id.index())?, &ty.0) {
+                (TypeNode::Int, Kind::Int)
+                | (TypeNode::Bool, Kind::Bool)
+                | (TypeNode::String, Kind::String) => return Some(None),
+                (TypeNode::List(a), Kind::List(b)) | (TypeNode::Option(a), Kind::Option(b)) => {
+                    id = *a;
+                    ty = b;
+                }
+                (TypeNode::Map { .. }, Kind::Map(..)) | (TypeNode::Record(_), Kind::Record(_)) => {
+                    return Some(Some((id, ty)));
+                }
+                _ => return None,
+            }
+        }
+    }
+
     /// Add `id` to what a program holds, keeping `held`'s counts as
     /// [`Program::verify`](crate::program::Program::verify) takes them.
     /// Each node is marked once over every call, so any number of calls

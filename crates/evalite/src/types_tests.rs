@@ -137,3 +137,38 @@ fn stored_maps_need_scalar_keys() {
         "the type refers to a later type: at type 1"
     );
 }
+
+#[test]
+fn matches_compares_without_building() {
+    let samples = [
+        Type::int(),
+        Type::bool(),
+        Type::string(),
+        Type::list(Type::int()),
+        Type::option(Type::int()),
+        Type::option(Type::option(Type::bool())),
+        Type::map(Type::string(), Type::int()),
+        Type::map(Type::int(), Type::string()),
+        record(Type::int()),
+        record(Type::bool()),
+        Type::record([("a", Type::int())]),
+        Type::record([("b", Type::int())]),
+        Type::record([("a", Type::int()), ("c", Type::int())]),
+        Type::list(record(Type::option(Type::string()))),
+    ];
+
+    let mut types = Types::new();
+    let ids: Vec<TypeId> = samples.iter().map(|t| types.intern(t).unwrap()).collect();
+
+    let mut stack = Vec::new();
+
+    for (id, a) in ids.iter().zip(&samples) {
+        for b in &samples {
+            assert_eq!(types.matches(*id, b, &mut stack), a == b, "{a} against {b}");
+        }
+    }
+
+    let past = TypeId(u32::try_from(types.nodes().len()).unwrap());
+    assert!(!types.matches(past, &samples[0], &mut stack));
+    assert!(stack.is_empty());
+}

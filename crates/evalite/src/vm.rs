@@ -434,7 +434,9 @@ impl<'a> Run<'a> {
                 .and_then(|()| self.step(*instr, pc, host))
                 .with_context(|| Message::Instruction { pc: at })
                 .at(Location::Instr(at))
-                .context(Message::Running)?;
+                // Built only on error: a message dropped every step is a
+                // fifth of the run loop.
+                .with_context(|| Message::Running)?;
         }
 
         let value = self.result().context(Message::ReadingResult)?;

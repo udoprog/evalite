@@ -1574,7 +1574,7 @@ fn faulty_programs() {
             heap: 0,
             constants: 0,
         },
-        global_types: Vec::new(),
+        global_types: std::sync::OnceLock::new(),
         constant_at: Vec::new(),
     };
 
