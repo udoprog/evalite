@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use musli::{Decode, Encode};
 
@@ -279,6 +280,37 @@ pub struct Program {
     /// Where each constant is, in words from the first, and the length
     /// its reference holds.
     pub(crate) constant_at: Vec<(u32, u32)>,
+    /// The layout of the store it was last accepted by, so loading it
+    /// again against the same store skips the check (section 7).
+    pub(crate) accepted: Accepted,
+}
+
+/// The id of the last store layout a program was
+/// accepted by, or 0 for none.
+///
+/// A store's layout never changes once made, and each gets an id no other
+/// layout in the process has, so a matching id is proof the program reads
+/// what that layout holds, where it holds it, as no hash could be. A
+/// program does not change either, so a clone keeps it.
+#[derive(Debug, Default)]
+pub(crate) struct Accepted(AtomicU64);
+
+impl Accepted {
+    /// Whether the layout `id` has accepted the program. Id 0 never has.
+    pub(crate) fn by(&self, id: u64) -> bool {
+        id != 0 && self.0.load(Ordering::Relaxed) == id
+    }
+
+    /// Note that the layout `id` accepted the program.
+    pub(crate) fn record(&self, id: u64) {
+        self.0.store(id, Ordering::Relaxed);
+    }
+}
+
+impl Clone for Accepted {
+    fn clone(&self) -> Self {
+        Self(AtomicU64::new(self.0.load(Ordering::Relaxed)))
+    }
 }
 
 impl Program {
@@ -558,6 +590,7 @@ impl Program {
             result,
             global_types: OnceLock::new(),
             constant_at,
+            accepted: Accepted::default(),
         })
     }
 }

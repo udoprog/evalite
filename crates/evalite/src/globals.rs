@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::env::refused;
 use crate::memory::{self, Words, WordsMut, count, fault, get, inside};
@@ -101,6 +102,11 @@ impl Heap {
 /// The values of a store, which name them in errors.
 #[derive(Debug, Clone)]
 struct Layout {
+    /// No other layout made in the process has it, but a clone of the
+    /// store, whose layout is the same; 0 once ids run out, which proves
+    /// nothing. A layout never changes once made, so a program accepted
+    /// by it once is accepted again without checking (section 7).
+    id: u64,
     fingerprint: u64,
     types: Types,
     /// In declaration order, which is slot order.
@@ -116,6 +122,15 @@ struct Held {
     /// Its type in the store's table, which a declared type always has.
     id: Option<TypeId>,
     at: u32,
+}
+
+/// A layout id no layout made before has: 1 for the first, then counting
+/// up, and 0, which proves nothing, if they run out.
+fn next_layout_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+
+    NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+        .unwrap_or(0)
 }
 
 impl Names for Layout {
@@ -188,6 +203,7 @@ impl Globals {
 
         Self {
             layout: Layout {
+                id: next_layout_id(),
                 fingerprint: env.fingerprint(),
                 types,
                 slots,
@@ -268,13 +284,34 @@ impl Globals {
         self.refused(program).is_none()
     }
 
+    /// The id of its layout (section 7).
+    #[cfg(test)]
+    pub(crate) fn layout_id(&self) -> u64 {
+        self.layout.id
+    }
+
     /// The first of the values `program` reads that this store does not
     /// hold where and as it reads it.
+    ///
+    /// A program it has accepted before is not checked again: its layout
+    /// has not changed since, and no other layout has its id.
     pub(crate) fn refused(&self, program: &Program) -> Option<usize> {
-        refused(program, |name| {
+        let id = self.layout.id;
+
+        if program.accepted.by(id) {
+            return None;
+        }
+
+        let refused = refused(program, |name| {
             let held = self.held(name)?.1;
             Some((held.at, &held.ty))
-        })
+        });
+
+        if refused.is_none() {
+            program.accepted.record(id);
+        }
+
+        refused
     }
 
     /// Set the value `name` to `value`, replacing the value before it.

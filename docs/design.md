@@ -1001,6 +1001,31 @@ is checked read by read, which is linear in its reads. The fingerprint is
 kept as stored metadata and a quick hint (`Program::fingerprint()` against
 `Environment::fingerprint()`), never as grounds to accept.
 
+**Accepted once, accepted again.** What a hash cannot prove, identity
+can. A store's layout (its slots, their types and names) never changes
+once `Globals::with_limit` makes it, and each layout gets an id from a
+process-wide counter (`next_layout_id`, from 1; 0 once all 2^64 are
+taken, which proves nothing and is never cached). A clone of the store
+holds the same layout, so it keeps the id. A program holds `accepted`, an
+`AtomicU64` (so `Program` stays `Send + Sync`) with the id of the last
+layout that accepted it. `Globals::refused` (and so `Machine::load` and
+`Globals::accepts`) skips `env::refused` when the ids match, and records
+the id after a full check accepts; a refusal leaves it as it was. Any
+other store, one made from the same environment included, has another id
+and is checked read by read. The cell keeps one id, so a program loaded
+against two stores in turn is checked each time; one store per program,
+as sheets and characterize do, is checked once. `Relaxed` ordering is
+enough: the id stands for an immutable layout, so no other memory is
+published with it. Were a store's layout ever to change in place, the
+change would have to take a fresh id (in effect a generation). The
+environment's own `Environment::accepts` is not cached: an environment
+grows, and it is not on the load path.
+
+The alternative was an explicit token: `Globals::accept(&Program) ->
+Accepted`, handed to `Machine::load`. It says the same, but every host
+would have to keep the token beside the program; the cache needs nothing
+of them.
+
 **The store** (`globals.rs`). `Globals::new(&env)` (or `with_limit(&env,
 words)`) copies the environment's slots (name, `Type`, slot word), interns
 each type into a type table of its own, and records the fingerprint. It

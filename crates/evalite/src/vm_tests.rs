@@ -1326,6 +1326,73 @@ fn stores_check_layouts() {
     assert!(machine.load(&program, &globals).is_err());
 }
 
+/// A program accepted by a store is not checked again against it, but is
+/// against any other store, one made from the same environment included:
+/// only the store's own layout id proves the layout.
+#[test]
+fn stores_remember_accepted_programs() {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<Program>();
+
+    let mut env = Environment::new();
+    env.value("wits", Type::int()).unwrap();
+    let program = compile("wits + 1", &env).unwrap();
+    let mut machine = Machine::default();
+
+    let first = store_of(&env, &[("wits", int(2))]);
+    assert!(!program.accepted.by(first.layout_id()));
+    assert_eq!(
+        machine.load(&program, &first).unwrap().run().unwrap().value,
+        int(3)
+    );
+    assert!(program.accepted.by(first.layout_id()));
+
+    // A store of the same layout has its own id, so it checks again.
+    let same = store_of(&env, &[("wits", int(5))]);
+    assert_ne!(same.layout_id(), first.layout_id());
+    assert!(!program.accepted.by(same.layout_id()));
+    assert_eq!(
+        machine.load(&program, &same).unwrap().run().unwrap().value,
+        int(6)
+    );
+    assert!(program.accepted.by(same.layout_id()));
+    assert!(!program.accepted.by(first.layout_id()));
+
+    // A clone holds the same layout, so it keeps the id.
+    let clone = same.clone();
+    assert_eq!(clone.layout_id(), same.layout_id());
+    assert!(clone.accepts(&program));
+
+    // A store where `wits` is declared again as a Bool is checked, and
+    // refused, though the program was accepted at the same slot before;
+    // a refusal leaves what was accepted as it was.
+    let mut other = Environment::new();
+    other.value("wits", Type::bool()).unwrap();
+    let redeclared = Globals::new(&other);
+    assert!(!redeclared.accepts(&program));
+    assert_eq!(
+        chain(&machine.load(&program, &redeclared).unwrap_err(), &program),
+        "the store does not hold `wits` where the program reads it, of its type: while loading the program"
+    );
+    assert!(program.accepted.by(same.layout_id()));
+
+    // Redeclaring a name keeps the first declaration, and a store made
+    // after has a new id: it checks the program again, and accepts it.
+    assert!(env.value("wits", Type::bool()).is_err());
+    env.value("name", Type::string()).unwrap();
+    let after = store_of(&env, &[("wits", int(9))]);
+    assert!(!program.accepted.by(after.layout_id()));
+    assert_eq!(
+        machine.load(&program, &after).unwrap().run().unwrap().value,
+        int(10)
+    );
+    assert!(program.accepted.by(after.layout_id()));
+
+    // A clone of the program keeps what accepted it; id 0 proves nothing.
+    assert!(program.clone().accepted.by(after.layout_id()));
+    assert!(!program.accepted.by(0));
+}
+
 /// A store and a machine together are at most what a reference can
 /// address. The machine is refused before it reserves its words: it
 /// used to take its 4294967295 words (32 GiB) in `Machine::new`, which
@@ -1576,6 +1643,7 @@ fn faulty_programs() {
         },
         global_types: std::sync::OnceLock::new(),
         constant_at: Vec::new(),
+        accepted: Default::default(),
     };
 
     let global = Instr::Global { at: 0, ty: int };
