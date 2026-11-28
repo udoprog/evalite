@@ -5,7 +5,7 @@ use musli::{Decode, Encode};
 
 use crate::Type;
 use crate::message::{Invalid, Message, StoreError};
-use crate::types::{TypeId, TypeNode, Types, is_value_name};
+use crate::types::{FxBuildHasher, TypeId, TypeNode, Types, is_value_name};
 
 /// The version of the stored form [`Program::to_bytes`] writes.
 pub(crate) const FORMAT: u32 = 13;
@@ -465,7 +465,8 @@ impl Program {
             constant_words = constant_words.saturating_add(constant.words());
         }
 
-        let mut names = HashSet::new();
+        let hasher = types.hasher();
+        let mut names = HashSet::with_capacity_and_hasher(globals.len(), hasher);
         // Each global's slot, where it ends and which it is.
         let mut slots = Vec::with_capacity(globals.len());
 
@@ -497,7 +498,7 @@ impl Program {
             }
         }
 
-        let mut signatures = HashSet::new();
+        let mut signatures = HashSet::with_hasher(hasher);
 
         for (at, function) in functions.iter().enumerate() {
             let at_function = |e: StoreError| e.context(Message::AtFunction { at: count(at) });
@@ -515,10 +516,11 @@ impl Program {
 
         verifier.known(result)?;
 
-        let global_ids = globals
-            .iter()
-            .map(|g| (g.slot, g.ty))
-            .collect::<HashMap<_, _>>();
+        let mut global_ids = HashMap::with_capacity_and_hasher(globals.len(), hasher);
+
+        for global in &globals {
+            global_ids.insert(global.slot, global.ty);
+        }
 
         let memory = verifier.code(&code, &global_ids, &functions, result)?;
 
@@ -629,19 +631,21 @@ impl Verifier<'_> {
     fn code(
         &self,
         code: &[Instr],
-        globals: &HashMap<u32, TypeId>,
+        globals: &HashMap<u32, TypeId, FxBuildHasher>,
         functions: &[HostFunction],
         result: TypeId,
     ) -> Result<Memory, StoreError> {
         let int = self.find(TypeNode::Int).ok();
         let bool = self.find(TypeNode::Bool).ok();
+        let int_ty = || int.ok_or_else(|| StoreError::from(Invalid::MissingType));
+        let bool_ty = || bool.ok_or_else(|| StoreError::from(Invalid::MissingType));
 
-        let mut stack = Model::new(self.types);
+        let mut stack = Model::new(self.types, code.len());
         let mut heap = 0usize;
         // The stack each pending jump expects where it lands.
         let mut targets = BTreeMap::<usize, usize>::new();
         // The key constants found sorted, which maps share.
-        let mut sorted = HashSet::new();
+        let mut sorted = HashSet::with_hasher(self.types.hasher());
 
         for (at, instr) in code.iter().enumerate() {
             let fail = |invalid: Invalid| {
@@ -661,8 +665,8 @@ impl Verifier<'_> {
             };
 
             let push = match *instr {
-                Instr::Int(_) => self.find(TypeNode::Int)?,
-                Instr::Bool(_) => self.find(TypeNode::Bool)?,
+                Instr::Int(_) => int_ty()?,
+                Instr::Bool(_) => bool_ty()?,
                 Instr::Const(c) => {
                     *index(&self.constant_types, c).ok_or_else(|| fail(Invalid::NoSuchConstant))?
                 }
@@ -675,21 +679,21 @@ impl Verifier<'_> {
                 }
                 Instr::Neg | Instr::Abs => {
                     need(stack.pop(), int)?;
-                    self.find(TypeNode::Int)?
+                    int_ty()?
                 }
                 Instr::Not => {
                     need(stack.pop(), bool)?;
-                    self.find(TypeNode::Bool)?
+                    bool_ty()?
                 }
                 Instr::Add | Instr::Sub | Instr::Mul | Instr::Div | Instr::Rem => {
                     need(stack.pop(), int)?;
                     need(stack.pop(), int)?;
-                    self.find(TypeNode::Int)?
+                    int_ty()?
                 }
                 Instr::Lt | Instr::Le | Instr::Gt | Instr::Ge => {
                     need(stack.pop(), int)?;
                     need(stack.pop(), int)?;
-                    self.find(TypeNode::Bool)?
+                    bool_ty()?
                 }
                 Instr::Eq | Instr::Ne => {
                     let right = stack.pop();
@@ -699,7 +703,7 @@ impl Verifier<'_> {
                         return Err(fail(Invalid::MixedCompare));
                     }
 
-                    self.find(TypeNode::Bool)?
+                    bool_ty()?
                 }
                 Instr::And(skip) | Instr::Or(skip) => {
                     // It lands with the operand it keeps.
@@ -955,7 +959,7 @@ impl Verifier<'_> {
         &self,
         keys: u32,
         key: TypeId,
-        sorted: &mut HashSet<u32>,
+        sorted: &mut HashSet<u32, FxBuildHasher>,
     ) -> Result<usize, Invalid> {
         let list = index(&self.constant_types, keys).ok_or(Invalid::NoSuchConstant)?;
 
@@ -1014,7 +1018,7 @@ struct Model<'a> {
     frames: Vec<Frame>,
     /// The id of each stack by the id of the stack below its top and the
     /// type on top.
-    ids: HashMap<(usize, TypeId), usize>,
+    ids: HashMap<(usize, TypeId), usize, FxBuildHasher>,
     /// The id of the stack as it is now.
     top: usize,
     max: usize,
@@ -1029,16 +1033,20 @@ struct Frame {
 }
 
 impl<'a> Model<'a> {
-    fn new(types: &'a Types) -> Self {
+    fn new(types: &'a Types, code_len: usize) -> Self {
+        let cap = code_len.min(64);
+        let mut frames = Vec::with_capacity(cap.saturating_add(1));
+        frames.push(Frame {
+            below: 0,
+            ty: TypeId(0),
+            words: 0,
+            len: 0,
+        });
+
         Self {
             types,
-            frames: vec![Frame {
-                below: 0,
-                ty: TypeId(0),
-                words: 0,
-                len: 0,
-            }],
-            ids: HashMap::new(),
+            frames,
+            ids: HashMap::with_capacity_and_hasher(cap, types.hasher()),
             top: 0,
             max: 0,
         }

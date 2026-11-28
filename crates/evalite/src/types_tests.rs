@@ -172,3 +172,67 @@ fn matches_compares_without_building() {
     assert!(!types.matches(past, &samples[0], &mut stack));
     assert!(stack.is_empty());
 }
+
+#[test]
+fn copy_from_copies_and_caches_shared_types() {
+    let samples = [
+        Type::int(),
+        Type::bool(),
+        Type::string(),
+        Type::option(Type::int()),
+        Type::list(Type::option(Type::int())),
+        Type::map(Type::string(), Type::list(Type::int())),
+        Type::record([
+            ("a", Type::option(Type::int())),
+            ("b", Type::option(Type::int())),
+            ("c", Type::list(Type::int())),
+        ]),
+    ];
+
+    let mut src = Types::new();
+    let src_ids: Vec<TypeId> = samples.iter().map(|t| src.intern(t).unwrap()).collect();
+
+    let mut dst = Types::new();
+    // Seed a different ordering in dst so ids do not trivially match src.
+    dst.intern(&Type::bool()).unwrap();
+    dst.intern(&Type::int()).unwrap();
+
+    let mut map = Vec::new();
+
+    for (src_id, ty) in src_ids.iter().zip(&samples) {
+        let copied = dst.copy_from(&src, *src_id, &mut map).unwrap();
+        assert_eq!(dst.to_type(copied).as_ref(), Some(ty));
+        // Second call hits the cache and returns the same id.
+        assert_eq!(dst.copy_from(&src, *src_id, &mut map), Some(copied));
+    }
+
+    let past = TypeId(u32::try_from(src.nodes().len()).unwrap());
+    assert_eq!(dst.copy_from(&src, past, &mut map), None);
+}
+
+#[test]
+fn fx_hasher_mixes_high_bits_into_low_buckets() {
+    use crate::types::FxBuildHasher;
+    use std::collections::HashSet;
+    use std::hash::BuildHasher;
+
+    for seed in [0u64, 0x1234_5678_9abc_def0, u64::MAX] {
+        let bh = FxBuildHasher::new(seed);
+
+        let u32_buckets: HashSet<u64> =
+            (0u32..1024).map(|i| bh.hash_one(i << 20) & 0x3ff).collect();
+        assert!(
+            u32_buckets.len() > 500,
+            "u32 high-bit keys collapsed to {} buckets for seed {seed:#x}",
+            u32_buckets.len()
+        );
+
+        let u64_buckets: HashSet<u64> =
+            (0u64..1024).map(|i| bh.hash_one(i << 52) & 0x3ff).collect();
+        assert!(
+            u64_buckets.len() > 500,
+            "u64 high-bit keys collapsed to {} buckets for seed {seed:#x}",
+            u64_buckets.len()
+        );
+    }
+}

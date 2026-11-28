@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::types::{Kind, TypeFault, check_type, is_value_name};
+use crate::types::{Kind, TypeFault, TypeId, Types, check_type, is_value_name};
 use crate::{Program, Type};
 
 /// One way to call a caller's function, which the machine asks the caller
@@ -276,6 +276,9 @@ pub struct Environment {
     words: u32,
     /// The layout so far, (name, type) in declaration order.
     fingerprint: Fingerprint,
+    /// Every declared value's type pre-interned, so compiling copies
+    /// already-interned nodes instead of walking `Type` trees each time.
+    pub(crate) types: Types,
 }
 
 /// Where a declared value is held: `width` words from word `at` of the
@@ -284,6 +287,7 @@ pub struct Environment {
 pub(crate) struct Slot {
     pub(crate) name: String,
     pub(crate) ty: Type,
+    pub(crate) ty_id: TypeId,
     pub(crate) at: u32,
 }
 
@@ -332,11 +336,17 @@ impl Environment {
             .and_then(|width| at.checked_add(width))
             .ok_or_else(|| DeclareError::new(DeclareKind::TooManySlots, name))?;
 
+        let ty_id = self
+            .types
+            .intern(&ty)
+            .ok_or_else(|| DeclareError::new(DeclareKind::TypeTooLarge, name))?;
+
         self.fingerprint.value(name, &ty);
         self.names.insert(name.to_owned(), self.slots.len());
         self.slots.push(Slot {
             name: name.to_owned(),
             ty,
+            ty_id,
             at,
         });
         Ok(())

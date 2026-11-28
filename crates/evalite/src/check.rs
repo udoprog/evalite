@@ -18,7 +18,9 @@ use crate::program::{Constant, Global, HostFunction, Instr, Program, Scalar};
 use crate::references::{Literal, Recorder, Reference, ReferenceKind};
 use crate::sig::{Id, Mismatch, Shape, Unfit};
 use crate::syntax::{Syntax, callee, unescape};
-use crate::types::{FieldNode, Held, TypeFault, TypeId, TypeNode, Types, check_type};
+use crate::types::{
+    FieldNode, FxBuildHasher, Held, TypeFault, TypeId, TypeNode, Types, check_type,
+};
 
 type N<'a> = Element<'a, Syntax, crate::parser::Flavor>;
 
@@ -397,17 +399,20 @@ struct Compiler<'a> {
     int: TypeId,
     bool: TypeId,
     constants: Vec<Constant>,
-    strings: HashMap<String, u32>,
+    strings: HashMap<String, u32, FxBuildHasher>,
     globals: Vec<Global>,
     /// The type of each global used so far, by its slot, so each is
     /// interned once.
-    global_types: HashMap<u32, TypeId>,
+    global_types: HashMap<u32, TypeId, FxBuildHasher>,
+    /// Mapping from `env.types` ids to `self.types` ids, so shared global
+    /// types are copied once per compile.
+    env_types: Vec<Option<TypeId>>,
     functions: Vec<HostFunction>,
-    function_ids: HashMap<(String, Vec<TypeId>), u32>,
+    function_ids: HashMap<(String, Vec<TypeId>), u32, FxBuildHasher>,
     /// The id of each host function's parameter and result type met so
     /// far, by where the environment holds it, so each is interned once
     /// however many calls there are.
-    declared: HashMap<*const Type, TypeId>,
+    declared: HashMap<*const Type, TypeId, FxBuildHasher>,
     code: Vec<Instr>,
     /// The span of each instruction of `code`.
     spans: Vec<Span<u32>>,
@@ -436,10 +441,14 @@ struct Compiler<'a> {
 impl<'a> Compiler<'a> {
     fn new(source: &'a str, env: &'a Environment, reporter: Reporter) -> Result<Self, Diagnostic> {
         let mut types = Types::new();
+        let hasher = types.hasher();
         let int = types.add(TypeNode::Int).ok_or_else(|| internal("no Int"))?;
         let bool = types
             .add(TypeNode::Bool)
             .ok_or_else(|| internal("no Bool"))?;
+
+        let bounded = source.len().min(crate::DEFAULT_MAX_LEN);
+        let est_ops = (bounded / 4).max(8);
 
         Ok(Self {
             source,
@@ -448,17 +457,18 @@ impl<'a> Compiler<'a> {
             int,
             bool,
             constants: Vec::new(),
-            strings: HashMap::new(),
+            strings: HashMap::with_hasher(hasher),
             globals: Vec::new(),
-            global_types: HashMap::new(),
+            global_types: HashMap::with_hasher(hasher),
+            env_types: Vec::new(),
             functions: Vec::new(),
-            function_ids: HashMap::new(),
-            declared: HashMap::new(),
-            code: Vec::new(),
-            spans: Vec::new(),
+            function_ids: HashMap::with_hasher(hasher),
+            declared: HashMap::with_hasher(hasher),
+            code: Vec::with_capacity(est_ops),
+            spans: Vec::with_capacity(est_ops),
             span: Span::point(0),
             held: Held::default(),
-            values: Vec::new(),
+            values: Vec::with_capacity(8),
             jumps: Vec::new(),
             error: TypeId(u32::MAX),
             reporter,
@@ -638,7 +648,8 @@ impl<'a> Compiler<'a> {
         };
 
         let expect = expected.map_or(Expect::Nothing, Expect::Type);
-        let mut work = vec![Work::Enter(root, expect)];
+        let mut work = Vec::with_capacity(16);
+        work.push(Work::Enter(root, expect));
 
         while let Some(item) = work.pop() {
             self.span = item.node().span();
@@ -1264,7 +1275,10 @@ impl<'a> Compiler<'a> {
             return Ok((slot.at, *ty));
         }
 
-        let ty = self.intern(&slot.ty, at)?;
+        let ty = self
+            .types
+            .copy_from(&self.env.types, slot.ty_id, &mut self.env_types)
+            .ok_or_else(|| internal("an environment type outside its table"))?;
         self.hold(ty, at)?;
         self.globals.push(Global {
             name: name.to_owned(),

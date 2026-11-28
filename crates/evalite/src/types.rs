@@ -555,7 +555,25 @@ impl Hasher for Passthrough {
 /// collide; each table therefore starts its hashes from its own random seed,
 /// which the writer of those bytes cannot know, keeping chains short.
 #[derive(Debug, Clone, Copy, Default)]
-struct FxHasher(u64);
+pub(crate) struct FxHasher(u64);
+
+/// A [`BuildHasher`] for [`FxHasher`] seeded per table or verification pass.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FxBuildHasher(u64);
+
+impl FxBuildHasher {
+    pub(crate) fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+}
+
+impl BuildHasher for FxBuildHasher {
+    type Hasher = FxHasher;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        FxHasher(self.0)
+    }
+}
 
 impl FxHasher {
     const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
@@ -567,7 +585,10 @@ impl FxHasher {
 
 impl Hasher for FxHasher {
     fn finish(&self) -> u64 {
-        self.0
+        // Fold high bits down so low-bit bucket selection depends on the whole
+        // key, preventing high-bit flooding on untrusted stored inputs.
+        let h = (self.0 ^ (self.0 >> 32)).wrapping_mul(Self::SEED);
+        h ^ (h >> 32)
     }
 
     fn write(&mut self, bytes: &[u8]) {
@@ -615,6 +636,25 @@ fn leaf(node: &TypeNode) -> Option<usize> {
 impl Types {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn with_capacity(nodes: usize) -> Self {
+        let non_leaves = nodes.saturating_sub(3);
+        Self {
+            nodes: Vec::with_capacity(nodes),
+            heads: HashMap::with_capacity_and_hasher(non_leaves, BuildHasherDefault::default()),
+            next: Vec::with_capacity(nodes),
+            depths: Vec::with_capacity(nodes),
+            sizes: Vec::with_capacity(nodes),
+            widths: Vec::with_capacity(nodes),
+            offsets: Vec::with_capacity(nodes),
+            leaves: [None; 3],
+            seed: RandomState::new().hash_one(0u8),
+        }
+    }
+
+    pub(crate) fn hasher(&self) -> FxBuildHasher {
+        FxBuildHasher::new(self.seed)
     }
 
     pub(crate) fn nodes(&self) -> &[TypeNode] {
@@ -814,12 +854,17 @@ impl Types {
     /// full, the type nests past [`MAX_TYPE_DEPTH`] or has more than
     /// [`MAX_TYPE_NODES`] nodes.
     pub(crate) fn add(&mut self, node: TypeNode) -> Option<TypeId> {
+        if let Some(n) = leaf(&node) {
+            if let Some(id) = self.leaves.get(n).copied().flatten() {
+                return Some(id);
+            }
+
+            return self.add_new(node, 0);
+        }
+
         let hash = self.hash_node(&node);
 
-        if let Some(id) = match leaf(&node) {
-            Some(n) => self.leaves.get(n).copied().flatten(),
-            None => self.lookup(hash, |n| *n == node),
-        } {
+        if let Some(id) = self.lookup(hash, |n| *n == node) {
             return Some(id);
         }
 
@@ -857,7 +902,17 @@ impl Types {
         let leaf = leaf(&node);
 
         let offsets = match &node {
-            TypeNode::Record(fields) => self.field_offsets(fields).map(|(at, _)| at).collect(),
+            TypeNode::Record(fields) => {
+                let mut offsets = Vec::with_capacity(fields.len());
+                let mut at = 0usize;
+
+                for field in fields {
+                    offsets.push(at);
+                    at = at.saturating_add(self.width(field.ty));
+                }
+
+                offsets
+            }
             _ => Vec::new(),
         };
 
@@ -978,6 +1033,154 @@ impl Types {
         done.pop()
     }
 
+    /// Copy `id` and every type it reaches from `src` into `self`, caching
+    /// mapped ids in `map` (indexed by `src`'s ids) so shared types across
+    /// globals are copied once per compile.
+    pub(crate) fn copy_from(
+        &mut self,
+        src: &Types,
+        id: TypeId,
+        map: &mut Vec<Option<TypeId>>,
+    ) -> Option<TypeId> {
+        if let Some(mapped) = map.get(id.index()).copied().flatten() {
+            return Some(mapped);
+        }
+
+        match src.get(id)? {
+            TypeNode::Int => {
+                let dst = self.add(TypeNode::Int)?;
+                record_map(map, id, dst)?;
+                return Some(dst);
+            }
+            TypeNode::Bool => {
+                let dst = self.add(TypeNode::Bool)?;
+                record_map(map, id, dst)?;
+                return Some(dst);
+            }
+            TypeNode::String => {
+                let dst = self.add(TypeNode::String)?;
+                record_map(map, id, dst)?;
+                return Some(dst);
+            }
+            _ => {}
+        }
+
+        enum Step {
+            Visit(TypeId),
+            Build(TypeId),
+        }
+
+        let mut steps = Vec::with_capacity(8);
+        steps.push(Step::Visit(id));
+
+        while let Some(step) = steps.pop() {
+            match step {
+                Step::Visit(cur) => {
+                    if map.get(cur.index()).copied().flatten().is_some() {
+                        continue;
+                    }
+
+                    steps.push(Step::Build(cur));
+
+                    match src.get(cur)? {
+                        TypeNode::Int | TypeNode::Bool | TypeNode::String => {}
+                        TypeNode::List(t) | TypeNode::Option(t) => {
+                            if map.get(t.index()).copied().flatten().is_none() {
+                                steps.push(Step::Visit(*t));
+                            }
+                        }
+                        TypeNode::Map { key, value } => {
+                            if map.get(value.index()).copied().flatten().is_none() {
+                                steps.push(Step::Visit(*value));
+                            }
+                            if map.get(key.index()).copied().flatten().is_none() {
+                                steps.push(Step::Visit(*key));
+                            }
+                        }
+                        TypeNode::Record(fields) => {
+                            let mut prev = None;
+                            for field in fields.iter().rev() {
+                                if prev != Some(field.ty)
+                                    && map.get(field.ty.index()).copied().flatten().is_none()
+                                {
+                                    steps.push(Step::Visit(field.ty));
+                                    prev = Some(field.ty);
+                                }
+                            }
+                        }
+                    }
+                }
+                Step::Build(cur) => {
+                    if map.get(cur.index()).copied().flatten().is_some() {
+                        continue;
+                    }
+
+                    let dst = match src.get(cur)? {
+                        TypeNode::Int => self.add(TypeNode::Int)?,
+                        TypeNode::Bool => self.add(TypeNode::Bool)?,
+                        TypeNode::String => self.add(TypeNode::String)?,
+                        TypeNode::List(t) => {
+                            let inner = map.get(t.index()).copied().flatten()?;
+                            self.add(TypeNode::List(inner))?
+                        }
+                        TypeNode::Option(t) => {
+                            let inner = map.get(t.index()).copied().flatten()?;
+                            self.add(TypeNode::Option(inner))?
+                        }
+                        TypeNode::Map { key, value } => {
+                            let key = map.get(key.index()).copied().flatten()?;
+                            let value = map.get(value.index()).copied().flatten()?;
+                            self.add(TypeNode::Map { key, value })?
+                        }
+                        TypeNode::Record(fields) => {
+                            let mut hasher = FxHasher(self.seed);
+                            3u8.hash(&mut hasher);
+
+                            for field in fields {
+                                let ty = map.get(field.ty.index()).copied().flatten()?;
+                                field.name.as_str().hash(&mut hasher);
+                                ty.hash(&mut hasher);
+                            }
+
+                            let hash = hasher.finish();
+                            let found = self.lookup(hash, |n| match n {
+                                TypeNode::Record(f) => {
+                                    f.len() == fields.len()
+                                        && f.iter().zip(fields).all(|(a, b)| {
+                                            map.get(b.ty.index()).copied().flatten() == Some(a.ty)
+                                                && a.name == b.name
+                                        })
+                                }
+                                _ => false,
+                            });
+
+                            match found {
+                                Some(existing) => existing,
+                                None => {
+                                    let mut remapped = Vec::with_capacity(fields.len());
+
+                                    for field in fields {
+                                        let ty = map.get(field.ty.index()).copied().flatten()?;
+                                        remapped.push(FieldNode {
+                                            name: field.name.clone(),
+                                            ty,
+                                        });
+                                    }
+
+                                    self.add_new(TypeNode::Record(remapped), hash)?
+                                }
+                            }
+                        }
+                    };
+
+                    record_map(map, cur, dst)?;
+                }
+            }
+        }
+
+        map.get(id.index()).copied().flatten()
+    }
+
     /// The [`Type`] of `id`, built from the leaves up so nothing recurses.
     pub(crate) fn to_type(&self, id: TypeId) -> Option<Type> {
         self.build(&[id])?.get_mut(id.index())?.take()
@@ -1086,8 +1289,28 @@ impl Types {
     /// Each node is marked once over every call, so any number of calls
     /// walk the table once. `None` when `id` is not in the table.
     pub(crate) fn hold(&self, held: &mut Held, id: TypeId) -> Option<()> {
-        held.nodes = held.nodes.saturating_add(*self.sizes.get(id.index())?);
-        let mut stack = vec![id];
+        let size = *self.sizes.get(id.index())?;
+        held.nodes = held.nodes.saturating_add(size);
+
+        if held.marked.get(id.index()).copied().unwrap_or(false) {
+            return Some(());
+        }
+
+        if held.marked.len() <= id.index() {
+            held.marked.resize(id.index().checked_add(1)?, false);
+        }
+
+        *held.marked.get_mut(id.index())? = true;
+        held.reached = held.reached.saturating_add(size);
+
+        let node = self.nodes.get(id.index())?;
+
+        if matches!(node, TypeNode::Int | TypeNode::Bool | TypeNode::String) {
+            return Some(());
+        }
+
+        let mut stack = Vec::new();
+        for_each_part(node, |part| stack.push(part));
 
         while let Some(id) = stack.pop() {
             if held.marked.len() <= id.index() {
@@ -1102,7 +1325,7 @@ impl Types {
 
             *marked = true;
             held.reached = held.reached.saturating_add(*self.sizes.get(id.index())?);
-            stack.extend(parts(self.nodes.get(id.index())?));
+            for_each_part(self.nodes.get(id.index())?, |part| stack.push(part));
         }
 
         Some(())
@@ -1143,8 +1366,17 @@ impl Types {
                 continue;
             }
 
-            for part in parts(self.nodes.get(at)?) {
-                *reach.get_mut(part.index())? = true;
+            let mut ok = true;
+            for_each_part(self.nodes.get(at)?, |part| {
+                if let Some(slot) = reach.get_mut(part.index()) {
+                    *slot = true;
+                } else {
+                    ok = false;
+                }
+            });
+
+            if !ok {
+                return None;
             }
         }
 
@@ -1195,7 +1427,7 @@ impl Types {
     /// nested past [`MAX_TYPE_DEPTH`] or with more than [`MAX_TYPE_NODES`]
     /// nodes written out.
     pub(crate) fn from_stored(nodes: Vec<TypeNode>) -> Result<Self, StoreError> {
-        let mut types = Self::new();
+        let mut types = Self::with_capacity(nodes.len());
 
         for (at, node) in nodes.into_iter().enumerate() {
             let fail = |invalid: Invalid| {
@@ -1204,10 +1436,15 @@ impl Types {
                 })
             };
 
-            for part in parts(&node) {
+            let mut refers_later = false;
+            for_each_part(&node, |part| {
                 if part.index() >= at {
-                    return Err(fail(Invalid::TypeRefersLater));
+                    refers_later = true;
                 }
+            });
+
+            if refers_later {
+                return Err(fail(Invalid::TypeRefersLater));
             }
 
             match &node {
@@ -1263,12 +1500,31 @@ impl Held {
     }
 }
 
-/// The ids a node refers to.
-fn parts(node: &TypeNode) -> Vec<TypeId> {
+/// Record `src -> dst` in `map`, growing it as needed.
+fn record_map(map: &mut Vec<Option<TypeId>>, src: TypeId, dst: TypeId) -> Option<()> {
+    let at = src.index();
+
+    if map.len() <= at {
+        map.resize(at.checked_add(1)?, None);
+    }
+
+    *map.get_mut(at)? = Some(dst);
+    Some(())
+}
+
+/// Visit each id a node refers to, without allocating.
+fn for_each_part(node: &TypeNode, mut f: impl FnMut(TypeId)) {
     match node {
-        TypeNode::Int | TypeNode::Bool | TypeNode::String => Vec::new(),
-        TypeNode::List(t) | TypeNode::Option(t) => vec![*t],
-        TypeNode::Record(fields) => fields.iter().map(|f| f.ty).collect(),
-        TypeNode::Map { key, value } => vec![*key, *value],
+        TypeNode::Int | TypeNode::Bool | TypeNode::String => {}
+        TypeNode::List(t) | TypeNode::Option(t) => f(*t),
+        TypeNode::Record(fields) => {
+            for field in fields {
+                f(field.ty);
+            }
+        }
+        TypeNode::Map { key, value } => {
+            f(*key);
+            f(*value);
+        }
     }
 }

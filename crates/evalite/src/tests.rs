@@ -752,7 +752,18 @@ fn error_paths() {
             11..12,
         ),
         ("f(None::<Map<Int>>, 1)", "expected `,`, found `>`", 16..17),
+        (
+            "a:::b",
+            "expected a function name after `::`, found `:`",
+            3..4,
+        ),
+        (
+            "a: :b",
+            "expected an operator or the end of the expression, found `:`",
+            1..2,
+        ),
     ]);
+    assert_eq!(sexp("Int \t\n :: min(a)"), "(call Int::min a)");
 }
 
 /// Each source has one diagnostic, an unclosed group: its message, its

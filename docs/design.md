@@ -417,7 +417,10 @@ two have one checker and identical errors (section 9).
 - Builds a lossless `syntree` tree (`Syntax` kinds in `syntax.rs`). Every byte
   is covered, whitespace included, and nodes never end in whitespace.
 - The flavor `Flavor` is compact: `u32` pointers and widths, and no token
-  index (`EmptyVec`), since evalite never queries one.
+  index (`EmptyVec`), since evalite never queries one. `Builder` node/token
+  capacities and the parser's `frames`/`groups` stacks are pre-reserved from
+  `source.len().min(DEFAULT_MAX_LEN)`, and single-token literals and plain/dot
+  names use `open`/`close` directly instead of `checkpoint`/`close_at`.
 - It is not recursive. It is a two-state loop (`Operand`/`Operator`) with
   three explicit stacks:
   - `frames`: pending prefix operators, binary operators and groups;
@@ -663,8 +666,14 @@ last, which keeps the stored encoding of the older variants.
     the map use the precomputed hash as is.
   - `intern(&Type)` builds a `Type` tree bottom-up with an explicit work list.
     It finds an existing record without cloning field names.
+  - `Environment` pre-interns each declared slot's type into its own `Types`
+    table (`Slot::ty_id`), and `Compiler` copies only the reachable subgraph of
+    used globals via `Types::copy_from`, caching `env -> program` ids across
+    globals in one compile.
 - **Hashing.** A small Fx-style hasher (`FxHasher`: rotate, xor, multiply by
-  `0x517cc1b727220a95`).
+  `0x517cc1b727220a95`), also exposed as `FxBuildHasher` seeded from the
+  table's random seed for the verifier (`Model::ids`, `global_ids`,
+  `names`/`signatures`/`sorted`) and compiler maps.
   - Stored tables are untrusted, so record names could be chosen to collide.
     Each table therefore starts from a random seed
     (`RandomState::new().hash_one(0u8)`), which the writer cannot know.

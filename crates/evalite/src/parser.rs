@@ -127,15 +127,22 @@ pub(crate) fn parse_with(source: &str, options: &Options) -> Result<Parsed, Diag
         )));
     }
 
+    let bounded = source.len().min(DEFAULT_MAX_LEN);
+    let nodes = (bounded / 2).max(8);
+    let tokens = (bounded / 2).max(8);
+    let tree = Builder::with_capacities(nodes, tokens)
+        .map_err(internal)
+        .map_err(Diagnostics::one)?;
+
     let mut parser = Parser {
         lexer: Lexer::new(source),
-        tree: Builder::new_with(),
+        tree,
         peeked: None,
         rejected: false,
         reported: false,
         trivia: None,
-        frames: Vec::new(),
-        groups: Vec::new(),
+        frames: Vec::with_capacity((bounded / 16).clamp(4, 32)),
+        groups: Vec::with_capacity(4),
         parens: 0,
         brackets: 0,
         braces: 0,
@@ -529,11 +536,17 @@ impl Parser<'_> {
             Syntax::StringToken => self.literal(c, Syntax::String),
             Syntax::True | Syntax::False => self.literal(c, Syntax::Bool),
             Syntax::NameToken => {
-                self.bump()?;
-
                 let mut path = None;
+                let next_at = self.space_end(self.lexer.position());
+                let is_path = self.lexer.text(next_at, self.lexer.len()).starts_with("::");
 
-                if self.peek_kind() == Some(Syntax::ColonColon) {
+                if !is_path {
+                    self.tree.open(Syntax::Name).map_err(internal)?;
+                    self.bump()?;
+                    self.tree.close().map_err(internal)?;
+                } else {
+                    self.bump()?;
+                    self.peek();
                     self.bump()?;
 
                     if self.peek_kind() == Some(Syntax::Lt) {
@@ -554,8 +567,6 @@ impl Parser<'_> {
                     path = Some(name);
                     self.bump()?;
                     self.close_at(&c, Syntax::Path)?;
-                } else {
-                    self.close_at(&c, Syntax::Name)?;
                 }
 
                 if let Some(open) = self.peek().filter(|t| t.kind == Syntax::OpenParen) {
@@ -763,8 +774,9 @@ impl Parser<'_> {
     }
 
     fn literal(&mut self, c: Checkpoint, kind: Syntax) -> Result<State, Diagnostic> {
+        self.tree.open(kind).map_err(internal)?;
         self.bump()?;
-        self.close_at(&c, kind)?;
+        self.tree.close().map_err(internal)?;
         self.primary = Some(c);
         Ok(State::Operator)
     }
@@ -1026,9 +1038,10 @@ impl Parser<'_> {
                     return Ok(Some(State::Operator));
                 }
 
-                let c = self.checkpoint()?;
+                self.flush()?;
+                self.tree.open(Syntax::Name).map_err(internal)?;
                 self.bump()?;
-                self.close_at(&c, Syntax::Name)?;
+                self.tree.close().map_err(internal)?;
 
                 if let Some(open) = self.peek().filter(|t| t.kind == Syntax::OpenParen) {
                     let args = self.checkpoint()?;
