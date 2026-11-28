@@ -345,6 +345,13 @@ impl Machine {
             .filter(|at| *at >= base)
             .ok_or_else(|| fault(Fault::ConstantsLargerThanMachine))?;
 
+        // The stack is the last of the machine's words, so a push past its
+        // top is past them: `push` and `pop` check only that.
+        let stack_at = stack_base
+            .checked_sub(base)
+            .filter(|at| at.checked_add(stack_cap) == Some(self.words.len()))
+            .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
+
         let mut run = Run {
             store,
             set: globals.set_flags(),
@@ -357,6 +364,7 @@ impl Machine {
             heap: size(memory.heap)?,
             stack_base,
             stack_cap,
+            stack_at,
             sp: 0,
             peak_len: base,
             peak_sp: 0,
@@ -397,6 +405,9 @@ pub struct Run<'a> {
     /// The stack is the `stack_cap` words from `stack_base`, `sp` deep.
     stack_base: usize,
     stack_cap: usize,
+    /// Where the stack starts in `words`: `stack_base - base`. It ends
+    /// where they do, `stack_cap` words on.
+    stack_at: usize,
     sp: usize,
     peak_len: usize,
     peak_sp: usize,
@@ -1172,14 +1183,17 @@ impl<'a> Run<'a> {
         Ok(())
     }
 
-    /// Push `word`. The stack is in the machine's words, so it is
-    /// written there without asking which memory holds it.
+    /// Push `word`. The stack is the last of the machine's words, so the
+    /// word past its top is past them, and one bounds check covers both.
     #[inline]
     fn push(&mut self, word: Word) -> Result<(), RunError> {
-        let at = self.reserve(1)?;
-        *at.checked_sub(self.base)
-            .and_then(|at| self.words.get_mut(at))
-            .ok_or_else(|| fault(Fault::StackOutsideMemory))? = word;
+        // Neither wraps: `stack_at + sp` is at most the words' length.
+        *self
+            .words
+            .get_mut(self.stack_at.wrapping_add(self.sp))
+            .ok_or_else(|| fault(Fault::UndeclaredStack))? = word;
+        self.sp = self.sp.wrapping_add(1);
+        self.peak_sp = self.peak_sp.max(self.sp);
         Ok(())
     }
 
@@ -1228,17 +1242,16 @@ impl<'a> Run<'a> {
         self.push_from(from, width)
     }
 
+    #[inline]
     fn pop(&mut self) -> Result<Word, RunError> {
         let sp = self
             .sp
             .checked_sub(1)
             .ok_or_else(|| fault(Fault::EmptyStack))?;
-        // The stack is in the machine's words.
+        // Doesn't wrap: `stack_at + sp` is less than the words' length.
         let word = self
-            .stack_base
-            .checked_add(sp)
-            .and_then(|at| at.checked_sub(self.base))
-            .and_then(|at| self.words.get(at))
+            .words
+            .get(self.stack_at.wrapping_add(sp))
             .copied()
             .ok_or_else(|| fault(Fault::StackOutsideMemory))?;
         self.sp = sp;
