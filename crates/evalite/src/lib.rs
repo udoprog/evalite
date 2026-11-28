@@ -754,65 +754,13 @@
 //! example covering its failure paths, which `#![deny(missing_docs)]` and
 //! clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 //!
-//! [`compile_as`]: https://docs.rs/evalite/latest/evalite/fn.compile_as.html
-//! [`compile_debug`]: https://docs.rs/evalite/latest/evalite/fn.compile_debug.html
-//! [`DebugInfo::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.DebugInfo.html#method.to_bytes
-//! [`DebugInfo`]: https://docs.rs/evalite/latest/evalite/struct.DebugInfo.html
-//! [`DEFAULT_FUEL`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_FUEL.html
-//! [`DEFAULT_GLOBALS`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_GLOBALS.html
-//! [`DEFAULT_MAX_DEPTH`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MAX_DEPTH.html
-//! [`DEFAULT_MAX_LEN`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MAX_LEN.html
-//! [`DEFAULT_MEMORY`]: https://docs.rs/evalite/latest/evalite/constant.DEFAULT_MEMORY.html
-//! [`Diagnostic::labels`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html#method.labels
-//! [`Diagnostic`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html
-//! [`Diagnostics`]: https://docs.rs/evalite/latest/evalite/struct.Diagnostics.html
-//! [`Environment::accepts`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html#method.accepts
-//! [`Environment::fingerprint`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html#method.fingerprint
-//! [`Environment::function_repeated`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html#method.function_repeated
-//! [`Environment`]: https://docs.rs/evalite/latest/evalite/struct.Environment.html
-//! [`Label`]: https://docs.rs/evalite/latest/evalite/struct.Label.html
-//! [`Limits::fuel`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.fuel
-//! [`Limits::memory`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html#method.memory
-//! [`Machine::load`]: https://docs.rs/evalite/latest/evalite/struct.Machine.html#method.load
-//! [`Globals`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html
-//! [`Globals::from_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.from_bytes
-//! [`Globals::insert`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.insert
-//! [`Globals::migrate`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.migrate
-//! [`Globals::push`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.push
-//! [`Globals::remove`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.remove
-//! [`Globals::set`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.set
-//! [`Globals::set_at`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.set_at
-//! [`Globals::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.to_bytes
-//! [`Globals::with_limit`]: https://docs.rs/evalite/latest/evalite/struct.Globals.html#method.with_limit
-//! [`Limits`]: https://docs.rs/evalite/latest/evalite/struct.Limits.html
-//! [`MAX_DIAGNOSTICS`]: https://docs.rs/evalite/latest/evalite/constant.MAX_DIAGNOSTICS.html
-//! [`Node`]: https://docs.rs/evalite/latest/evalite/struct.Node.html
-//! [`NodeId`]: https://docs.rs/evalite/latest/evalite/struct.NodeId.html
-//! [`Options::max_depth`]: https://docs.rs/evalite/latest/evalite/struct.Options.html#method.max_depth
-//! [`Options::max_len`]: https://docs.rs/evalite/latest/evalite/struct.Options.html#method.max_len
-//! [`Path`]: https://docs.rs/evalite/latest/evalite/struct.Path.html
-//! [`Program::from_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Program.html#method.from_bytes
-//! [`Program::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Program.html#method.to_bytes
-//! [`Program`]: https://docs.rs/evalite/latest/evalite/struct.Program.html
-//! [`Reference`]: https://docs.rs/evalite/latest/evalite/struct.Reference.html
-//! [`references`]: https://docs.rs/evalite/latest/evalite/fn.references.html
-//! [`Rewrite::check`]: https://docs.rs/evalite/latest/evalite/struct.Rewrite.html#method.check
-//! [`rewrite`]: https://docs.rs/evalite/latest/evalite/fn.rewrite.html
-//! [`RunError`]: https://docs.rs/evalite/latest/evalite/struct.RunError.html
-//! [`Step`]: https://docs.rs/evalite/latest/evalite/struct.Step.html
-//! [`Structure::apply`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.apply
-//! [`Structure::complete`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.complete
-//! [`Structure::references`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.references
-//! [`Structure::rewrite`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.rewrite
-//! [`Structure::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.to_bytes
-//! [`Structure`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html
-//! [`StructureError`]: https://docs.rs/evalite/latest/evalite/struct.StructureError.html
-//! [`Type::parse`]: https://docs.rs/evalite/latest/evalite/struct.Type.html#method.parse
-//! [`Value::as_int`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.as_int
-//! [`Value::int`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.int
-//! [`Value::parse`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.parse
-//! [completions]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.complete
-//! [labels]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html#method.labels
+//! [`Type::parse`]: method@Type::parse
+//! [`Value::parse`]: method@Value::parse
+//! [`Structure::apply`]: method@Structure::apply
+//! [`Structure::complete`]: method@Structure::complete
+//! [`Structure::rewrite`]: method@Structure::rewrite
+//! [completions]: method@Structure::complete
+//! [labels]: Diagnostic::labels
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_errors_doc, clippy::missing_panics_doc)]

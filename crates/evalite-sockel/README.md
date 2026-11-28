@@ -40,16 +40,6 @@ which is built with it.
   components and tokens, so they look like the rest of a sockel app.
 - **Translated.** Every word comes from a catalog, [`L10N`].
 
-[`ExpressionEditor`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionEditor.html
-[`ErrorView`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ErrorView.html
-[`TypeBadge`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.TypeBadge.html
-[`ExpressionPreview`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionPreview.html
-[`NamesReference`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.NamesReference.html
-[`ExpressionField`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionField.html
-[`ResultView`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ResultView.html
-[`VariablesEditor`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.VariablesEditor.html
-[`L10N`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/static.L10N.html
-
 <br>
 
 ## Getting started
@@ -218,8 +208,6 @@ sockel_build::Config::new()
     .compile();
 ```
 
-[`CLASSES`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/constant.CLASSES.html
-
 <br>
 
 ## Translations
@@ -239,3 +227,14 @@ let book = Phrasebook::builder()
 ```
 
 Label props (`label`) override a message for one use.
+
+[`ExpressionEditor`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/struct.ExpressionEditor.html
+[`ErrorView`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/struct.ErrorView.html
+[`TypeBadge`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/struct.TypeBadge.html
+[`ExpressionPreview`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/struct.ExpressionPreview.html
+[`NamesReference`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/struct.NamesReference.html
+[`ExpressionField`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/struct.ExpressionField.html
+[`ResultView`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/struct.ResultView.html
+[`VariablesEditor`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/struct.VariablesEditor.html
+[`L10N`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/static.L10N.html
+[`CLASSES`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/constant.CLASSES.html

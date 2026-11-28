@@ -37,16 +37,6 @@
 //!   components and tokens, so they look like the rest of a sockel app.
 //! - **Translated.** Every word comes from a catalog, [`L10N`].
 //!
-//! [`ExpressionEditor`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionEditor.html
-//! [`ErrorView`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ErrorView.html
-//! [`TypeBadge`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.TypeBadge.html
-//! [`ExpressionPreview`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionPreview.html
-//! [`NamesReference`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.NamesReference.html
-//! [`ExpressionField`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ExpressionField.html
-//! [`ResultView`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.ResultView.html
-//! [`VariablesEditor`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/fn.VariablesEditor.html
-//! [`L10N`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/static.L10N.html
-//!
 //! <br>
 //!
 //! ## Getting started
@@ -219,8 +209,6 @@
 //!     )
 //!     .compile();
 //! ```
-//!
-//! [`CLASSES`]: https://docs.rs/evalite-sockel/latest/evalite_sockel/constant.CLASSES.html
 //!
 //! <br>
 //!
