@@ -29,7 +29,7 @@
 //! An error prints the expression with a caret under what is wrong, then
 //! what was being done, and exits non-zero.
 //!
-//! [evalite]: https://docs.rs/evalite
+//! [evalite]: evalite
 
 mod vars;
 
