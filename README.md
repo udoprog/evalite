@@ -791,7 +791,10 @@ clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 [`rewrite`]: https://docs.rs/evalite/latest/evalite/fn.rewrite.html
 [`RunError`]: https://docs.rs/evalite/latest/evalite/struct.RunError.html
 [`Step`]: https://docs.rs/evalite/latest/evalite/struct.Step.html
+[`Structure::apply`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.apply
+[`Structure::complete`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.complete
 [`Structure::references`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.references
+[`Structure::rewrite`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.rewrite
 [`Structure::to_bytes`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.to_bytes
 [`Structure`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html
 [`StructureError`]: https://docs.rs/evalite/latest/evalite/struct.StructureError.html
@@ -799,8 +802,5 @@ clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 [`Value::as_int`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.as_int
 [`Value::int`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.int
 [`Value::parse`]: https://docs.rs/evalite/latest/evalite/struct.Value.html#method.parse
-[`Structure::apply`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.apply
-[`Structure::complete`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.complete
-[`Structure::rewrite`]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.rewrite
 [completions]: https://docs.rs/evalite/latest/evalite/struct.Structure.html#method.complete
 [labels]: https://docs.rs/evalite/latest/evalite/struct.Diagnostic.html#method.labels

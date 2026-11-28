@@ -754,12 +754,7 @@
 //! example covering its failure paths, which `#![deny(missing_docs)]` and
 //! clippy's `missing_errors_doc` and `missing_panics_doc` enforce.
 //!
-//! [`Type::parse`]: method@Type::parse
-//! [`Value::parse`]: method@Value::parse
-//! [`Structure::apply`]: method@Structure::apply
-//! [`Structure::complete`]: method@Structure::complete
-//! [`Structure::rewrite`]: method@Structure::rewrite
-//! [completions]: method@Structure::complete
+//! [completions]: Structure::complete
 //! [labels]: Diagnostic::labels
 
 #![deny(missing_docs)]
