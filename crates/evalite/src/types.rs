@@ -510,12 +510,18 @@ pub(crate) struct Types {
     offsets: Vec<Vec<usize>>,
     /// The ids of `Int`, `Bool` and `String`, found without hashing.
     leaves: [Option<TypeId>; 3],
-    /// Where each node's hash starts, random for each table.
+    /// Where each list, option and map node's hash starts, random for
+    /// each table.
     seed: u64,
+    /// The keys of the SipHash that hashes records, whose field names a
+    /// stored table chooses, random for each table.
+    keys: RandomState,
 }
 
 impl Default for Types {
     fn default() -> Self {
+        let keys = RandomState::new();
+
         Self {
             nodes: Vec::new(),
             heads: HashMap::default(),
@@ -525,7 +531,8 @@ impl Default for Types {
             widths: Vec::new(),
             offsets: Vec::new(),
             leaves: [None; 3],
-            seed: RandomState::new().hash_one(0u8),
+            seed: keys.hash_one(0u8),
+            keys,
         }
     }
 }
@@ -550,10 +557,14 @@ impl Hasher for Passthrough {
     }
 }
 
-/// A small, fast, non-cryptographic hasher (the FxHash scheme) for the type
-/// table. Stored tables are untrusted bytes, so record names may be chosen to
-/// collide; each table therefore starts its hashes from its own random seed,
-/// which the writer of those bytes cannot know, keeping chains short.
+/// A small, fast, non-cryptographic hasher (the FxHash scheme) for integer
+/// keys: type ids, slots and tags, from a random seed per table.
+///
+/// It is not for keys an untrusted writer chooses freely, such as names:
+/// its multiplier is odd and `1 mod 4`, so two words that differ only in
+/// bit 62 give states that differ only in the top two bits, whatever the
+/// seed, and the next word can cancel that. Such keys use SipHash
+/// ([`RandomState`]) instead.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct FxHasher(u64);
 
@@ -593,18 +604,19 @@ impl Hasher for FxHasher {
 
     fn write(&mut self, bytes: &[u8]) {
         let (words, tail) = bytes.as_chunks::<8>();
+        self.add(bytes.len() as u64);
 
         for word in words {
             self.add(u64::from_le_bytes(*word));
         }
 
-        let mut rest = 0u64;
+        let mut rest = [0u8; 8];
 
-        for b in tail {
-            rest = (rest << 8) | u64::from(*b);
+        if let Some(at) = rest.get_mut(..tail.len()) {
+            at.copy_from_slice(tail);
         }
 
-        self.add(rest);
+        self.add(u64::from_le_bytes(rest));
     }
 
     fn write_u8(&mut self, n: u8) {
@@ -640,6 +652,8 @@ impl Types {
 
     pub(crate) fn with_capacity(nodes: usize) -> Self {
         let non_leaves = nodes.saturating_sub(3);
+        let keys = RandomState::new();
+
         Self {
             nodes: Vec::with_capacity(nodes),
             heads: HashMap::with_capacity_and_hasher(non_leaves, BuildHasherDefault::default()),
@@ -649,7 +663,8 @@ impl Types {
             widths: Vec::with_capacity(nodes),
             offsets: Vec::with_capacity(nodes),
             leaves: [None; 3],
-            seed: RandomState::new().hash_one(0u8),
+            seed: keys.hash_one(0u8),
+            keys,
         }
     }
 
@@ -672,13 +687,27 @@ impl Types {
         }
     }
 
-    /// The hash of a node with these parts, which are named for a record's
-    /// fields. Equal nodes have equal hashes, without building the node.
-    fn hash_parts<'a>(&self, tag: u8, parts: impl Iterator<Item = (&'a str, TypeId)>) -> u64 {
+    /// The hash of a list, option or map node with these parts, tagged by
+    /// which it is. Its parts are ids, so the fast hasher serves.
+    fn hash_ids(&self, tag: u8, ids: &[TypeId]) -> u64 {
         let mut hasher = FxHasher(self.seed);
         tag.hash(&mut hasher);
 
-        for (name, ty) in parts {
+        for ty in ids {
+            ty.hash(&mut hasher);
+        }
+
+        hasher.finish()
+    }
+
+    /// The hash of a record with these fields. A stored table chooses the
+    /// names, so records are hashed with keyed SipHash, which they cannot
+    /// be chosen to collide in. Equal records have equal hashes, without
+    /// building the node.
+    fn hash_record<'a>(&self, fields: impl Iterator<Item = (&'a str, TypeId)>) -> u64 {
+        let mut hasher = self.keys.build_hasher();
+
+        for (name, ty) in fields {
             name.hash(&mut hasher);
             ty.hash(&mut hasher);
         }
@@ -689,15 +718,28 @@ impl Types {
     fn hash_node(&self, node: &TypeNode) -> u64 {
         match node {
             TypeNode::Int | TypeNode::Bool | TypeNode::String => 0,
-            TypeNode::List(t) => self.hash_parts(1, std::iter::once(("", *t))),
-            TypeNode::Option(t) => self.hash_parts(2, std::iter::once(("", *t))),
+            TypeNode::List(t) => self.hash_ids(1, &[*t]),
+            TypeNode::Option(t) => self.hash_ids(2, &[*t]),
             TypeNode::Record(fields) => {
-                self.hash_parts(3, fields.iter().map(|f| (f.name.as_str(), f.ty)))
+                self.hash_record(fields.iter().map(|f| (f.name.as_str(), f.ty)))
             }
-            TypeNode::Map { key, value } => {
-                self.hash_parts(4, [("", *key), ("", *value)].into_iter())
-            }
+            TypeNode::Map { key, value } => self.hash_ids(4, &[*key, *value]),
         }
+    }
+
+    /// The most types that share one hash, for tests of flooding.
+    #[cfg(test)]
+    pub(crate) fn longest_chain(&self) -> usize {
+        self.heads
+            .values()
+            .map(|&head| {
+                std::iter::successors(Some(head), |id| {
+                    self.next.get(id.index()).copied().flatten()
+                })
+                .count()
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// The type of this hash that `is` accepts.
@@ -989,7 +1031,7 @@ impl Types {
                             let ids = done.get(at..)?;
                             let names =
                                 || fields.keys().map(String::as_str).zip(ids.iter().copied());
-                            let hash = self.hash_parts(3, names());
+                            let hash = self.hash_record(names());
 
                             // An existing record is found without cloning
                             // the names.
@@ -1133,8 +1175,7 @@ impl Types {
                             self.add(TypeNode::Map { key, value })?
                         }
                         TypeNode::Record(fields) => {
-                            let mut hasher = FxHasher(self.seed);
-                            3u8.hash(&mut hasher);
+                            let mut hasher = self.keys.build_hasher();
 
                             for field in fields {
                                 let ty = map.get(field.ty.index()).copied().flatten()?;

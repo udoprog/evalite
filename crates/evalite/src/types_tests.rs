@@ -236,3 +236,82 @@ fn fx_hasher_mixes_high_bits_into_low_buckets() {
         );
     }
 }
+
+/// Names that differ only at byte `8j + 7` (`'0'` or `'p'`, bit 62 of a
+/// word) and byte `8j + 8` (`'a'`, `'i'` or `'y'`) for each of `sites`
+/// blocks: under a multiply-by-odd hasher such pairs collide whatever its
+/// seed.
+fn crafted_names(sites: usize) -> Vec<String> {
+    let variants = [(b'0', b'a'), (b'p', b'i'), (b'p', b'y')];
+    let mut names = vec![Vec::new()];
+
+    for _ in 0..sites {
+        names = names
+            .into_iter()
+            .flat_map(|name: Vec<u8>| {
+                variants.iter().map(move |&(hi, lo)| {
+                    let mut name = name.clone();
+
+                    if name.is_empty() {
+                        name.extend_from_slice(b"field_a");
+                    } else {
+                        name.extend_from_slice(b"bcdefg");
+                    }
+
+                    name.push(hi);
+                    name.push(lo);
+                    name
+                })
+            })
+            .collect();
+    }
+
+    names
+        .into_iter()
+        .map(|name| String::from_utf8(name).unwrap())
+        .collect()
+}
+
+#[test]
+fn crafted_names_are_valid() {
+    for name in crafted_names(3) {
+        assert!(crate::types::is_value_name(&name), "{name}");
+    }
+}
+
+#[test]
+fn records_with_crafted_names_keep_chains_short() {
+    let names = crafted_names(8);
+    assert!(names.len() >= 4096);
+
+    let mut types = Types::new();
+    let int = types.add(TypeNode::Int).unwrap();
+
+    for name in &names {
+        let fields = vec![FieldNode {
+            name: name.clone(),
+            ty: int,
+        }];
+        types.add(TypeNode::Record(fields)).unwrap();
+    }
+
+    let chain = types.longest_chain();
+    assert!(chain <= 2, "{} records share one hash", chain);
+}
+
+#[test]
+fn fx_hasher_hashes_length_and_leading_nuls() {
+    use crate::types::FxBuildHasher;
+    use std::hash::{BuildHasher, Hasher};
+
+    let bh = FxBuildHasher::new(0x1234_5678_9abc_def0);
+    let hash = |bytes: &[u8]| {
+        let mut hasher = bh.build_hasher();
+        hasher.write(bytes);
+        hasher.finish()
+    };
+
+    assert_ne!(hash(b"a"), hash(b"\0a"));
+    assert_ne!(hash(b""), hash(b"\0"));
+    assert_ne!(hash(b"abcdefgh"), hash(b"abcdefgh\0"));
+}

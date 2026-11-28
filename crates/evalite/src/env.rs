@@ -331,7 +331,7 @@ impl Environment {
         check(name, &ty)?;
 
         let at = self.words;
-        self.words = u32::try_from(width(&ty))
+        let words = u32::try_from(width(&ty))
             .ok()
             .and_then(|width| at.checked_add(width))
             .ok_or_else(|| DeclareError::new(DeclareKind::TooManySlots, name))?;
@@ -340,6 +340,9 @@ impl Environment {
             .types
             .intern(&ty)
             .ok_or_else(|| DeclareError::new(DeclareKind::TypeTooLarge, name))?;
+
+        // Only once nothing can fail, so a refused value leaves no gap.
+        self.words = words;
 
         self.fingerprint.value(name, &ty);
         self.names.insert(name.to_owned(), self.slots.len());

@@ -670,16 +670,26 @@ last, which keeps the stored encoding of the older variants.
     table (`Slot::ty_id`), and `Compiler` copies only the reachable subgraph of
     used globals via `Types::copy_from`, caching `env -> program` ids across
     globals in one compile.
-- **Hashing.** A small Fx-style hasher (`FxHasher`: rotate, xor, multiply by
-  `0x517cc1b727220a95`), also exposed as `FxBuildHasher` seeded from the
-  table's random seed for the verifier (`Model::ids`, `global_ids`,
-  `names`/`signatures`/`sorted`) and compiler maps.
-  - Stored tables are untrusted, so record names could be chosen to collide.
-    Each table therefore starts from a random seed
-    (`RandomState::new().hash_one(0u8)`), which the writer cannot know.
-  - The seed makes hashes differ between tables and processes. They are never
-    stored and never used for identity outside one table. The layout
-    fingerprint (section 7) is a separate, fixed FNV-1a hash.
+- **Hashing.** Keys an untrusted writer chooses freely, names above all,
+  are hashed with keyed SipHash (`RandomState`); only integer keys use the
+  fast hasher.
+  - `FxHasher` (rotate, xor, multiply by `0x517cc1b727220a95`), exposed as
+    `FxBuildHasher` seeded from the table's random seed, serves ids, slots
+    and tags: list, option and map nodes in `heads`, the verifier's
+    `Model::ids`, `global_ids` and `sorted`, and the compiler's
+    `global_types` and `declared`. It hashes a byte string's length first
+    and packs its tail zero-padded, so leading NULs count.
+  - It is not safe for chosen strings, whatever the seed: the multiplier is
+    `1 mod 4`, so words differing only in bit 62 give states differing only
+    in the top two bits, which the rotate brings to bits 3 and 4 of the next
+    round, where the next word can cancel them (in a name, `'0'`→`'p'` at
+    byte `8j+7` with `'a'`→`'i'` or `'y'` at byte `8j+8`). So records in
+    `heads` are hashed, names and field ids together, with SipHash keyed per
+    table, and the verifier's global `names` and function `signatures` and
+    the compiler's `strings` and `function_ids` use std's `RandomState`.
+  - The seed and keys make hashes differ between tables and processes. They
+    are never stored and never used for identity outside one table. The
+    layout fingerprint (section 7) is a separate, fixed FNV-1a hash.
 - **Per-node facts**, computed once when a node is added:
   - `depths`: nesting, refused past `MAX_TYPE_DEPTH`;
   - `sizes`: nodes with shared parts written out, saturating, refused past

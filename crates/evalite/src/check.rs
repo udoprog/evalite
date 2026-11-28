@@ -399,7 +399,8 @@ struct Compiler<'a> {
     int: TypeId,
     bool: TypeId,
     constants: Vec<Constant>,
-    strings: HashMap<String, u32, FxBuildHasher>,
+    /// By text, which the source chooses, so hashed with SipHash.
+    strings: HashMap<String, u32>,
     globals: Vec<Global>,
     /// The type of each global used so far, by its slot, so each is
     /// interned once.
@@ -408,7 +409,8 @@ struct Compiler<'a> {
     /// types are copied once per compile.
     env_types: Vec<Option<TypeId>>,
     functions: Vec<HostFunction>,
-    function_ids: HashMap<(String, Vec<TypeId>), u32, FxBuildHasher>,
+    /// By name, which the environment chooses, so hashed with SipHash.
+    function_ids: HashMap<(String, Vec<TypeId>), u32>,
     /// The id of each host function's parameter and result type met so
     /// far, by where the environment holds it, so each is interned once
     /// however many calls there are.
@@ -457,12 +459,12 @@ impl<'a> Compiler<'a> {
             int,
             bool,
             constants: Vec::new(),
-            strings: HashMap::with_hasher(hasher),
+            strings: HashMap::new(),
             globals: Vec::new(),
             global_types: HashMap::with_hasher(hasher),
             env_types: Vec::new(),
             functions: Vec::new(),
-            function_ids: HashMap::with_hasher(hasher),
+            function_ids: HashMap::new(),
             declared: HashMap::with_hasher(hasher),
             code: Vec::with_capacity(est_ops),
             spans: Vec::with_capacity(est_ops),

@@ -497,8 +497,9 @@ impl Program {
             constant_words = constant_words.saturating_add(constant.words());
         }
 
-        let hasher = types.hasher();
-        let mut names = HashSet::with_capacity_and_hasher(globals.len(), hasher);
+        // Names are chosen by the writer of the bytes, so they are hashed
+        // with SipHash, not the fast hasher (see `FxHasher`).
+        let mut names = HashSet::with_capacity(globals.len());
         // Each global's slot, where it ends and which it is.
         let mut slots = Vec::with_capacity(globals.len());
 
@@ -530,7 +531,7 @@ impl Program {
             }
         }
 
-        let mut signatures = HashSet::with_hasher(hasher);
+        let mut signatures = HashSet::new();
 
         for (at, function) in functions.iter().enumerate() {
             let at_function = |e: StoreError| e.context(Message::AtFunction { at: count(at) });
@@ -548,7 +549,7 @@ impl Program {
 
         verifier.known(result)?;
 
-        let mut global_ids = HashMap::with_capacity_and_hasher(globals.len(), hasher);
+        let mut global_ids = HashMap::with_capacity_and_hasher(globals.len(), types.hasher());
 
         for global in &globals {
             global_ids.insert(global.slot, global.ty);
