@@ -32,9 +32,10 @@ caught before it runs, and no input can crash, hang or exhaust the host.
 - **Compile once, run many times.** Check an expression when the user saves
   it and store the compiled [`Program`] as bytes next to your data. Running
   it later reads your values in place from a [`Globals`] store without
-  parsing, checking or copying them again — 2–5× faster to evaluate than
-  `evalexpr`, and overtaking `fasteval` on larger formulas while keeping
-  static typing and sandboxing. See [Storing programs](#storing-programs),
+  parsing, checking or copying them again — 3–12× faster to evaluate than
+  `evalexpr`, and level with or ahead of `fasteval` on all but the smallest
+  expression, while keeping static typing and sandboxing. See [Storing
+  programs](#storing-programs),
   [Values](#values) and [Performance](#performance).
 - **Stored bytes are checked.** Bytes read back from a database or a file
   may be corrupt or tampered with, so [`Program::from_bytes`] checks them
@@ -673,13 +674,16 @@ evalite is built for compile-once, evaluate-many workloads over a shared
 measured against `evalexpr` and `fasteval` on the same 16 integer variables
 with compile and evaluate timed apart:
 
-- **Evaluation:** 2–5× faster than `evalexpr` across every expression
-  measured, and faster than `fasteval` on the 64-term formula (764 ns vs
-  1.11 µs) — while providing static typing, options, records, lists, maps
-  and deterministic fuel and memory limits. On the smallest expressions,
-  `fasteval` (`f64`-only, without type checking or sandboxing) stays ahead
-  by ~40–65 ns where fixed per-call overhead dominates.
-- **Compilation:** 2–26 µs per expression — slower than both peers because
+- **Evaluation:** 3–12× faster than `evalexpr` across every expression
+  measured, and faster than `fasteval` on the 16-variable sum (104 ns vs
+  216 ns) and the 64-term formula (381 ns vs 1.12 µs) — while providing
+  static typing, options, records, lists, maps and deterministic fuel and
+  memory limits. `fasteval` (`f64`-only, without type checking or
+  sandboxing) is level on `functions` and `logic` and stays ahead by
+  ~25 ns only on the smallest expression, where fixed per-call overhead
+  dominates.
+- **Compilation:** 2–22 µs per expression — slower than both peers on the
+  smaller expressions, and level with `evalexpr` on the 64-term formula, because
   `evalite::compile` parses, statically type-checks, generates bytecode and
   runs the verifier before anything executes (work `evalexpr` defers to
   evaluation and `fasteval` does not do).
