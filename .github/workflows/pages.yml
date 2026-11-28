@@ -27,7 +27,7 @@ jobs:
     - uses: udoprog/actions@trug
     - run: cargo fetch
     - run: trug build -c playground/Trug.toml --release --public-url /evalite/
-    - uses: actions/upload-pages-artifact@v3
+    - uses: actions/upload-pages-artifact@v5
       with:
         path: playground/dist
 
